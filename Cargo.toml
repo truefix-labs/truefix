@@ -30,6 +30,11 @@ serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
 tracing = "0.1"
 metrics = "0.24"
+async-trait = "0.1"
+truefix-core = { path = "crates/truefix-core" }
+truefix-session = { path = "crates/truefix-session" }
+truefix-transport = { path = "crates/truefix-transport" }
+truefix-config = { path = "crates/truefix-config" }
 
 [profile.release]
 # Production builds: keep debug info off, optimize. Benchmarks live in benches/.

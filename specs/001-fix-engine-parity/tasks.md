@@ -80,19 +80,19 @@ later stages. Serves US2.
 
 ### Tests for S2 (write first)
 
-- [ ] T022 [P] [US1] Two-process integration test: logon→heartbeat→logout on FIX 4.2 & 4.4 in `tests/integration_logon.rs`
-- [ ] T023 [P] [US1] Session state-machine transition table tests (Disconnected→Logon→LoggedOn→Logout) in `crates/truefix-session/tests/state_machine.rs`
+- [X] T022 [P] [US1] Two-process integration test: logon→heartbeat→logout on FIX 4.2 & 4.4 in `tests/integration_logon.rs`
+- [X] T023 [P] [US1] Session state-machine transition table tests (Disconnected→Logon→LoggedOn→Logout) in `crates/truefix-session/tests/state_machine.rs`
 
 ### Implementation for S2
 
-- [ ] T024 [P] [US8] Implement minimal `SessionSettings` + `.cfg` parser (`[DEFAULT]`/`[SESSION]`, `${name}` interpolation) sufficient for session/transport bootstrap in `crates/truefix-config/src/`
-- [ ] T025 [P] [US1] Implement `SessionID` (BeginString/Sender/Target/Sub/Location/Qualifier) in `crates/truefix-session/src/session_id.rs`
-- [ ] T026 [US1] Implement session state machine core (states + transitions) in `crates/truefix-session/src/state.rs`
-- [ ] T027 [US1] Implement admin messages Logon/Logout/Heartbeat/TestRequest build+handle in `crates/truefix-session/src/admin/`
-- [ ] T028 [US1] Implement heartbeat/test-request timers (HeartBtInt, ~1.2× idle, multipliers, DisableHeartBeatCheck) in `crates/truefix-session/src/timers.rs`
-- [ ] T029 [P] [US9] Implement async `Application` trait (onCreate/onLogon/onLogout/toAdmin/fromAdmin/toApp/fromApp) in `crates/truefix/src/application.rs` (FR-J1, FR-F7)
-- [ ] T030 [US1] Implement `truefix-transport` Initiator + Acceptor read/write/timer task loops over tokio TCP (single session) in `crates/truefix-transport/src/`
-- [ ] T031 [US9] Wire facade re-exports + `MessageCracker` dispatch into `crates/truefix/src/lib.rs`
+- [X] T024 [P] [US8] Implement minimal `SessionSettings` + `.cfg` parser (`[DEFAULT]`/`[SESSION]`, `${name}` interpolation) sufficient for session/transport bootstrap in `crates/truefix-config/src/`
+- [X] T025 [P] [US1] Implement `SessionID` (BeginString/Sender/Target/Sub/Location/Qualifier) in `crates/truefix-session/src/session_id.rs`
+- [X] T026 [US1] Implement session state machine core (states + transitions) in `crates/truefix-session/src/state.rs`
+- [X] T027 [US1] Implement admin messages Logon/Logout/Heartbeat/TestRequest build+handle in `crates/truefix-session/src/admin/`
+- [X] T028 [US1] Implement heartbeat/test-request timers (HeartBtInt, ~1.2× idle, multipliers, DisableHeartBeatCheck) in `crates/truefix-session/src/timers.rs`
+- [X] T029 [P] [US9] Implement async `Application` trait (onCreate/onLogon/onLogout/toAdmin/fromAdmin/toApp/fromApp) in `crates/truefix/src/application.rs` (FR-J1, FR-F7)
+- [X] T030 [US1] Implement `truefix-transport` Initiator + Acceptor read/write/timer task loops over tokio TCP (single session) in `crates/truefix-transport/src/`
+- [X] T031 [US9] Wire facade re-exports + `MessageCracker` dispatch into `crates/truefix/src/lib.rs`
 
 **Checkpoint S2**: T022 passes — US1 logon/heartbeat/logout works two-process on 4.2 & 4.4. (contracts/session.md, transport.md, application-api.md)
 

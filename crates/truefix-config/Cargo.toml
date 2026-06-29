@@ -8,5 +8,8 @@ repository.workspace = true
 description = "FIX SessionSettings and .cfg configuration."
 publish = false
 
+[dependencies]
+thiserror.workspace = true
+
 [lints]
 workspace = true
