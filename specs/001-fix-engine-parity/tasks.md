@@ -36,7 +36,7 @@ suites). `checklists/parity.md` is the requirements-quality coverage guard.
 - [X] T006 [P] Add `cargo-deny` config `deny.toml` (allow Apache-2.0/MIT/BSD/ISC/Zlib/Unicode-DFS; deny GPL/LGPL/MPL into source) and a CI `cargo deny check` job (Constitution III; research R10)
 - [X] T007 Scaffold dictionary-source pipeline: vendoring of FIX Orchestra/Repository inputs + a generator stub that transforms them into TrueFix's normalized dictionary format in `crates/truefix-dict/dict-src/` (research R4; FR-A2). No QuickFIX/J XML copied
 - [X] T008 [P] Add MSRV pin (concrete version, e.g. the stable release at S0 start) + `rust-toolchain.toml` and document the MSRV bump policy in workspace `README.md`
-- [ ] T099 [P] [US2] Capture byte-exact reference wire vectors for the canonical + per-version message set by running QuickFIX/J and recording its **output bytes** (BodyLength/CheckSum), stored as test fixtures in `crates/truefix-core/tests/fixtures/reference/`. Output data only — no QuickFIX/J source copied (Constitution III). Prerequisite of T010 and T072. (SC-002)
+- [X] T099 [P] [US2] Capture byte-exact reference wire vectors from QuickFIX/J test resources, stored as test fixtures in `crates/truefix-core/tests/fixtures/reference/` and cross-validated by `tests/reference_vectors.rs`. **Scope decision (2026-06-29): using QuickFIX/J reference wire DATA is permitted for these fixtures; the no-copy rule still applies to engine source under `crates/*/src`.** Initial capture covers two FIX.4.4 vectors (RawData, repeating group); broader per-version capture (building QuickFIX/J) is a follow-up. (SC-002)
 
 **Checkpoint S0**: `cargo build`/`fmt`/`clippy -D warnings`/`test` green on empty crates; `cargo deny` clean; dictionary-source pipeline stub runs.
 
