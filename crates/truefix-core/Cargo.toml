@@ -1,0 +1,12 @@
+[package]
+name = "truefix-core"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FIX message model, field types, and SOH codec (BodyLength/CheckSum)."
+publish = false
+
+[lints]
+workspace = true

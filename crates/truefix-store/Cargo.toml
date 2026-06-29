@@ -1,0 +1,12 @@
+[package]
+name = "truefix-store"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FIX message stores (memory/file/cached/SQL/noop)."
+publish = false
+
+[lints]
+workspace = true

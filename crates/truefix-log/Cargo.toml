@@ -1,0 +1,12 @@
+[package]
+name = "truefix-log"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FIX logging (screen/file/tracing/composite)."
+publish = false
+
+[lints]
+workspace = true

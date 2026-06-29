@@ -28,14 +28,14 @@ suites). `checklists/parity.md` is the requirements-quality coverage guard.
 
 **Purpose**: Workspace skeleton, lint policy, CI, license audit, dictionary-source pipeline scaffold.
 
-- [ ] T001 Create cargo workspace `Cargo.toml` with members for all crates (truefix-core, -dict, -session, -store, -log, -transport, -config, truefix, -at) and `examples/*`, per plan.md structure
-- [ ] T002 [P] Add empty library crates with `#![forbid(unsafe_code)]` and crate-level docs in `crates/*/src/lib.rs`
-- [ ] T003 [P] Define shared workspace lints (deny `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, `clippy::indexing_slicing` on lib targets) in workspace `Cargo.toml` `[workspace.lints]`
-- [ ] T004 [P] Add shared dependencies at workspace level (tokio, rustls, tokio-rustls, thiserror, rust_decimal, time, serde, sqlx, tracing, metrics) with versions pinned
-- [ ] T005 [P] Configure CI: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` in `.github/workflows/ci.yml`
-- [ ] T006 [P] Add `cargo-deny` config `deny.toml` (allow Apache-2.0/MIT/BSD/ISC/Zlib/Unicode-DFS; deny GPL/LGPL/MPL into source) and a CI `cargo deny check` job (Constitution III; research R10)
-- [ ] T007 Scaffold dictionary-source pipeline: vendoring of FIX Orchestra/Repository inputs + a generator stub that transforms them into TrueFix's normalized dictionary format in `crates/truefix-dict/dict-src/` (research R4; FR-A2). No QuickFIX/J XML copied
-- [ ] T008 [P] Add MSRV pin (concrete version, e.g. the stable release at S0 start) + `rust-toolchain.toml` and document the MSRV bump policy in workspace `README.md`
+- [X] T001 Create cargo workspace `Cargo.toml` with members for all crates (truefix-core, -dict, -session, -store, -log, -transport, -config, truefix, -at) and `examples/*`, per plan.md structure
+- [X] T002 [P] Add empty library crates with `#![forbid(unsafe_code)]` and crate-level docs in `crates/*/src/lib.rs`
+- [X] T003 [P] Define shared workspace lints (deny `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, `clippy::indexing_slicing` on lib targets) in workspace `Cargo.toml` `[workspace.lints]`
+- [X] T004 [P] Add shared dependencies at workspace level (tokio, rustls, tokio-rustls, thiserror, rust_decimal, time, serde, sqlx, tracing, metrics) with versions pinned
+- [X] T005 [P] Configure CI: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` in `.github/workflows/ci.yml`
+- [X] T006 [P] Add `cargo-deny` config `deny.toml` (allow Apache-2.0/MIT/BSD/ISC/Zlib/Unicode-DFS; deny GPL/LGPL/MPL into source) and a CI `cargo deny check` job (Constitution III; research R10)
+- [X] T007 Scaffold dictionary-source pipeline: vendoring of FIX Orchestra/Repository inputs + a generator stub that transforms them into TrueFix's normalized dictionary format in `crates/truefix-dict/dict-src/` (research R4; FR-A2). No QuickFIX/J XML copied
+- [X] T008 [P] Add MSRV pin (concrete version, e.g. the stable release at S0 start) + `rust-toolchain.toml` and document the MSRV bump policy in workspace `README.md`
 - [ ] T099 [P] [US2] Capture byte-exact reference wire vectors for the canonical + per-version message set by running QuickFIX/J and recording its **output bytes** (BodyLength/CheckSum), stored as test fixtures in `crates/truefix-core/tests/fixtures/reference/`. Output data only — no QuickFIX/J source copied (Constitution III). Prerequisite of T010 and T072. (SC-002)
 
 **Checkpoint S0**: `cargo build`/`fmt`/`clippy -D warnings`/`test` green on empty crates; `cargo deny` clean; dictionary-source pipeline stub runs.

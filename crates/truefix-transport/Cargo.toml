@@ -1,0 +1,12 @@
+[package]
+name = "truefix-transport"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FIX transport: initiator/acceptor, TLS, multi/dynamic sessions."
+publish = false
+
+[lints]
+workspace = true

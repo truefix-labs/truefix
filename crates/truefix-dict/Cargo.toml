@@ -1,0 +1,12 @@
+[package]
+name = "truefix-dict"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FIX data dictionary: build-time codegen + runtime validation (dual-track)."
+publish = false
+
+[lints]
+workspace = true

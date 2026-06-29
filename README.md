@@ -73,6 +73,22 @@ S0 Workspace & CI ─▶ S1 Core codec ─▶ S2 Minimal session ─▶ S3 Recov
   behavior contracts; **all targeted FIX versions must pass to release**.
 - CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny`, and the AT matrix.
 
+## Building & MSRV
+
+```sh
+cargo build --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo deny check        # license/advisory gate (requires cargo-deny)
+```
+
+- **Edition**: 2021. **MSRV**: Rust **1.96** (declared in `workspace.package.rust-version`; build toolchain
+  pinned in `rust-toolchain.toml`). The MSRV floor is raised only deliberately and noted here when it
+  changes.
+- `unsafe` code is forbidden workspace-wide (`unsafe_code = "forbid"`); `unwrap`/`expect`/`panic`/indexing
+  are denied on non-test builds of every crate (Constitution Principle I).
+
 ## Governance
 
 Development follows a written [constitution](.specify/memory/constitution.md) (v2.0.0). Core principles:

@@ -1,1 +1,23 @@
+# Third-party reference implementations (read-only design reference; not vendored —
+# Constitution Principle III). Kept out of the repo.
 thrdpty/
+
+# Rust / cargo
+/target/
+**/target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*.log
+.DS_Store
+Thumbs.db
+
+# Env
+.env*

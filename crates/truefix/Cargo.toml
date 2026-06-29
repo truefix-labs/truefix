@@ -1,0 +1,12 @@
+[package]
+name = "truefix"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TrueFix facade: Application trait, MessageCracker, re-exports."
+publish = false
+
+[lints]
+workspace = true

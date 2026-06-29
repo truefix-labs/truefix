@@ -1,0 +1,30 @@
+# cargo-deny config (Constitution Principle III: clean Apache-2.0 OR MIT release).
+# Run: cargo deny check
+[graph]
+all-features = true
+
+[licenses]
+# Allow only permissive licenses compatible with dual Apache-2.0 OR MIT distribution.
+# Copyleft (GPL/LGPL/MPL/AGPL) into source is intentionally NOT listed -> denied.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
