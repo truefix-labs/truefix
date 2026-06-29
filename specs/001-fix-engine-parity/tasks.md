@@ -51,22 +51,22 @@ later stages. Serves US2.
 
 ### Tests for S1 (write first)
 
-- [ ] T009 [P] [US2] Table-driven field-type/converter tests (Int, Decimal, Char, Boolean, String, Data, UtcTimestamp ns/ps, UtcTimeOnly, UtcDateOnly, MonthYear) in `crates/truefix-core/tests/field_types.rs`
-- [ ] T010 [P] [US2] Round-trip + byte-exact BodyLength/CheckSum vectors for canonical messages (NewOrderSingle, ExecutionReport, Logon, Heartbeat, ResendRequest, SequenceReset, Reject) against the reference fixtures from T099 in `crates/truefix-core/tests/roundtrip.rs` (SC-002)
-- [ ] T011 [P] [US2] Negative codec tests (garbled, truncated, BodyLength mismatch, bad checksum, non-numeric tag) asserting typed errors and no panic in `crates/truefix-core/tests/garbled.rs` (FR-B8, SC-005)
-- [ ] T012 [P] [US2] Nested repeating-group parse/encode tests (delimiter ordering, count=0, missing nested delimiter) in `crates/truefix-core/tests/groups.rs`
+- [X] T009 [P] [US2] Table-driven field-type/converter tests (Int, Decimal, Char, Boolean, String, Data, UtcTimestamp ns/ps, UtcTimeOnly, UtcDateOnly, MonthYear) in `crates/truefix-core/tests/field_types.rs`
+- [X] T010 [P] [US2] Round-trip + byte-exact BodyLength/CheckSum vectors for canonical messages (NewOrderSingle, ExecutionReport, Logon, Heartbeat, ResendRequest, SequenceReset, Reject) against the reference fixtures from T099 in `crates/truefix-core/tests/roundtrip.rs` (SC-002)
+- [X] T011 [P] [US2] Negative codec tests (garbled, truncated, BodyLength mismatch, bad checksum, non-numeric tag) asserting typed errors and no panic in `crates/truefix-core/tests/garbled.rs` (FR-B8, SC-005)
+- [X] T012 [P] [US2] Nested repeating-group parse/encode tests (delimiter ordering, count=0, missing nested delimiter) in `crates/truefix-core/tests/groups.rs`
 
 ### Implementation for S1
 
-- [ ] T013 [P] [US2] Implement typed error enums (`DecodeError`, `FieldError`) with thiserror in `crates/truefix-core/src/error.rs`
-- [ ] T014 [P] [US2] Implement `FieldValue` types and converters (rust_decimal, time ns timestamps) in `crates/truefix-core/src/types/`
-- [ ] T015 [US2] Implement `Field` (with retained raw form for round-trip) in `crates/truefix-core/src/field.rs`
-- [ ] T016 [US2] Implement `FieldMap` (ordered fields + nested groups) in `crates/truefix-core/src/field_map.rs`
-- [ ] T017 [US2] Implement `Group` (nestable, delimiter, count) in `crates/truefix-core/src/group.rs`
-- [ ] T018 [US2] Implement `Message` (header/body/trailer regions, msg_type/begin_string) in `crates/truefix-core/src/message.rs`
-- [ ] T019 [US2] Implement SOH decoder `bytes → Result<Message, DecodeError>` (verifies BodyLength/CheckSum, preserves raw forms) in `crates/truefix-core/src/codec/decode.rs`
-- [ ] T020 [US2] Implement encoder `Message → bytes` (header order, auto BodyLength/CheckSum, RawData length-prefix) in `crates/truefix-core/src/codec/encode.rs`
-- [ ] T021 [P] [US2] Add `MessageFactory` and `MessageCracker` trait skeletons (typed dispatch contract) in `crates/truefix-core/src/factory.rs` and `crates/truefix-core/src/cracker.rs`
+- [X] T013 [P] [US2] Implement typed error enums (`DecodeError`, `FieldError`) with thiserror in `crates/truefix-core/src/error.rs`
+- [X] T014 [P] [US2] Implement `FieldValue` types and converters (rust_decimal, time ns timestamps) in `crates/truefix-core/src/types/`
+- [X] T015 [US2] Implement `Field` (with retained raw form for round-trip) in `crates/truefix-core/src/field.rs`
+- [X] T016 [US2] Implement `FieldMap` (ordered fields + nested groups) in `crates/truefix-core/src/field_map.rs`
+- [X] T017 [US2] Implement `Group` (nestable, delimiter, count) in `crates/truefix-core/src/group.rs`
+- [X] T018 [US2] Implement `Message` (header/body/trailer regions, msg_type/begin_string) in `crates/truefix-core/src/message.rs`
+- [X] T019 [US2] Implement SOH decoder `bytes → Result<Message, DecodeError>` (verifies BodyLength/CheckSum, preserves raw forms) in `crates/truefix-core/src/codec/decode.rs`
+- [X] T020 [US2] Implement encoder `Message → bytes` (header order, auto BodyLength/CheckSum, RawData length-prefix) in `crates/truefix-core/src/codec/encode.rs`
+- [X] T021 [P] [US2] Add `MessageFactory` and `MessageCracker` trait skeletons (typed dispatch contract) in `crates/truefix-core/src/factory.rs` and `crates/truefix-core/src/cracker.rs`
 
 **Checkpoint S1**: T009–T012 pass; round-trip + byte-exact BodyLength/CheckSum match reference vectors; no-panic on garbled input verified. (parity.md CHK038, CHK040; contracts/core-codec.md)
 

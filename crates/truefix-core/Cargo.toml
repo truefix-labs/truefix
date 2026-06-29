@@ -8,5 +8,10 @@ repository.workspace = true
 description = "FIX message model, field types, and SOH codec (BodyLength/CheckSum)."
 publish = false
 
+[dependencies]
+thiserror.workspace = true
+rust_decimal.workspace = true
+time.workspace = true
+
 [lints]
 workspace = true
