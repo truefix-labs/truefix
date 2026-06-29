@@ -21,6 +21,7 @@ pub mod application;
 pub mod config;
 pub mod session_id;
 pub mod state;
+mod tags;
 mod time_util;
 
 pub use application::Application;

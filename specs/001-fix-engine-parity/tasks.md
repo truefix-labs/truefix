@@ -106,20 +106,20 @@ later stages. Serves US2.
 
 ### Tests for S3 (write first)
 
-- [ ] T032 [P] [US3] Recovery tests: high-seq→ResendRequest+queue; low-seq w/o PossDup→disconnect in `crates/truefix-session/tests/recovery.rs` (FR-D12)
-- [ ] T033 [P] [US3] Resend reply tests: app msgs PossDupFlag=Y+OrigSendingTime; admin→SequenceReset-GapFill in `crates/truefix-session/tests/resend.rs` (FR-D7/D9)
-- [ ] T034 [P] [US3] Chunked resend tests (`ResendRequestChunkSize`, 0=unbounded) in `crates/truefix-session/tests/chunked_resend.rs`
-- [ ] T035 [P] [US3] NextExpectedMsgSeqNum(789) logon-sync tests for FIX≥4.4 in `crates/truefix-session/tests/next_expected.rs`
+- [X] T032 [P] [US3] Recovery tests: high-seq→ResendRequest+queue; low-seq w/o PossDup→disconnect in `crates/truefix-session/tests/recovery.rs` (FR-D12)
+- [X] T033 [P] [US3] Resend reply tests: app msgs PossDupFlag=Y+OrigSendingTime; admin→SequenceReset-GapFill in `crates/truefix-session/tests/resend.rs` (FR-D7/D9)
+- [X] T034 [P] [US3] Chunked resend tests (`ResendRequestChunkSize`, 0=unbounded) in `crates/truefix-session/tests/chunked_resend.rs`
+- [X] T035 [P] [US3] NextExpectedMsgSeqNum(789) logon-sync tests for FIX≥4.4 in `crates/truefix-session/tests/next_expected.rs`
 
 ### Implementation for S3
 
-- [ ] T036 [US3] Implement sequence-number management + in-order queue + recovery in `crates/truefix-session/src/sequence.rs`
-- [ ] T037 [US3] Implement ResendRequest issue/handle + range chunking in `crates/truefix-session/src/resend.rs`
-- [ ] T038 [US3] Implement SequenceReset GapFill & Reset modes in `crates/truefix-session/src/seqreset.rs`
-- [ ] T039 [US3] Implement PossDup/PossResend/OrigSendingTime handling (RequiresOrigSendingTime, AllowPosDup) in `crates/truefix-session/src/possdup.rs`
+- [X] T036 [US3] Implement sequence-number management + in-order queue + recovery in `crates/truefix-session/src/sequence.rs`
+- [X] T037 [US3] Implement ResendRequest issue/handle + range chunking in `crates/truefix-session/src/resend.rs`
+- [X] T038 [US3] Implement SequenceReset GapFill & Reset modes in `crates/truefix-session/src/seqreset.rs`
+- [X] T039 [US3] Implement PossDup/PossResend/OrigSendingTime handling (RequiresOrigSendingTime, AllowPosDup) in `crates/truefix-session/src/possdup.rs`
 - [ ] T040 [US3] Implement NextExpectedMsgSeqNum(789) + EnableLastMsgSeqNumProcessed(369) in `crates/truefix-session/src/next_expected.rs`
 - [ ] T041 [US10] Implement session-level Reject + Logon/Logout timeouts + CheckLatency/MaxLatency in `crates/truefix-session/src/reject.rs` (FR-D11, FR-K2)
-- [ ] T042 [US3] Implement ResetSeqNumFlag(141) + ResetOn{Logon,Logout,Disconnect} + RefreshOnLogon in `crates/truefix-session/src/reset.rs` (FR-D4/D5)
+- [X] T042 [US3] Implement ResetSeqNumFlag(141) + ResetOn{Logon,Logout,Disconnect} + RefreshOnLogon in `crates/truefix-session/src/reset.rs` (FR-D4/D5)
 
 **Checkpoint S3**: T032–T035 pass; sequence/resend AT-relevant behavior correct. (parity.md CHK021/CHK022/CHK037; Appendix B sequence cases)
 

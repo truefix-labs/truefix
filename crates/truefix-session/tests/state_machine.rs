@@ -9,13 +9,13 @@ fn cfg(role: Role) -> SessionConfig {
     c
 }
 
-fn inbound(msg_type: &str, hb: Option<i64>, test_req: Option<&str>) -> Message {
+fn inbound(msg_type: &str, seq: i64, hb: Option<i64>, test_req: Option<&str>) -> Message {
     let mut m = Message::new();
     m.header.set(Field::string(8, "FIX.4.2"));
     m.header.set(Field::string(35, msg_type));
     m.header.set(Field::string(49, "YOU"));
     m.header.set(Field::string(56, "ME"));
-    m.header.set(Field::int(34, 1));
+    m.header.set(Field::int(34, seq));
     if let Some(h) = hb {
         m.body.set(Field::int(108, h));
     }
@@ -46,7 +46,7 @@ fn acceptor_waits_then_responds_to_logon() {
     assert!(s.handle(Event::Connected).is_empty());
     assert_eq!(s.state(), SessionState::AwaitingLogon);
 
-    let actions = s.handle(Event::Received(inbound("A", Some(1), None)));
+    let actions = s.handle(Event::Received(inbound("A", 1, Some(1), None)));
     assert_eq!(s.state(), SessionState::LoggedOn);
     assert_eq!(first_send(&actions).and_then(Message::msg_type), Some("A"));
 }
@@ -55,7 +55,7 @@ fn acceptor_waits_then_responds_to_logon() {
 fn initiator_becomes_logged_on_when_logon_received() {
     let mut s = Session::new(cfg(Role::Initiator));
     s.handle(Event::Connected);
-    let actions = s.handle(Event::Received(inbound("A", Some(1), None)));
+    let actions = s.handle(Event::Received(inbound("A", 1, Some(1), None)));
     assert_eq!(s.state(), SessionState::LoggedOn);
     assert!(actions.is_empty()); // initiator already sent its logon
 }
@@ -63,7 +63,7 @@ fn initiator_becomes_logged_on_when_logon_received() {
 #[test]
 fn test_request_is_answered_with_heartbeat() {
     let mut s = logged_on_acceptor();
-    let actions = s.handle(Event::Received(inbound("1", None, Some("ABC"))));
+    let actions = s.handle(Event::Received(inbound("1", 2, None, Some("ABC"))));
     let reply = first_send(&actions).expect("heartbeat reply");
     assert_eq!(reply.msg_type(), Some("0"));
     assert_eq!(reply.body.get(112).unwrap().as_str().unwrap(), "ABC");
@@ -83,7 +83,7 @@ fn start_logout_then_counter_logout_disconnects() {
     assert_eq!(s.state(), SessionState::AwaitingLogout);
     assert_eq!(first_send(&actions).and_then(Message::msg_type), Some("5"));
 
-    let actions = s.handle(Event::Received(inbound("5", None, None)));
+    let actions = s.handle(Event::Received(inbound("5", 2, None, None)));
     assert_eq!(s.state(), SessionState::Disconnected);
     assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
 }
@@ -91,7 +91,7 @@ fn start_logout_then_counter_logout_disconnects() {
 #[test]
 fn unsolicited_logout_is_answered_and_disconnects() {
     let mut s = logged_on_acceptor();
-    let actions = s.handle(Event::Received(inbound("5", None, None)));
+    let actions = s.handle(Event::Received(inbound("5", 2, None, None)));
     assert_eq!(s.state(), SessionState::Disconnected);
     assert_eq!(first_send(&actions).and_then(Message::msg_type), Some("5"));
     assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
@@ -118,7 +118,7 @@ fn silent_peer_disconnects_after_threshold() {
 fn logged_on_acceptor() -> Session {
     let mut s = Session::new(cfg(Role::Acceptor));
     s.handle(Event::Connected);
-    s.handle(Event::Received(inbound("A", Some(1), None)));
+    s.handle(Event::Received(inbound("A", 1, Some(1), None)));
     assert_eq!(s.state(), SessionState::LoggedOn);
     s
 }
