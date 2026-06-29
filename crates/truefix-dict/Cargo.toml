@@ -8,5 +8,9 @@ repository.workspace = true
 description = "FIX data dictionary: build-time codegen + runtime validation (dual-track)."
 publish = false
 
+[dependencies]
+truefix-core.workspace = true
+thiserror.workspace = true
+
 [lints]
 workspace = true

@@ -10,6 +10,7 @@ use core::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use truefix_core::{Field, Message};
+use truefix_dict::{DataDictionary, ValidationOptions};
 
 use crate::admin;
 use crate::config::{Role, SessionConfig};
@@ -70,6 +71,8 @@ pub struct Session {
     store: BTreeMap<u64, Message>,
     /// Received out-of-order messages (seq > expected), awaiting gap fill.
     queue: BTreeMap<u64, Message>,
+    /// Optional inbound application-message validator (dictionary + toggles).
+    validator: Option<(DataDictionary, ValidationOptions)>,
 }
 
 impl Session {
@@ -89,7 +92,15 @@ impl Session {
             resend_requested: false,
             store: BTreeMap::new(),
             queue: BTreeMap::new(),
+            validator: None,
         }
+    }
+
+    /// Enable inbound application-message validation against `dict` using `opts`. Admin messages
+    /// are not validated here. Invalid messages produce a Reject (session-level) or
+    /// BusinessMessageReject (business-level) instead of being delivered.
+    pub fn set_dictionary(&mut self, dict: DataDictionary, opts: ValidationOptions) {
+        self.validator = Some((dict, opts));
     }
 
     /// The session's identity.
@@ -233,6 +244,12 @@ impl Session {
 
         match seq.cmp(&self.next_in_seq) {
             Ordering::Equal => {
+                if let Some(reject) = self.validate_app(&msg) {
+                    let mut actions = vec![reject];
+                    self.next_in_seq = self.next_in_seq.saturating_add(1);
+                    actions.extend(self.drain_queue());
+                    return actions;
+                }
                 let mut actions = self.process_in_order(&msg, mt.as_deref());
                 self.next_in_seq = self.next_in_seq.saturating_add(1);
                 actions.extend(self.drain_queue());
@@ -259,6 +276,39 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Validate an inbound application message; on failure, return a Reject/BusinessMessageReject
+    /// action. Admin messages and the no-dictionary case return `None`.
+    fn validate_app(&mut self, msg: &Message) -> Option<Action> {
+        let error = {
+            let (dict, opts) = self.validator.as_ref()?;
+            if is_admin_type(msg.msg_type()) {
+                return None;
+            }
+            dict.validate(msg, opts).err()
+        }?;
+        let ref_seq = msg
+            .header
+            .get(MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&s| s > 0)
+            .map_or(0, |s| s as u64);
+        let ref_mt = msg.msg_type().map(str::to_owned);
+        let seq = self.next_seq();
+        let reject = if error.business {
+            admin::business_message_reject(
+                &self.config,
+                seq,
+                ref_seq,
+                ref_mt.as_deref(),
+                error.reason.code(),
+                &error.text,
+            )
+        } else {
+            admin::reject_with_reason(&self.config, seq, ref_seq, error.reason.code(), &error.text)
+        };
+        Some(self.send_stored(reject))
     }
 
     fn process_in_order(&mut self, msg: &Message, mt: Option<&str>) -> Vec<Action> {

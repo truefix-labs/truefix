@@ -1,0 +1,50 @@
+# TrueFix normalized dictionary — FIX.4.4 (subset).
+# Authored from the FIX 4.4 specification (field numbers/names are protocol facts).
+# Format (one directive per line; '#' comments):
+#   version <BeginString>
+#   field <tag> <Name> <TYPE> [<enumValue> ...]
+#   header <tag> ...
+#   trailer <tag> ...
+#   message <MsgType> <Name> [req:<tag,tag,...>] [opt:<tag,tag,...>]
+version FIX.4.4
+
+field 8 BeginString STRING
+field 9 BodyLength LENGTH
+field 35 MsgType STRING
+field 34 MsgSeqNum SEQNUM
+field 49 SenderCompID STRING
+field 56 TargetCompID STRING
+field 52 SendingTime UTCTIMESTAMP
+field 43 PossDupFlag BOOLEAN
+field 122 OrigSendingTime UTCTIMESTAMP
+field 10 CheckSum STRING
+field 98 EncryptMethod INT 0 1 2 3 4 5 6
+field 108 HeartBtInt INT
+field 141 ResetSeqNumFlag BOOLEAN
+field 112 TestReqID STRING
+field 7 BeginSeqNo SEQNUM
+field 16 EndSeqNo SEQNUM
+field 36 NewSeqNo SEQNUM
+field 123 GapFillFlag BOOLEAN
+field 58 Text STRING
+field 45 RefSeqNum SEQNUM
+field 11 ClOrdID STRING
+field 21 HandlInst CHAR 1 2 3
+field 55 Symbol STRING
+field 54 Side CHAR 1 2 5 6
+field 60 TransactTime UTCTIMESTAMP
+field 38 OrderQty QTY
+field 40 OrdType CHAR 1 2 3 4
+field 44 Price PRICE
+
+header 8 9 35 34 49 56 52 43 122
+trailer 10
+
+message 0 Heartbeat opt:112
+message 1 TestRequest req:112
+message 2 ResendRequest req:7,16
+message 4 SequenceReset req:36 opt:123
+message 5 Logout opt:58
+message A Logon req:98,108 opt:141
+message 3 Reject req:45 opt:58
+message D NewOrderSingle req:11,21,55,54,60,40 opt:38,44

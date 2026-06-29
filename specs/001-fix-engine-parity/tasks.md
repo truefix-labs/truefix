@@ -133,19 +133,19 @@ later stages. Serves US2.
 
 ### Tests for S4 (write first)
 
-- [ ] T043 [P] [US5] Dictionary parse tests (fields/components/groups/messages) for one version in `crates/truefix-dict/tests/parse.rs`
-- [ ] T044 [P] [US5] Validation-toggle tests — one case per toggle (ValidateFieldsOutOfOrder, ValidateFieldsHaveValues, ValidateUnorderedGroupFields, ValidateUserDefinedFields, ValidateIncomingMessage, ValidateChecksum, AllowUnknownMsgFields, CheckCompID, FirstFieldInGroupIsDelimiter) in `crates/truefix-dict/tests/toggles.rs` (FR-C3; parity.md CHK014)
-- [ ] T045 [P] [US5] Two-layer rejection tests (dictionary failure vs FIX basic-validity) in `crates/truefix-dict/tests/rejection_layers.rs` (FR-C4; CHK015)
-- [ ] T046 [P] [US5] FIXT 1.1 transport/application split + DefaultApplVerID resolution tests in `crates/truefix-dict/tests/fixt.rs` (FR-A3/A4)
-- [ ] T047 [P] [US5] Codegen/runtime same-source (version/hash) assertion test in `crates/truefix-dict/tests/dual_track.rs` (Principle IV)
+- [X] T043 [P] [US5] Dictionary parse tests (fields/components/groups/messages) for one version in `crates/truefix-dict/tests/parse.rs`
+- [X] T044 [P] [US5] Validation-toggle tests — one case per toggle (ValidateFieldsOutOfOrder, ValidateFieldsHaveValues, ValidateUnorderedGroupFields, ValidateUserDefinedFields, ValidateIncomingMessage, ValidateChecksum, AllowUnknownMsgFields, CheckCompID, FirstFieldInGroupIsDelimiter) in `crates/truefix-dict/tests/toggles.rs` (FR-C3; parity.md CHK014)
+- [X] T045 [P] [US5] Two-layer rejection tests (dictionary failure vs FIX basic-validity) in `crates/truefix-dict/tests/rejection_layers.rs` (FR-C4; CHK015)
+- [X] T046 [P] [US5] FIXT 1.1 transport/application split + DefaultApplVerID resolution tests in `crates/truefix-dict/tests/fixt.rs` (FR-A3/A4)
+- [X] T047 [P] [US5] Codegen/runtime same-source (version/hash) assertion test in `crates/truefix-dict/tests/dual_track.rs` (Principle IV)
 
 ### Implementation for S4
 
-- [ ] T048 [US5] Implement normalized dictionary model + parser in `crates/truefix-dict/src/model.rs`, `parser.rs`
-- [ ] T049 [US5] Implement runtime `DataDictionary::validate(&Message)` (field/type/required/group/enum/version rules; UDF; custom dicts) in `crates/truefix-dict/src/validate.rs` (FR-C1/C5)
-- [ ] T050 [US5] Implement `build.rs` codegen of strongly-typed messages from the normalized source in `crates/truefix-dict/build.rs` (Principle IV)
-- [ ] T051 [US5] Implement FIXT 1.1 transport/application dictionary selection + DefaultApplVerID/ApplVerID resolution in `crates/truefix-dict/src/fixt.rs`
-- [ ] T052 [US5] Integrate dictionary validation into the session inbound path (RejectInvalidMessage, RejectGarbledMessage, Business Message Reject) in `crates/truefix-session/src/validate_hook.rs` (FR-C4, FR-K2). **Depends on S2** (session inbound path) in addition to S4 — unlike the rest of S4, this task is NOT parallel with S3; sequence it after the S2 checkpoint.
+- [X] T048 [US5] Implement normalized dictionary model + parser in `crates/truefix-dict/src/model.rs`, `parser.rs`
+- [X] T049 [US5] Implement runtime `DataDictionary::validate(&Message)` (field/type/required/group/enum/version rules; UDF; custom dicts) in `crates/truefix-dict/src/validate.rs` (FR-C1/C5)
+- [X] T050 [US5] Implement `build.rs` codegen of strongly-typed messages from the normalized source in `crates/truefix-dict/build.rs` (Principle IV)
+- [X] T051 [US5] Implement FIXT 1.1 transport/application dictionary selection + DefaultApplVerID/ApplVerID resolution in `crates/truefix-dict/src/fixt.rs`
+- [X] T052 [US5] Integrate dictionary validation into the session inbound path (RejectInvalidMessage, RejectGarbledMessage, Business Message Reject) in `crates/truefix-session/src/validate_hook.rs` (FR-C4, FR-K2). **Depends on S2** (session inbound path) in addition to S4 — unlike the rest of S4, this task is NOT parallel with S3; sequence it after the S2 checkpoint.
 
 **Checkpoint S4**: T043–T047 pass; dual-track invariant enforced in CI. (contracts/dictionary.md; parity.md CHK014/CHK015)
 

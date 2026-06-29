@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 truefix-core.workspace = true
+truefix-dict.workspace = true
 time.workspace = true
 async-trait.workspace = true
 

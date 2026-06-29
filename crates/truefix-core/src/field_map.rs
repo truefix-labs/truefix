@@ -77,6 +77,14 @@ impl FieldMap {
         })
     }
 
+    /// Iterate the top-level fields (skipping repeating groups), in order.
+    pub fn fields(&self) -> impl Iterator<Item = &Field> {
+        self.members.iter().filter_map(|m| match m {
+            Member::Field(f) => Some(f),
+            Member::Group { .. } => None,
+        })
+    }
+
     /// Internal: ordered members, for the encoder.
     pub(crate) fn members(&self) -> &[Member] {
         &self.members

@@ -32,6 +32,7 @@ tracing = "0.1"
 metrics = "0.24"
 async-trait = "0.1"
 truefix-core = { path = "crates/truefix-core" }
+truefix-dict = { path = "crates/truefix-dict" }
 truefix-session = { path = "crates/truefix-session" }
 truefix-transport = { path = "crates/truefix-transport" }
 truefix-config = { path = "crates/truefix-config" }
