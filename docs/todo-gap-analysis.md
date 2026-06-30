@@ -9,8 +9,8 @@
 |------|------|
 | Crates | 9 个 (core/dict/session/store/log/transport/config/at/truefix) |
 | 配置键 | ~151 个注册 (Impl/Rec/Unsup 三态) — SC-004 ✅ |
-| AT 场景 | **45 种 / 66 实例** (2 版本: FIX.4.2 + FIX.4.4) |
-| 规格覆盖 | **15/73** server 场景 + 4/7 特殊套件部分覆盖 |
+| AT 场景 | **48 种 / 71 实例** (2 版本: FIX.4.2 + FIX.4.4) |
+| 规格覆盖 | **17/73** server 场景 + 4/7 特殊套件部分覆盖 |
 | Benchmarks | ✅ 编解码吞吐 (codec.rs) — SC-008 ✅ |
 | API 文档 | ✅ `#![deny(missing_docs)]` facade — SC-005 ✅ |
 | No-panic 审计 | ✅ 文档化 — SC-005 ✅ |
@@ -23,25 +23,27 @@
 |--------|------|----------|---------|
 | T059 | SQL log via sqlx | ❌ 未勾选 | ✅ **已实现** (`crates/truefix-log/src/sql.rs`) |
 | T070 | scheduled-reset 语义 | ❌ 未勾选 | ⚠️ **部分** (`run_scheduled_initiator` 存在, 缺 session 层 `schedule_reset.rs`) |
-| T085 | 73 个 server AT 场景 | ❌ 未勾选 | ⚠️ 15/73 已覆盖, 30 个额外场景 |
+| T085 | 73 个 server AT 场景 | ❌ 未勾选 | ⚠️ 17/73 已覆盖, 31 个额外场景 |
 | T086 | 特殊类别 AT 套件 | ❌ 未勾选 | ⚠️ 4/7 部分覆盖 (各 1 场景, 仅 FIX.4.4) |
 
 ---
 
 ## P0 — 发布阻塞项
 
-### TODO-01: AT 场景覆盖率 (15/73 = 21%)
+### TODO-01: AT 场景覆盖率 (17/73 = 23%)
 
-**当前**: 45 种场景 / 66 实例, 覆盖 FIX.4.2 + FIX.4.4 两个版本。
+**当前**: 48 种场景 / 71 实例, 覆盖 FIX.4.2 + FIX.4.4 两个版本。
 **目标**: 73 个 server 场景 + 7 个特殊类别套件, 覆盖全部目标版本 (FR-M3)。
 
-**已覆盖的 15 个规格 server 场景** (精确匹配 Appendix B):
+**已覆盖的 17 个规格 server 场景** (精确匹配 Appendix B):
 
 - [x] `1a_ValidLogonWithCorrectMsgSeqNum` (×2 版本)
 - [x] `1a_ValidLogonMsgSeqNumTooHigh` (×2 版本)
 - [x] `2b_MsgSeqNumTooHigh` (×2 版本)
 - [x] `2c_MsgSeqNumTooLow` (×2 版本)
+- [x] `4a_NoDataSentDuringHeartBtInt` → `0_IdleHeartbeatEmitted` (×2 版本)
 - [x] `4b_ReceivedTestRequest` (×2 版本)
+- [x] `6_SendTestRequest` → `4_TestRequestOnSilence` (×2 版本)
 - [x] `13b_UnsolicitedLogoutMessage` (×2 版本)
 - [x] `14a_BadField` → `14a_InvalidTagNumber` (×2 版本)
 - [x] `14b_RequiredFieldMissing` (×2 版本)
@@ -53,7 +55,7 @@
 - [x] `QFJ650_MissingMsgSeqNum` → `2_MissingMsgSeqNum` (×2 版本)
 - [x] `7_ReceiveRejectMessage` → `3a_ReceivedRejectConsumed` (×2 版本)
 
-**额外覆盖的 30 个 TrueFix 专属场景** (测试规格相关行为, 非精确匹配 Appendix B):
+**额外覆盖的 31 个 TrueFix 专属场景** (测试规格相关行为, 非精确匹配 Appendix B):
 
 - [x] `1c_LogonAdoptsHeartBtInt` — Acceptor 采纳对端 HeartBtInt (×2)
 - [x] `1d_LogonResponseResetFlag` — Logon 响应中 ResetSeqNumFlag (×2)
@@ -73,6 +75,7 @@
 - [x] `app_OrdersOutboundSequenced` — 出站消息有序 (FIX.4.4)
 - [x] `app_MessageResentAsPossDup` — 消息作为 PossDup 重发 (FIX.4.4)
 - [x] `app_MixedResendGapFillThenPossDup` — 混合重发 GapFill+PossDup (FIX.4.4)
+- [x] `5_AcceptorInitiatedLogout` — Acceptor 主动发起 Logout (FIX.4.4)
 
 **特殊类别套件覆盖** (各 1 场景, 仅 FIX.4.4):
 
@@ -84,7 +87,7 @@
 - [ ] `timestamps` — 未覆盖
 - [ ] `resynch` — 未覆盖
 
-**未覆盖的 58 个规格 server 场景**:
+**未覆盖的 56 个规格 server 场景**:
 
 - [ ] `1b_DuplicateIdentity`
 - [ ] `1c_InvalidSenderCompID`
@@ -108,8 +111,6 @@
 - [ ] `2t_FirstThreeFieldsOutOfOrder`
 - [ ] `3b_InvalidChecksum`
 - [ ] `3c_GarbledMessage`
-- [ ] `4a_NoDataSentDuringHeartBtInt`
-- [ ] `6_SendTestRequest`
 - [ ] `8_AdminAndApplicationMessages`
 - [ ] `8_AdminAndApplicationMessages-FIX50SP2`
 - [ ] `8_OnlyAdminMessages`
@@ -479,7 +480,7 @@
 | TODO-15 (旧) | SQL 日志后端 (T059) | ✅ 已实现 — `crates/truefix-log/src/sql.rs` (SQLite, 后台写入) |
 | — | FileStore 损坏恢复 | ✅ 已实现 — 截断/损坏记录自动恢复 good prefix + `was_corrupted()` |
 | — | 字典验证集成到 transport | ✅ 已实现 — AT runner 可用 DataDictionary 验证 |
-| — | AT 场景扩展 | ✅ 从 7→45 种 (新增 resend/gapfill/sequence-reset/out-of-order/possdup/app-execution/special) |
+| — | AT 场景扩展 | ✅ 从 7→48 种 (新增 resend/gapfill/sequence-reset/out-of-order/possdup/app-execution/special/idle-heartbeat/test-request-on-silence/acceptor-logout) |
 | — | RefreshOnLogon | ✅ `SessionConfig.refresh_on_logon` 字段存在且被使用 |
 
 ---
