@@ -115,6 +115,64 @@ fn unsolicited_logout(v: &str) -> Scenario {
     )
 }
 
+/// 2f — a ResendRequest for already-sent admin traffic is answered with a SequenceReset-GapFill.
+fn resend_request_gap_fill(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 2);
+    rr.body.set(Field::int(7, 1)); // BeginSeqNo
+    rr.body.set(Field::int(16, 0)); // EndSeqNo=0 → "until end"
+    scenario(
+        "2f_ResendRequestGapFill",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(rr),
+            // Only the admin Logon was sent, so the resend collapses to a GapFill.
+            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
+        ],
+    )
+}
+
+/// 2g — a SequenceReset-Reset advances the expected inbound sequence number.
+fn sequence_reset_reset(v: &str) -> Scenario {
+    let mut sr = client_message(v, "4", 99); // MsgSeqNum ignored for SequenceReset-Reset
+    sr.body.set(Field::int(36, 5)); // NewSeqNo=5 (no GapFillFlag → Reset)
+    let mut tr = client_message(v, "1", 5); // now-expected sequence
+    tr.body.set(Field::string(112, "AFTER-RESET"));
+    scenario(
+        "2g_SequenceResetReset",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(sr),
+            Step::Send(tr),
+            // Heartbeat (not ResendRequest) proves the server now expects seq 5.
+            Step::Expect(ExpectMsg::of("0").field(112, "AFTER-RESET")),
+        ],
+    )
+}
+
+/// 2m — a message with MsgSeqNum too low but PossDupFlag=Y is ignored, not a Logout.
+fn poss_dup_too_low(v: &str) -> Scenario {
+    let mut dup = client_message(v, "0", 1); // Heartbeat, seq too low
+    dup.header.set(Field::string(43, "Y")); // PossDupFlag
+    let mut tr = client_message(v, "1", 2);
+    tr.body.set(Field::string(112, "STILL-UP"));
+    scenario(
+        "2m_PossDupMsgSeqNumTooLow",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(dup),
+            Step::Send(tr),
+            // A Heartbeat (not Logout/disconnect) proves the dup was silently ignored.
+            Step::Expect(ExpectMsg::of("0").field(112, "STILL-UP")),
+        ],
+    )
+}
+
 /// A valid FIX.4.4 NewOrderSingle (all required fields present).
 fn new_order_single(seq: i64) -> Message {
     let mut m = client_message("FIX.4.4", "D", seq);
@@ -256,6 +314,9 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(msgseqnum_too_low(v));
         out.push(received_test_request(v));
         out.push(unsolicited_logout(v));
+        out.push(resend_request_gap_fill(v));
+        out.push(sequence_reset_reset(v));
+        out.push(poss_dup_too_low(v));
     }
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(required_field_missing("FIX.4.4"));
