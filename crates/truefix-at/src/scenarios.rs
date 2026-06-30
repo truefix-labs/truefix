@@ -2,8 +2,10 @@
 //!
 //! These reproduce the *behaviour* of the classic QuickFIX server AT scenarios from the FIX
 //! specification — independently scripted, with no source or test data copied (Constitution
-//! Principle III). This is a representative core subset (logon, sequence handling, test request,
-//! logout); porting the full 73-scenario corpus is incremental authoring on top of this runner.
+//! Principle III). Coverage spans logon/sequencing, admin handling, resend/gap-fill, out-of-order
+//! queueing, the field-validation reject family (across FIX.4.2 and FIX.4.4), and the special
+//! suites (789/369, CheckLatency, garbled/checksum, resend chunking). The corpus is grown by
+//! adding permutations on top of this runner.
 
 use truefix_core::{Field, Message};
 
@@ -178,6 +180,27 @@ fn poss_dup_too_low(v: &str) -> Scenario {
     )
 }
 
+/// 2_noseq — a post-logon message with no MsgSeqNum(34) draws a session-level Reject.
+fn missing_msg_seq_num(v: &str) -> Scenario {
+    let mut m = Message::new();
+    m.header.set(Field::string(8, v));
+    m.header.set(Field::string(35, "1")); // TestRequest, but without MsgSeqNum
+    m.header.set(Field::string(49, "CLIENT"));
+    m.header.set(Field::string(56, "SERVER"));
+    m.header.set(Field::string(52, "20240101-00:00:00"));
+    m.body.set(Field::string(112, "NOSEQ"));
+    scenario(
+        "2_MissingMsgSeqNum",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(m),
+            Step::Expect(ExpectMsg::of("3")), // Reject: missing/invalid MsgSeqNum
+        ],
+    )
+}
+
 /// 1c — the acceptor adopts the HeartBtInt from the inbound Logon and echoes it in its response.
 fn logon_adopts_heartbeat_interval(v: &str) -> Scenario {
     let mut lo = logon(v, 1, true);
@@ -339,6 +362,74 @@ fn new_order_single(seq: i64) -> Message {
     m.body.set(Field::string(60, "20240101-00:00:00")); // TransactTime
     m.body.set(Field::string(40, "2")); // OrdType
     m
+}
+
+/// A valid FIX.4.2 NewOrderSingle (req:11,55,54,38,40 — note no HandlInst/TransactTime, Side {1,2}).
+fn new_order_single_42(seq: i64) -> Message {
+    let mut m = client_message("FIX.4.2", "D", seq);
+    m.body.set(Field::string(11, "ORDER-42")); // ClOrdID
+    m.body.set(Field::string(55, "AAPL")); // Symbol
+    m.body.set(Field::string(54, "1")); // Side
+    m.body.set(Field::int(38, 100)); // OrderQty
+    m.body.set(Field::string(40, "2")); // OrdType
+    m
+}
+
+/// 14_valid (FIX.4.2) — a fully-valid NewOrderSingle passes the 4.2 dictionary: no Reject.
+fn valid_new_order_accepted_42() -> Scenario {
+    let mut tr = client_message("FIX.4.2", "1", 3);
+    tr.body.set(Field::string(112, "ORDER42-OK"));
+    scenario(
+        "14_valid_NewOrderSingleAccepted_42",
+        "FIX.4.2",
+        vec![
+            Step::Send(logon("FIX.4.2", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(new_order_single_42(2)),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "ORDER42-OK")),
+        ],
+    )
+}
+
+/// 14b (FIX.4.2) — a NewOrderSingle missing required OrderQty(38) draws a session-level Reject.
+fn required_field_missing_42() -> Scenario {
+    let mut order = new_order_single_42(2);
+    order.body = {
+        let mut b = truefix_core::FieldMap::new();
+        for f in new_order_single_42(2).body.fields() {
+            if f.tag() != 38 {
+                b.set(Field::new(f.tag(), f.value_bytes().to_vec()));
+            }
+        }
+        b
+    };
+    scenario(
+        "14b_RequiredFieldMissing_42",
+        "FIX.4.2",
+        vec![
+            Step::Send(logon("FIX.4.2", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "1")), // RequiredTagMissing
+        ],
+    )
+}
+
+/// 14e (FIX.4.2) — Side=9 is outside the 4.2 enumeration {1,2} and draws a session-level Reject.
+fn incorrect_enum_value_42() -> Scenario {
+    let mut order = new_order_single_42(2);
+    order.body.set(Field::string(54, "9")); // Side not in {1,2} for FIX.4.2
+    scenario(
+        "14e_IncorrectEnumValue_42",
+        "FIX.4.2",
+        vec![
+            Step::Send(logon("FIX.4.2", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "5")), // ValueIsIncorrect
+        ],
+    )
 }
 
 /// 14_valid — a fully-valid NewOrderSingle passes validation: no Reject, sequence advances.
@@ -623,8 +714,13 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(resend_request_nothing_to_resend(v));
         out.push(reject_message_consumed(v));
         out.push(heartbeat_consumed(v));
+        out.push(missing_msg_seq_num(v));
         out.push(poss_dup_too_low(v));
     }
+    // Field-validation scenarios for FIX.4.2 (its NewOrderSingle subset differs from 4.4).
+    out.push(valid_new_order_accepted_42());
+    out.push(required_field_missing_42());
+    out.push(incorrect_enum_value_42());
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(valid_new_order_accepted("FIX.4.4"));
     out.push(required_field_missing("FIX.4.4"));
