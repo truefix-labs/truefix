@@ -72,6 +72,11 @@ pub struct Services {
     pub socket_options: SocketOptions,
     /// Operational monitor.
     pub monitor: Option<Monitor>,
+    /// Optional inbound application-message validator (dictionary + toggles).
+    pub validator: Option<(
+        truefix_dict::DataDictionary,
+        truefix_dict::ValidationOptions,
+    )>,
 }
 
 /// Control messages to a running session task.
@@ -363,6 +368,9 @@ async fn run_connection<A, S>(
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut session = Session::new(config);
+    if let Some((dict, opts)) = &services.validator {
+        session.set_dictionary(dict.clone(), *opts);
+    }
     let id = session.id().clone();
     app.on_create(&id).await;
 

@@ -1541,6 +1541,7 @@ dependencies = [
  "async-trait",
  "tokio",
  "truefix-core",
+ "truefix-dict",
  "truefix-session",
  "truefix-transport",
 ]
@@ -1611,6 +1612,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "truefix-core",
+ "truefix-dict",
  "truefix-log",
  "truefix-session",
  "truefix-store",

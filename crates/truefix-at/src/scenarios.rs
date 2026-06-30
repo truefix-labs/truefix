@@ -115,6 +115,73 @@ fn unsolicited_logout(v: &str) -> Scenario {
     )
 }
 
+/// A valid FIX.4.4 NewOrderSingle (all required fields present).
+fn new_order_single(seq: i64) -> Message {
+    let mut m = client_message("FIX.4.4", "D", seq);
+    m.body.set(Field::string(11, "ORDER-1")); // ClOrdID
+    m.body.set(Field::string(21, "1")); // HandlInst
+    m.body.set(Field::string(55, "AAPL")); // Symbol
+    m.body.set(Field::string(54, "1")); // Side
+    m.body.set(Field::string(60, "20240101-00:00:00")); // TransactTime
+    m.body.set(Field::string(40, "2")); // OrdType
+    m
+}
+
+/// 14b — a NewOrderSingle missing a required field draws a session-level Reject.
+fn required_field_missing(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body = {
+        // rebuild body without HandlInst(21)
+        let mut b = truefix_core::FieldMap::new();
+        for f in new_order_single(2).body.fields() {
+            if f.tag() != 21 {
+                b.set(Field::new(f.tag(), f.value_bytes().to_vec()));
+            }
+        }
+        b
+    };
+    scenario(
+        "14b_RequiredFieldMissing",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "1")), // Reject: RequiredTagMissing
+        ],
+    )
+}
+
+/// 14e — a field with an out-of-range enumerated value draws a session-level Reject.
+fn incorrect_enum_value(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.set(Field::string(54, "9")); // Side not in {1,2,5,6}
+    scenario(
+        "14e_IncorrectEnumValue",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "5")), // Reject: ValueIsIncorrect
+        ],
+    )
+}
+
+/// 2r — an unregistered (unknown) MsgType draws a Business Message Reject.
+fn unregistered_msg_type(v: &str) -> Scenario {
+    scenario(
+        "2r_UnregisteredMsgType",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(client_message(v, "UU", 2)), // unknown application MsgType
+            Step::Expect(ExpectMsg::of("j")),       // BusinessMessageReject
+        ],
+    )
+}
+
 /// The (representative) server acceptance-test suite across [`SUITE_VERSIONS`].
 pub fn server_suite() -> Vec<Scenario> {
     let mut out = Vec::new();
@@ -126,5 +193,9 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(received_test_request(v));
         out.push(unsolicited_logout(v));
     }
+    // Field-validation scenarios require the dictionary; authored for FIX.4.4.
+    out.push(required_field_missing("FIX.4.4"));
+    out.push(incorrect_enum_value("FIX.4.4"));
+    out.push(unregistered_msg_type("FIX.4.4"));
     out
 }

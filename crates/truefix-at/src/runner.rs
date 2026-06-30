@@ -86,12 +86,25 @@ pub async fn start_acceptor(version: &str) -> std::io::Result<(SocketAddr, JoinH
     template.heartbeat_interval = 30;
     template.check_latency = false; // scenarios use fixed timestamps
 
+    // Enable dictionary validation so field-level reject scenarios produce Reject messages.
+    let validator = match version {
+        "FIX.4.2" => truefix_dict::load_fix42().ok(),
+        "FIX.4.4" => truefix_dict::load_fix44().ok(),
+        _ => None,
+    }
+    .map(|dict| (dict, truefix_dict::ValidationOptions::default()));
+    let services = truefix_transport::Services {
+        validator,
+        ..truefix_transport::Services::default()
+    };
+
     let acceptor = AcceptorBuilder::bind(
         "127.0.0.1:0".parse().unwrap_or_else(|_| unreachable_addr()),
         Arc::new(PassiveApp),
     )
     .await?
-    .with_dynamic_template(template);
+    .with_dynamic_template(template)
+    .with_services(services);
     let addr = acceptor.local_addr()?;
     let handle = acceptor.serve();
     Ok((addr, handle))
