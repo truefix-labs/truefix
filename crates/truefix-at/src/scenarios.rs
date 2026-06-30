@@ -368,6 +368,52 @@ fn check_latency_timestamps(v: &str) -> Scenario {
     )
 }
 
+/// Encode `msg` and corrupt its CheckSum digits, keeping BodyLength (and thus framing) intact so
+/// the frame is delivered whole but fails checksum validation on decode.
+fn garble_checksum(msg: &Message) -> Vec<u8> {
+    let mut raw = msg.encode();
+    // The trailer is always `10=DDD<SOH>`: the three checksum digits sit at len-4..len-1, and the
+    // literal `10=` occupies the three bytes before them. Overwrite the digits with (real+1) mod
+    // 256 so the frame stays well-formed (BodyLength intact) but fails checksum validation.
+    let digits_at = match raw.len().checked_sub(4) {
+        Some(p) => p,
+        None => return raw,
+    };
+    let Some(cs_field_start) = digits_at.checked_sub(3) else {
+        return raw;
+    };
+    let computed: u32 = raw
+        .get(..cs_field_start)
+        .map(|pre| pre.iter().map(|&b| u32::from(b)).sum::<u32>() & 0xFF)
+        .unwrap_or(0);
+    let wrong = format!("{:03}", (computed + 1) & 0xFF);
+    if let Some(slot) = raw.get_mut(digits_at..digits_at + 3) {
+        slot.copy_from_slice(wrong.as_bytes());
+    }
+    raw
+}
+
+/// Special suite — validateChecksum / rejectGarbledMessages (default N): a frame with a bad
+/// CheckSum is silently dropped (no Reject, no disconnect, sequence counter untouched), so the
+/// next correctly-sequenced message is still processed.
+fn garbled_message_dropped(v: &str) -> Scenario {
+    let garbled = garble_checksum(&client_message(v, "0", 2)); // Heartbeat with a broken CheckSum
+    let mut tr = client_message(v, "1", 2); // reuses seq 2: the garbled frame was never counted
+    tr.body.set(Field::string(112, "AFTER-GARBLE"));
+    scenario(
+        "special_GarbledMessageDropped",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::SendRaw(garbled),
+            Step::Send(tr),
+            // A Heartbeat at seq 2 proves the garbled frame was dropped without advancing state.
+            Step::Expect(ExpectMsg::of("0").field(112, "AFTER-GARBLE")),
+        ],
+    )
+}
+
 /// The (representative) server acceptance-test suite across [`SUITE_VERSIONS`].
 pub fn server_suite() -> Vec<Scenario> {
     let mut out = Vec::new();
@@ -394,5 +440,6 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(next_expected_msg_seq_num("FIX.4.4"));
     out.push(last_msg_seq_num_processed("FIX.4.4"));
     out.push(check_latency_timestamps("FIX.4.4"));
+    out.push(garbled_message_dropped("FIX.4.4"));
     out
 }

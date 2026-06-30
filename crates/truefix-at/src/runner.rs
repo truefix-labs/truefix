@@ -45,6 +45,8 @@ impl ExpectMsg {
 pub enum Step {
     /// Send a message to the server.
     Send(Message),
+    /// Send raw bytes to the server (e.g. a deliberately garbled frame).
+    SendRaw(Vec<u8>),
     /// Expect a matching message from the server.
     Expect(ExpectMsg),
     /// Expect the server to disconnect (no further message).
@@ -147,6 +149,12 @@ pub async fn run_scenario(scenario: &Scenario, addr: SocketAddr) -> Result<(), S
                     .write_all(&msg.encode())
                     .await
                     .map_err(|e| format!("step {i}: send: {e}"))?;
+            }
+            Step::SendRaw(bytes) => {
+                stream
+                    .write_all(bytes)
+                    .await
+                    .map_err(|e| format!("step {i}: send raw: {e}"))?;
             }
             Step::Expect(expect) => {
                 let msg = read_message(&mut stream, &mut buf, Duration::from_secs(2))
