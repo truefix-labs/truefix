@@ -168,7 +168,7 @@ later stages. Serves US2.
 - [X] T056 [P] [US7] Implement MemoryStore, FileStore, CachedFileStore, NoopStore in `crates/truefix-store/src/{memory,file,cached,noop}.rs`
 - [X] T057 [P] [US7] Implement SQL store via sqlx (messages/sessions tables; JDBC-equivalent) in `crates/truefix-store/src/sql.rs` (research R7)
 - [X] T058 [P] [US7] Implement `Log` trait + `LogFactory` + ScreenLog/FileLog/TracingLog/CompositeLog in `crates/truefix-log/src/`
-- [ ] T059 [P] [US7] Implement SQL log via sqlx (incoming/outgoing/event tables) in `crates/truefix-log/src/sql.rs`
+- [X] T059 [P] [US7] Implement SQL log via sqlx (incoming/outgoing/event tables) in `crates/truefix-log/src/sql.rs`
 - [X] T060 [US7] Implement ForceResendWhenCorruptedStore recovery path in `crates/truefix-store/src/recovery.rs`
 - [X] T061 [US7] Wire store/log selection from config into session/transport in `crates/truefix-session/src/wiring.rs`
 
@@ -195,7 +195,7 @@ later stages. Serves US2.
 - [X] T067 [US4] Implement dynamic sessions (AcceptorTemplate, DynamicSession) + AllowedRemoteAddresses in `crates/truefix-transport/src/dynamic.rs` (FR-F3)
 - [X] T068 [US4] Implement initiator reconnect loop (ReconnectInterval) in `crates/truefix-transport/src/reconnect.rs`
 - [X] T069 [P] [US6] Implement `Schedule` (StartTime/EndTime, StartDay/EndDay, Weekdays, TimeZone, NonStopSession) + in-session window calc in `crates/truefix-session/src/schedule.rs`
-- [ ] T070 [US6] Implement scheduled-reset semantics (disconnect→reset seq→clear store→reconnect) in `crates/truefix-session/src/schedule_reset.rs` (FR-E3)
+- [X] T070 [US6] Implement scheduled-reset semantics (disconnect→reset seq→clear store→reconnect) in `crates/truefix-session/src/schedule_reset.rs` (FR-E3)
 - [X] T071 [P] [US4] Implement socket options (keep-alive, nodelay, reuse, linger, buffers, etc.) in `crates/truefix-transport/src/socket_opts.rs` (FR-F5)
 
 **Checkpoint S6**: T062–T065 pass; acceptor multi/dynamic at parity with initiator (Constitution VI). (contracts/transport.md; parity.md CHK041/CHK039)

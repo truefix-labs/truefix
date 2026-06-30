@@ -155,6 +155,36 @@ fn sequence_reset_reset_mode_sets_expected() {
 }
 
 #[test]
+fn last_msg_seq_num_processed_stamped_when_enabled() {
+    let mut c = cfg(Role::Initiator);
+    c.enable_last_msg_seq_num_processed = true;
+    let mut s = Session::new(c);
+    let actions = s.handle(Event::Connected);
+    let logon = sends(&actions)[0];
+    // next_in starts at 1, so last processed = 0
+    assert_eq!(logon.header.get(369).unwrap().as_int().unwrap(), 0);
+}
+
+#[test]
+fn next_expected_msg_seq_num_triggers_resend() {
+    let mut s = Session::new(cfg(Role::Initiator));
+    s.handle(Event::Connected); // logon seq 1 (admin)
+    s.send_app(with(msg("D", 0), 55, "AAPL")); // app seq 2 -> next_out = 3
+
+    // Counter logon reporting NextExpectedMsgSeqNum=2 (peer hasn't seen seq 2 yet).
+    let mut logon = with(with(msg("A", 1), 108, "30"), 141, "Y");
+    logon.body.set(Field::int(789, 2));
+    let actions = s.handle(Event::Received(logon));
+    let out = sends(&actions);
+
+    let resent = out
+        .iter()
+        .find(|m| m.msg_type() == Some("D"))
+        .expect("app message resent because peer expects from seq 2");
+    assert_eq!(resent.header.get(43).unwrap().as_str().unwrap(), "Y"); // PossDupFlag
+}
+
+#[test]
 fn seed_sequences_resumes_outbound_seq() {
     let mut c = SessionConfig::new("FIX.4.4", "ME", "YOU", Role::Initiator);
     c.reset_on_logon = false; // otherwise logon resets to 1

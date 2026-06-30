@@ -11,6 +11,15 @@ publish = false
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+sqlx = { workspace = true, optional = true, features = ["sqlite"] }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[features]
+# SQL-backed log (JDBC-equivalent), bridged to async via a background writer task.
+sql = ["dep:sqlx", "dep:tokio"]
 
 [lints]
 workspace = true

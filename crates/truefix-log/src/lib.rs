@@ -18,6 +18,8 @@
 mod composite;
 mod file;
 mod screen;
+#[cfg(feature = "sql")]
+mod sql;
 mod tracing_log;
 
 use std::path::PathBuf;
@@ -27,6 +29,8 @@ use thiserror::Error;
 pub use composite::CompositeLog;
 pub use file::FileLog;
 pub use screen::ScreenLog;
+#[cfg(feature = "sql")]
+pub use sql::SqlLog;
 pub use tracing_log::TracingLog;
 
 /// An error constructing a log.

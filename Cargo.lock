@@ -1573,7 +1573,9 @@ dependencies = [
 name = "truefix-log"
 version = "0.0.0"
 dependencies = [
+ "sqlx",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
@@ -1604,6 +1606,7 @@ dependencies = [
  "async-trait",
  "rcgen",
  "rustls",
+ "time",
  "tokio",
  "tokio-rustls",
  "tracing",

@@ -34,7 +34,8 @@ use tokio::time::{interval, MissedTickBehavior};
 use truefix_core::{decode, Message};
 use truefix_log::Log;
 use truefix_session::{
-    Action, Application, Event, Session, SessionConfig, SessionId, SessionState, SessionStatus,
+    Action, Application, Event, Schedule, Session, SessionConfig, SessionId, SessionState,
+    SessionStatus,
 };
 use truefix_store::MessageStore;
 
@@ -908,4 +909,78 @@ where
         }
     });
     ReconnectHandle { stop, task }
+}
+
+// ===========================================================================================
+// Scheduled initiator (S6 schedule wiring): connect only while in session (FR-E1/E2/E3).
+// ===========================================================================================
+
+/// Handle to a scheduled initiator loop.
+pub struct ScheduledHandle {
+    stop: Arc<AtomicBool>,
+    task: JoinHandle<()>,
+}
+
+impl ScheduledHandle {
+    /// Signal the loop to stop after the current check.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+
+    /// Wait for the loop to finish.
+    pub async fn join(self) {
+        let _ = self.task.await;
+    }
+}
+
+/// Run an initiator that connects only while the `schedule` is in session. On each transition
+/// into a session window the store is reset (disconnect → reset sequence numbers → clear store →
+/// reconnect, FR-E3); on a transition out of the window the session is logged out.
+pub fn run_scheduled_initiator<A>(
+    addr: SocketAddr,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+    schedule: Schedule,
+) -> ScheduledHandle
+where
+    A: Application + 'static,
+{
+    let stop = Arc::new(AtomicBool::new(false));
+    let loop_stop = stop.clone();
+    let task = tokio::spawn(async move {
+        let mut current: Option<SessionHandle> = None;
+        let mut was_in_session = false;
+        while !loop_stop.load(Ordering::SeqCst) {
+            let in_session = schedule.is_in_session(time::OffsetDateTime::now_utc());
+            match (in_session, current.is_some()) {
+                (true, false) => {
+                    if !was_in_session {
+                        // Entering a session window: reset persisted state.
+                        if let Some(store) = &services.store {
+                            let _ = store.reset().await;
+                        }
+                    }
+                    if let Ok(handle) =
+                        connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
+                            .await
+                    {
+                        current = Some(handle);
+                    }
+                }
+                (false, true) => {
+                    if let Some(handle) = current.take() {
+                        handle.logout().await;
+                    }
+                }
+                _ => {}
+            }
+            was_in_session = in_session;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        if let Some(handle) = current.take() {
+            handle.logout().await;
+        }
+    });
+    ScheduledHandle { stop, task }
 }

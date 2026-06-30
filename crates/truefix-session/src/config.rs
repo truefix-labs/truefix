@@ -39,6 +39,8 @@ pub struct SessionConfig {
     pub resend_request_chunk_size: u32,
     /// Whether to use NextExpectedMsgSeqNum (789) on logon (FIX ≥ 4.4).
     pub enable_next_expected_msg_seq_num: bool,
+    /// Whether to stamp LastMsgSeqNumProcessed (369) on every outbound message.
+    pub enable_last_msg_seq_num_processed: bool,
     /// Whether to validate inbound SendingTime against the local clock.
     pub check_latency: bool,
     /// Maximum tolerated SendingTime latency, in seconds.
@@ -73,6 +75,7 @@ impl SessionConfig {
             refresh_on_logon: false,
             resend_request_chunk_size: 0,
             enable_next_expected_msg_seq_num: false,
+            enable_last_msg_seq_num_processed: false,
             check_latency: true,
             max_latency: 120,
             logon_timeout: 10,

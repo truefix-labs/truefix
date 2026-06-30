@@ -16,7 +16,8 @@ use crate::admin;
 use crate::config::{Role, SessionConfig};
 use crate::session_id::SessionId;
 use crate::tags::{
-    GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO, POSS_DUP_FLAG, RESET_SEQ_NUM_FLAG,
+    GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM, POSS_DUP_FLAG,
+    RESET_SEQ_NUM_FLAG,
 };
 use crate::time_util::now_utc_timestamp;
 
@@ -204,8 +205,13 @@ impl Session {
 
     /// Send a normally-sequenced message: store it by its MsgSeqNum for resend, reset the send
     /// timer.
-    fn send_stored(&mut self, msg: Message) -> Action {
+    fn send_stored(&mut self, mut msg: Message) -> Action {
         self.ticks_since_send = 0;
+        if self.config.enable_last_msg_seq_num_processed {
+            // LastMsgSeqNumProcessed (369): the last inbound sequence number we have processed.
+            let last = self.next_in_seq.saturating_sub(1);
+            msg.header.set(Field::int(369, last as i64));
+        }
         if let Some(seq) = msg
             .header
             .get(MSG_SEQ_NUM)
@@ -547,6 +553,22 @@ impl Session {
                 Ordering::Less => {}
             }
         }
+
+        // NextExpectedMsgSeqNum (789): the peer reports the next sequence number it expects from
+        // us. If it is behind our outbound counter, resend the gap directly (avoids a round-trip).
+        if let Some(next_expected) = msg
+            .body
+            .get(NEXT_EXPECTED_MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&n| n > 0)
+            .map(|n| n as u64)
+        {
+            if next_expected < self.next_out_seq {
+                let end = self.next_out_seq.saturating_sub(1);
+                actions.extend(self.build_resend(next_expected, end));
+            }
+        }
+
         actions
     }
 
