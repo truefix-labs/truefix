@@ -37,11 +37,43 @@ pub use parser::{parse, ParseError};
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 /// Bundled normalized dictionary sources (the single source of truth for both tracks).
+pub const FIX40_DICT: &str = include_str!("../dict-src/normalized/FIX40.fixdict");
+/// FIX 4.1 dictionary source.
+pub const FIX41_DICT: &str = include_str!("../dict-src/normalized/FIX41.fixdict");
+/// FIX 4.2 dictionary source.
+pub const FIX42_DICT: &str = include_str!("../dict-src/normalized/FIX42.fixdict");
+/// FIX 4.3 dictionary source.
+pub const FIX43_DICT: &str = include_str!("../dict-src/normalized/FIX43.fixdict");
+/// FIX 4.4 dictionary source.
 pub const FIX44_DICT: &str = include_str!("../dict-src/normalized/FIX44.fixdict");
 /// FIXT 1.1 transport (session) dictionary source.
 pub const FIXT11_DICT: &str = include_str!("../dict-src/normalized/FIXT11.fixdict");
 /// FIX 5.0 application dictionary source.
 pub const FIX50_DICT: &str = include_str!("../dict-src/normalized/FIX50.fixdict");
+/// FIX 5.0 SP1 application dictionary source.
+pub const FIX50SP1_DICT: &str = include_str!("../dict-src/normalized/FIX50SP1.fixdict");
+/// FIX 5.0 SP2 application dictionary source.
+pub const FIX50SP2_DICT: &str = include_str!("../dict-src/normalized/FIX50SP2.fixdict");
+
+/// Parse the bundled FIX 4.0 dictionary.
+pub fn load_fix40() -> Result<DataDictionary, ParseError> {
+    parse(FIX40_DICT)
+}
+
+/// Parse the bundled FIX 4.1 dictionary.
+pub fn load_fix41() -> Result<DataDictionary, ParseError> {
+    parse(FIX41_DICT)
+}
+
+/// Parse the bundled FIX 4.2 dictionary.
+pub fn load_fix42() -> Result<DataDictionary, ParseError> {
+    parse(FIX42_DICT)
+}
+
+/// Parse the bundled FIX 4.3 dictionary.
+pub fn load_fix43() -> Result<DataDictionary, ParseError> {
+    parse(FIX43_DICT)
+}
 
 /// Parse the bundled FIX 4.4 dictionary.
 pub fn load_fix44() -> Result<DataDictionary, ParseError> {
@@ -57,3 +89,26 @@ pub fn load_fixt11() -> Result<DataDictionary, ParseError> {
 pub fn load_fix50() -> Result<DataDictionary, ParseError> {
     parse(FIX50_DICT)
 }
+
+/// Parse the bundled FIX 5.0 SP1 application dictionary.
+pub fn load_fix50sp1() -> Result<DataDictionary, ParseError> {
+    parse(FIX50SP1_DICT)
+}
+
+/// Parse the bundled FIX 5.0 SP2 application dictionary.
+pub fn load_fix50sp2() -> Result<DataDictionary, ParseError> {
+    parse(FIX50SP2_DICT)
+}
+
+/// All bundled dictionaries as `(version, source)` pairs, for iteration.
+pub const ALL_DICTS: &[(&str, &str)] = &[
+    ("FIX.4.0", FIX40_DICT),
+    ("FIX.4.1", FIX41_DICT),
+    ("FIX.4.2", FIX42_DICT),
+    ("FIX.4.3", FIX43_DICT),
+    ("FIX.4.4", FIX44_DICT),
+    ("FIXT.1.1", FIXT11_DICT),
+    ("FIX.5.0", FIX50_DICT),
+    ("FIX.5.0SP1", FIX50SP1_DICT),
+    ("FIX.5.0SP2", FIX50SP2_DICT),
+];

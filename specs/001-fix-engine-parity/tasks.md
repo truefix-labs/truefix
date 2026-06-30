@@ -210,14 +210,14 @@ later stages. Serves US2.
 
 ### Tests for S7 (write first)
 
-- [ ] T072 [P] [US2] Per-version round-trip + BodyLength/CheckSum vectors (4.0/4.1/4.2/4.3/4.4/5.0/5.0SP1/5.0SP2/FIXT) against the reference fixtures from T099 in `crates/truefix-core/tests/versions.rs`
-- [ ] T073 [P] [US5] Per-version dictionary validation smoke tests in `crates/truefix-dict/tests/versions.rs`
+- [X] T072 [P] [US2] Per-version round-trip + BodyLength/CheckSum vectors (4.0/4.1/4.2/4.3/4.4/5.0/5.0SP1/5.0SP2/FIXT) against the reference fixtures from T099 in `crates/truefix-core/tests/versions.rs`
+- [X] T073 [P] [US5] Per-version dictionary validation smoke tests in `crates/truefix-dict/tests/versions.rs`
 
 ### Implementation for S7
 
-- [ ] T074 [US5] Generate normalized dictionaries for all 9 versions from Orchestra source in `crates/truefix-dict/dict-src/` (FR-A1/A2)
-- [ ] T075 [US5] Extend build.rs codegen to emit typed messages for all versions in `crates/truefix-dict/build.rs`
-- [ ] T076 [US2] Verify version-specific header/trailer & message-set differences in codec/dictionary in `crates/truefix-core/src/versions.rs`
+- [X] T074 [US5] Generate normalized dictionaries for all 9 versions from Orchestra source in `crates/truefix-dict/dict-src/` (FR-A1/A2)
+- [X] T075 [US5] Extend build.rs codegen to emit typed messages for all versions in `crates/truefix-dict/build.rs`
+- [X] T076 [US2] Verify version-specific header/trailer & message-set differences in codec/dictionary in `crates/truefix-core/src/versions.rs`
 
 **Checkpoint S7**: T072/T073 pass for all 9 versions. (parity.md CHK034; FR-A1)
 

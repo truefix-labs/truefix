@@ -1,0 +1,15 @@
+# TrueFix normalized dictionary — FIX.5.0SP1 application layer (subset).
+# Application messages only; the session layer is provided by FIXT.1.1.
+version FIX.5.0SP1
+
+field 11 ClOrdID STRING
+field 21 HandlInst CHAR 1 2 3
+field 55 Symbol STRING
+field 54 Side CHAR 1 2 5 6
+field 60 TransactTime UTCTIMESTAMP
+field 38 OrderQty QTY
+field 40 OrdType CHAR 1 2 3 4
+field 44 Price PRICE
+field 58 Text STRING
+
+message D NewOrderSingle req:11,21,55,54,60,40 opt:38,44,58
