@@ -178,6 +178,60 @@ fn poss_dup_too_low(v: &str) -> Scenario {
     )
 }
 
+/// 1c — the acceptor adopts the HeartBtInt from the inbound Logon and echoes it in its response.
+fn logon_adopts_heartbeat_interval(v: &str) -> Scenario {
+    let mut lo = logon(v, 1, true);
+    lo.body.set(Field::int(108, 45)); // override the helper's default of 30
+    scenario(
+        "1c_LogonAdoptsHeartBtInt",
+        v,
+        vec![
+            Step::Send(lo),
+            Step::Expect(ExpectMsg::of("A").field(108, "45")),
+        ],
+    )
+}
+
+/// 2x — out-of-order delivery: a too-high message is queued and a ResendRequest is issued; once the
+/// gap is filled the queued message is processed in order.
+fn out_of_order_queued_then_drained(v: &str) -> Scenario {
+    let mut tr3 = client_message(v, "1", 3);
+    tr3.body.set(Field::string(112, "THREE"));
+    let mut tr2 = client_message(v, "1", 2);
+    tr2.body.set(Field::string(112, "TWO"));
+    scenario(
+        "2x_OutOfOrderQueuedThenDrained",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr3), // seq 3 arrives before 2 → queued
+            Step::Expect(ExpectMsg::of("2").field(7, "2")), // ResendRequest BeginSeqNo=2
+            Step::Send(tr2), // fills the gap
+            Step::Expect(ExpectMsg::of("0").field(112, "TWO")), // seq 2 processed
+            Step::Expect(ExpectMsg::of("0").field(112, "THREE")), // queued seq 3 drained in order
+        ],
+    )
+}
+
+/// 2f3 — a ResendRequest with an explicit (bounded) EndSeqNo still collapses admin traffic to a
+/// GapFill.
+fn resend_request_bounded_end(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 2);
+    rr.body.set(Field::int(7, 1)); // BeginSeqNo
+    rr.body.set(Field::int(16, 1)); // EndSeqNo explicit, not 0
+    scenario(
+        "2f3_ResendRequestBoundedEnd",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(rr),
+            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
+        ],
+    )
+}
+
 /// 2d — a SequenceReset-GapFill advances the expected inbound sequence number.
 fn sequence_reset_gap_fill_advances(v: &str) -> Scenario {
     let mut sr = client_message(v, "4", 2);
@@ -559,7 +613,10 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(msgseqnum_too_low(v));
         out.push(received_test_request(v));
         out.push(unsolicited_logout(v));
+        out.push(logon_adopts_heartbeat_interval(v));
         out.push(resend_request_gap_fill(v));
+        out.push(resend_request_bounded_end(v));
+        out.push(out_of_order_queued_then_drained(v));
         out.push(sequence_reset_reset(v));
         out.push(sequence_reset_gap_fill_advances(v));
         out.push(sequence_reset_gap_fill_backward_ignored(v));
