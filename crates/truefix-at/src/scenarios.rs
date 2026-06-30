@@ -213,6 +213,62 @@ fn missing_msg_seq_num(v: &str) -> Scenario {
     )
 }
 
+/// 0_idle — after the negotiated heartbeat interval of silence, the acceptor emits a Heartbeat.
+fn idle_heartbeat_emitted(v: &str) -> Scenario {
+    let mut lo = logon(v, 1, true);
+    lo.body.set(Field::int(108, 1)); // 1-second heartbeat so the timer fires quickly
+    scenario(
+        "0_IdleHeartbeatEmitted",
+        v,
+        vec![
+            Step::Send(lo),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Expect(ExpectMsg::of("0")), // unprompted Heartbeat from the idle timer
+        ],
+    )
+}
+
+/// 4_silence — after the counterparty is silent past the heartbeat interval, the acceptor issues a
+/// TestRequest (TestReqID=TEST).
+fn test_request_on_silence(v: &str) -> Scenario {
+    let mut lo = logon(v, 1, true);
+    lo.body.set(Field::int(108, 1));
+    scenario(
+        "4_TestRequestOnSilence",
+        v,
+        vec![
+            Step::Send(lo),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Expect(ExpectMsg::of("0")), // first idle Heartbeat
+            // Continued silence → the acceptor probes liveness with a TestRequest.
+            Step::Expect(ExpectMsg::of("1").field(112, "TEST")),
+        ],
+    )
+}
+
+/// 5_initiated — an acceptor-initiated Logout (graceful): the server sends Logout, the client acks,
+/// and the server disconnects.
+fn acceptor_initiated_logout(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.set(Field::string(11, "LOGOUT")); // sentinel: triggers monitor.force_logout
+    scenario_with(
+        "5_AcceptorInitiatedLogout",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("5")), // acceptor-initiated Logout
+            Step::Send(client_message(v, "5", 3)), // client acknowledges
+            Step::ExpectDisconnect,
+        ],
+        SessionTweaks {
+            executor_app: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// 1c — the acceptor adopts the HeartBtInt from the inbound Logon and echoes it in its response.
 fn logon_adopts_heartbeat_interval(v: &str) -> Scenario {
     let mut lo = logon(v, 1, true);
@@ -927,6 +983,8 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(reject_message_consumed(v));
         out.push(heartbeat_consumed(v));
         out.push(missing_msg_seq_num(v));
+        out.push(idle_heartbeat_emitted(v));
+        out.push(test_request_on_silence(v));
         out.push(poss_dup_too_low(v));
     }
     // Field-validation scenarios for FIX.4.2 (its NewOrderSingle subset differs from 4.4).
@@ -943,6 +1001,7 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(app_orders_sequenced("FIX.4.4"));
     out.push(app_message_resent_as_poss_dup("FIX.4.4"));
     out.push(app_mixed_resend_gapfill_then_possdup("FIX.4.4"));
+    out.push(acceptor_initiated_logout("FIX.4.4"));
     out.push(required_field_missing("FIX.4.4"));
     out.push(incorrect_enum_value("FIX.4.4"));
     out.push(invalid_tag_number("FIX.4.4"));

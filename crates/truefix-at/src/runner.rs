@@ -109,7 +109,13 @@ pub async fn start_acceptor(
         async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), String> {
             if let Some(monitor) = &self.monitor {
                 if message.msg_type() == Some("D") {
-                    monitor.send_app(id, execution_report(message)).await;
+                    // A sentinel ClOrdID lets a scenario trigger an acceptor-initiated logout.
+                    let clordid = message.body.get(11).and_then(|f| f.as_str().ok());
+                    if clordid == Some("LOGOUT") {
+                        monitor.force_logout(id).await;
+                    } else {
+                        monitor.send_app(id, execution_report(message)).await;
+                    }
                 }
             }
             Ok(())
@@ -193,7 +199,8 @@ pub async fn run_scenario(scenario: &Scenario, addr: SocketAddr) -> Result<(), S
                     .map_err(|e| format!("step {i}: send raw: {e}"))?;
             }
             Step::Expect(expect) => {
-                let msg = read_message(&mut stream, &mut buf, Duration::from_secs(2))
+                // 3s tolerates the 1s tick granularity used by timer-driven scenarios.
+                let msg = read_message(&mut stream, &mut buf, Duration::from_secs(3))
                     .await
                     .ok_or_else(|| {
                         format!("step {i}: expected {} but got nothing", expect.msg_type)
@@ -201,7 +208,7 @@ pub async fn run_scenario(scenario: &Scenario, addr: SocketAddr) -> Result<(), S
                 check_match(&msg, expect).map_err(|e| format!("step {i}: {e}"))?;
             }
             Step::ExpectDisconnect => {
-                if read_message(&mut stream, &mut buf, Duration::from_secs(2))
+                if read_message(&mut stream, &mut buf, Duration::from_secs(3))
                     .await
                     .is_some()
                 {
