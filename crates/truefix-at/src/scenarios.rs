@@ -319,12 +319,31 @@ fn next_expected_msg_seq_num(v: &str) -> Scenario {
         v,
         vec![
             Step::Send(lo),
-            Step::Expect(ExpectMsg::of("A")),
+            // Having consumed inbound Logon seq 1, the server reports it next expects seq 2.
+            Step::Expect(ExpectMsg::of("A").field(789, "2")),
             // The server's Logon already consumed outbound seq 1, so it fills the gap to 2.
             Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
         ],
         SessionTweaks {
             enable_next_expected: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// Special suite — LastMsgSeqNumProcessed (369): the server stamps the sequence number of the
+/// last inbound message it processed, reflecting the just-consumed Logon.
+fn last_msg_seq_num_processed(v: &str) -> Scenario {
+    scenario_with(
+        "special_LastMsgSeqNumProcessed",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            // After processing inbound Logon seq 1, LastMsgSeqNumProcessed is 1.
+            Step::Expect(ExpectMsg::of("A").field(369, "1")),
+        ],
+        SessionTweaks {
+            enable_last_processed: true,
             ..SessionTweaks::default()
         },
     )
@@ -373,6 +392,7 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(unregistered_msg_type("FIX.4.4"));
     // Special-category suites (T086) requiring per-acceptor session-feature toggles.
     out.push(next_expected_msg_seq_num("FIX.4.4"));
+    out.push(last_msg_seq_num_processed("FIX.4.4"));
     out.push(check_latency_timestamps("FIX.4.4"));
     out
 }

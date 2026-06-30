@@ -506,6 +506,20 @@ impl Session {
             self.reset_sequences(!self.logon_sent);
         }
 
+        // Account for the Logon's own sequence number *before* building our response, so that
+        // NextExpectedMsgSeqNum (789) and LastMsgSeqNumProcessed (369) on the response reflect
+        // having consumed this Logon. The resulting actions (queue drain / ResendRequest) are
+        // emitted *after* the Logon response below to preserve wire ordering.
+        let disposition = msg
+            .header
+            .get(MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&s| s > 0)
+            .map(|s| (s as u64).cmp(&self.next_in_seq));
+        if disposition == Some(Ordering::Equal) {
+            self.next_in_seq = self.next_in_seq.saturating_add(1);
+        }
+
         let mut actions = Vec::new();
         match self.config.role {
             Role::Acceptor if self.state == SessionState::AwaitingLogon => {
@@ -530,28 +544,15 @@ impl Session {
             _ => {}
         }
 
-        // Sequence accounting for the Logon message itself.
-        if let Some(seq) = msg
-            .header
-            .get(MSG_SEQ_NUM)
-            .and_then(|f| f.as_int().ok())
-            .filter(|&s| s > 0)
-            .map(|s| s as u64)
-        {
-            match seq.cmp(&self.next_in_seq) {
-                Ordering::Equal => {
-                    self.next_in_seq = self.next_in_seq.saturating_add(1);
-                    actions.extend(self.drain_queue());
-                }
-                Ordering::Greater => {
-                    if !self.resend_requested {
-                        self.resend_requested = true;
-                        let begin = self.next_in_seq;
-                        actions.push(self.request_resend(begin));
-                    }
-                }
-                Ordering::Less => {}
+        // Emit the deferred sequence actions after the Logon response.
+        match disposition {
+            Some(Ordering::Equal) => actions.extend(self.drain_queue()),
+            Some(Ordering::Greater) if !self.resend_requested => {
+                self.resend_requested = true;
+                let begin = self.next_in_seq;
+                actions.push(self.request_resend(begin));
             }
+            _ => {}
         }
 
         // NextExpectedMsgSeqNum (789): the peer reports the next sequence number it expects from

@@ -61,6 +61,23 @@ fn initiator_becomes_logged_on_when_logon_received() {
 }
 
 #[test]
+fn acceptor_logon_reports_seq_state_after_consuming_logon() {
+    // 789/369 on the acceptor's Logon must reflect having consumed the inbound Logon:
+    // NextExpectedMsgSeqNum=2 (next expected from peer) and LastMsgSeqNumProcessed=1.
+    let mut c = cfg(Role::Acceptor);
+    c.enable_next_expected_msg_seq_num = true;
+    c.enable_last_msg_seq_num_processed = true;
+    let mut s = Session::new(c);
+    assert!(s.handle(Event::Connected).is_empty());
+
+    let actions = s.handle(Event::Received(inbound("A", 1, Some(1), None)));
+    let reply = first_send(&actions).expect("logon reply");
+    assert_eq!(reply.msg_type(), Some("A"));
+    assert_eq!(reply.body.get(789).unwrap().as_str().unwrap(), "2");
+    assert_eq!(reply.header.get(369).unwrap().as_str().unwrap(), "1");
+}
+
+#[test]
 fn test_request_is_answered_with_heartbeat() {
     let mut s = logged_on_acceptor();
     let actions = s.handle(Event::Received(inbound("1", 2, None, Some("ABC"))));
