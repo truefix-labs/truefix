@@ -180,6 +180,18 @@ fn poss_dup_too_low(v: &str) -> Scenario {
     )
 }
 
+/// 1d — with ResetOnLogon (default), the acceptor's Logon response carries ResetSeqNumFlag=Y.
+fn logon_response_carries_reset_flag(v: &str) -> Scenario {
+    scenario(
+        "1d_LogonResponseResetFlag",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A").field(141, "Y")),
+        ],
+    )
+}
+
 /// 2_noseq — a post-logon message with no MsgSeqNum(34) draws a session-level Reject.
 fn missing_msg_seq_num(v: &str) -> Scenario {
     let mut m = Message::new();
@@ -429,6 +441,38 @@ fn invalid_tag_number_42() -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(order),
             Step::Expect(ExpectMsg::of("3").field(373, "0")), // InvalidTagNumber
+        ],
+    )
+}
+
+/// 14c (FIX.4.2) — a defined tag (TestReqID 112) not valid for NewOrderSingle draws a Reject.
+fn tag_not_defined_for_msg_type_42() -> Scenario {
+    let mut order = new_order_single_42(2);
+    order.body.set(Field::string(112, "X")); // defined in 4.2, but not a NewOrderSingle field
+    scenario(
+        "14c_TagNotDefinedForMsgType_42",
+        "FIX.4.2",
+        vec![
+            Step::Send(logon("FIX.4.2", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "2")), // TagNotDefinedForMessageType
+        ],
+    )
+}
+
+/// 14d (FIX.4.2) — a present-but-empty ClOrdID(11) draws a Reject (TagSpecifiedWithoutValue).
+fn tag_specified_without_value_42() -> Scenario {
+    let mut order = new_order_single_42(2);
+    order.body.set(Field::new(11, Vec::new())); // ClOrdID present but empty
+    scenario(
+        "14d_TagSpecifiedWithoutValue_42",
+        "FIX.4.2",
+        vec![
+            Step::Send(logon("FIX.4.2", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "4")), // TagSpecifiedWithoutValue
         ],
     )
 }
@@ -778,6 +822,7 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(msgseqnum_too_low(v));
         out.push(received_test_request(v));
         out.push(unsolicited_logout(v));
+        out.push(logon_response_carries_reset_flag(v));
         out.push(logon_adopts_heartbeat_interval(v));
         out.push(resend_request_gap_fill(v));
         out.push(resend_request_bounded_end(v));
@@ -798,6 +843,8 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(required_field_missing_42());
     out.push(incorrect_enum_value_42());
     out.push(invalid_tag_number_42());
+    out.push(tag_not_defined_for_msg_type_42());
+    out.push(tag_specified_without_value_42());
     out.push(incorrect_data_format_42());
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(valid_new_order_accepted("FIX.4.4"));
