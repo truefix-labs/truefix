@@ -414,6 +414,26 @@ fn garbled_message_dropped(v: &str) -> Scenario {
     )
 }
 
+/// Special suite — resendRequestChunkSize: when a gap is detected, the ResendRequest is bounded to
+/// one chunk (EndSeqNo = BeginSeqNo + chunk - 1) instead of an open-ended range.
+fn resend_request_chunk_size(v: &str) -> Scenario {
+    scenario_with(
+        "special_ResendRequestChunkSize",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(client_message(v, "0", 10)), // gap: expected 2, received 10
+            // chunk=5 → request only 2..=6 rather than 2..0 (open-ended).
+            Step::Expect(ExpectMsg::of("2").field(7, "2").field(16, "6")),
+        ],
+        SessionTweaks {
+            resend_chunk_size: 5,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// The (representative) server acceptance-test suite across [`SUITE_VERSIONS`].
 pub fn server_suite() -> Vec<Scenario> {
     let mut out = Vec::new();
@@ -441,5 +461,6 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(last_msg_seq_num_processed("FIX.4.4"));
     out.push(check_latency_timestamps("FIX.4.4"));
     out.push(garbled_message_dropped("FIX.4.4"));
+    out.push(resend_request_chunk_size("FIX.4.4"));
     out
 }

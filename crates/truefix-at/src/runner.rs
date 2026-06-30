@@ -62,6 +62,8 @@ pub struct SessionTweaks {
     pub enable_last_processed: bool,
     /// Enable CheckLatency (stale SendingTime aborts the session).
     pub check_latency: bool,
+    /// ResendRequest chunk size (0 = request the whole range at once).
+    pub resend_chunk_size: u32,
 }
 
 /// A scripted acceptance-test scenario.
@@ -106,6 +108,7 @@ pub async fn start_acceptor(
     template.check_latency = tweaks.check_latency;
     template.enable_next_expected_msg_seq_num = tweaks.enable_next_expected;
     template.enable_last_msg_seq_num_processed = tweaks.enable_last_processed;
+    template.resend_request_chunk_size = tweaks.resend_chunk_size;
 
     // Enable dictionary validation so field-level reject scenarios produce Reject messages.
     let validator = match version {
