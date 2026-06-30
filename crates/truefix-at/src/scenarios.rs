@@ -168,6 +168,70 @@ fn incorrect_enum_value(v: &str) -> Scenario {
     )
 }
 
+/// 14a — a field whose tag is not defined in the dictionary draws a session-level Reject.
+fn invalid_tag_number(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.set(Field::string(999, "X")); // 999 undefined, below the UDF range
+    scenario(
+        "14a_InvalidTagNumber",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "0")), // Reject: InvalidTagNumber
+        ],
+    )
+}
+
+/// 14c — a defined field that is not valid for this message type draws a session-level Reject.
+fn tag_not_defined_for_msg_type(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.set(Field::string(112, "X")); // TestReqID is defined but not part of NewOrderSingle
+    scenario(
+        "14c_TagNotDefinedForMsgType",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "2")), // Reject: TagNotDefinedForMessageType
+        ],
+    )
+}
+
+/// 14d — a field present with no value draws a session-level Reject.
+fn tag_specified_without_value(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.set(Field::new(11, Vec::new())); // ClOrdID present but empty
+    scenario(
+        "14d_TagSpecifiedWithoutValue",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "4")), // Reject: TagSpecifiedWithoutValue
+        ],
+    )
+}
+
+/// 14f — a field whose value has the wrong data format draws a session-level Reject.
+fn incorrect_data_format(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.set(Field::string(38, "abc")); // OrderQty is a QTY; "abc" is not numeric
+    scenario(
+        "14f_IncorrectDataFormat",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "6")), // Reject: IncorrectDataFormat
+        ],
+    )
+}
+
 /// 2r — an unregistered (unknown) MsgType draws a Business Message Reject.
 fn unregistered_msg_type(v: &str) -> Scenario {
     scenario(
@@ -196,6 +260,10 @@ pub fn server_suite() -> Vec<Scenario> {
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(required_field_missing("FIX.4.4"));
     out.push(incorrect_enum_value("FIX.4.4"));
+    out.push(invalid_tag_number("FIX.4.4"));
+    out.push(tag_not_defined_for_msg_type("FIX.4.4"));
+    out.push(tag_specified_without_value("FIX.4.4"));
+    out.push(incorrect_data_format("FIX.4.4"));
     out.push(unregistered_msg_type("FIX.4.4"));
     out
 }
