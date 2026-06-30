@@ -607,6 +607,58 @@ fn app_orders_sequenced(v: &str) -> Scenario {
     )
 }
 
+/// app3 — a ResendRequest for a stored application message replays it as a PossDup (43=Y), not a
+/// GapFill (this is the application-resend path, distinct from admin gap-fill).
+fn app_message_resent_as_poss_dup(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 3); // after logon(1) + order(2), this is seq 3
+    rr.body.set(Field::int(7, 2)); // BeginSeqNo = the ExecutionReport's outbound seq
+    rr.body.set(Field::int(16, 2)); // EndSeqNo = 2
+    scenario_with(
+        "app_MessageResentAsPossDup",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(new_order_single(2)),
+            Step::Expect(ExpectMsg::of("8").field(34, "2")), // ExecutionReport at outbound seq 2
+            Step::Send(rr),
+            // Replayed application message: same MsgSeqNum, now flagged PossDup.
+            Step::Expect(ExpectMsg::of("8").field(34, "2").field(43, "Y")),
+        ],
+        SessionTweaks {
+            executor_app: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// app4 — a ResendRequest spanning admin + application traffic yields a GapFill for the admin
+/// Logon followed by a PossDup replay of the ExecutionReport.
+fn app_mixed_resend_gapfill_then_possdup(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 3);
+    rr.body.set(Field::int(7, 1)); // BeginSeqNo = 1 (the admin Logon)
+    rr.body.set(Field::int(16, 2)); // EndSeqNo = 2 (the ExecutionReport)
+    scenario_with(
+        "app_MixedResendGapFillThenPossDup",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(new_order_single(2)),
+            Step::Expect(ExpectMsg::of("8").field(34, "2")),
+            Step::Send(rr),
+            // Admin Logon(1) collapses to a GapFill up to seq 2 ...
+            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
+            // ... then the application ExecutionReport(2) is replayed as a PossDup.
+            Step::Expect(ExpectMsg::of("8").field(34, "2").field(43, "Y")),
+        ],
+        SessionTweaks {
+            executor_app: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// 14b — a NewOrderSingle missing a required field draws a session-level Reject.
 fn required_field_missing(v: &str) -> Scenario {
     let mut order = new_order_single(2);
@@ -889,6 +941,8 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(valid_new_order_accepted("FIX.4.4"));
     out.push(app_order_executed("FIX.4.4"));
     out.push(app_orders_sequenced("FIX.4.4"));
+    out.push(app_message_resent_as_poss_dup("FIX.4.4"));
+    out.push(app_mixed_resend_gapfill_then_possdup("FIX.4.4"));
     out.push(required_field_missing("FIX.4.4"));
     out.push(incorrect_enum_value("FIX.4.4"));
     out.push(invalid_tag_number("FIX.4.4"));
