@@ -7,7 +7,7 @@
 
 use truefix_core::{Field, Message};
 
-use crate::runner::{client_message, ExpectMsg, Scenario, Step};
+use crate::runner::{client_message, ExpectMsg, Scenario, SessionTweaks, Step};
 
 /// The FIX versions the server suite is exercised against.
 pub const SUITE_VERSIONS: &[&str] = &["FIX.4.2", "FIX.4.4"];
@@ -23,10 +23,15 @@ fn logon(version: &str, seq: i64, reset: bool) -> Message {
 }
 
 fn scenario(name: &str, version: &str, steps: Vec<Step>) -> Scenario {
+    scenario_with(name, version, steps, SessionTweaks::default())
+}
+
+fn scenario_with(name: &str, version: &str, steps: Vec<Step>, tweaks: SessionTweaks) -> Scenario {
     Scenario {
         name: name.to_owned(),
         versions: vec![version.to_owned()],
         steps,
+        tweaks,
     }
 }
 
@@ -304,6 +309,46 @@ fn unregistered_msg_type(v: &str) -> Scenario {
     )
 }
 
+/// Special suite — NextExpectedMsgSeqNum (789): a peer reporting it is behind our outbound
+/// counter triggers an immediate resend (which, for admin-only traffic, is a GapFill).
+fn next_expected_msg_seq_num(v: &str) -> Scenario {
+    let mut lo = logon(v, 1, true);
+    lo.body.set(Field::int(789, 1)); // peer next-expects our seq 1, but we will have sent the Logon
+    scenario_with(
+        "special_NextExpectedMsgSeqNum",
+        v,
+        vec![
+            Step::Send(lo),
+            Step::Expect(ExpectMsg::of("A")),
+            // The server's Logon already consumed outbound seq 1, so it fills the gap to 2.
+            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
+        ],
+        SessionTweaks {
+            enable_next_expected: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// Special suite — CheckLatency/timestamps: a Logon with a stale SendingTime is rejected with a
+/// Logout citing a SendingTime accuracy problem, then the session is disconnected.
+fn check_latency_timestamps(v: &str) -> Scenario {
+    // client_message stamps a fixed 2024 SendingTime, far outside MaxLatency relative to "now".
+    scenario_with(
+        "special_CheckLatencyStaleSendingTime",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("5")), // Logout: SendingTime accuracy problem
+            Step::ExpectDisconnect,
+        ],
+        SessionTweaks {
+            check_latency: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// The (representative) server acceptance-test suite across [`SUITE_VERSIONS`].
 pub fn server_suite() -> Vec<Scenario> {
     let mut out = Vec::new();
@@ -326,5 +371,8 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(tag_specified_without_value("FIX.4.4"));
     out.push(incorrect_data_format("FIX.4.4"));
     out.push(unregistered_msg_type("FIX.4.4"));
+    // Special-category suites (T086) requiring per-acceptor session-feature toggles.
+    out.push(next_expected_msg_seq_num("FIX.4.4"));
+    out.push(check_latency_timestamps("FIX.4.4"));
     out
 }

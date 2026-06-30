@@ -51,6 +51,17 @@ pub enum Step {
     ExpectDisconnect,
 }
 
+/// Optional acceptor session-feature toggles a scenario needs (special-category suites).
+#[derive(Debug, Clone, Default)]
+pub struct SessionTweaks {
+    /// Enable NextExpectedMsgSeqNum (789) handling.
+    pub enable_next_expected: bool,
+    /// Enable LastMsgSeqNumProcessed (369) stamping.
+    pub enable_last_processed: bool,
+    /// Enable CheckLatency (stale SendingTime aborts the session).
+    pub check_latency: bool,
+}
+
 /// A scripted acceptance-test scenario.
 #[derive(Debug, Clone)]
 pub struct Scenario {
@@ -60,6 +71,8 @@ pub struct Scenario {
     pub versions: Vec<String>,
     /// The scripted steps.
     pub steps: Vec<Step>,
+    /// Acceptor session-feature toggles (default: all off, CheckLatency off).
+    pub tweaks: SessionTweaks,
 }
 
 /// The result of running one scenario against one version.
@@ -75,7 +88,10 @@ pub struct ScenarioResult {
 
 /// Start a black-box acceptor that serves any session via a dynamic template for `version`.
 /// Returns the bound address and the accept-loop join handle.
-pub async fn start_acceptor(version: &str) -> std::io::Result<(SocketAddr, JoinHandle<()>)> {
+pub async fn start_acceptor(
+    version: &str,
+    tweaks: &SessionTweaks,
+) -> std::io::Result<(SocketAddr, JoinHandle<()>)> {
     struct PassiveApp;
     #[async_trait::async_trait]
     impl Application for PassiveApp {
@@ -84,7 +100,10 @@ pub async fn start_acceptor(version: &str) -> std::io::Result<(SocketAddr, JoinH
 
     let mut template = SessionConfig::new(version, "SERVER", "CLIENT", Role::Acceptor);
     template.heartbeat_interval = 30;
-    template.check_latency = false; // scenarios use fixed timestamps
+    // Scenarios use fixed timestamps, so CheckLatency is off unless a scenario opts in.
+    template.check_latency = tweaks.check_latency;
+    template.enable_next_expected_msg_seq_num = tweaks.enable_next_expected;
+    template.enable_last_msg_seq_num_processed = tweaks.enable_last_processed;
 
     // Enable dictionary validation so field-level reject scenarios produce Reject messages.
     let validator = match version {
@@ -154,36 +173,24 @@ pub async fn run_scenario(scenario: &Scenario, addr: SocketAddr) -> Result<(), S
 /// acceptor per version. Returns one [`ScenarioResult`] per (scenario, version).
 pub async fn run_report(scenarios: &[Scenario]) -> Vec<ScenarioResult> {
     let mut results = Vec::new();
-    // Collect the set of versions referenced.
-    let mut versions: Vec<String> = Vec::new();
+    // A fresh acceptor per (scenario, version) isolates session state and lets each scenario
+    // request its own acceptor feature toggles.
     for s in scenarios {
-        for v in &s.versions {
-            if !versions.contains(v) {
-                versions.push(v.clone());
-            }
-        }
-    }
-
-    for version in &versions {
-        let Ok((addr, handle)) = start_acceptor(version).await else {
-            for s in scenarios.iter().filter(|s| s.versions.contains(version)) {
-                results.push(ScenarioResult {
-                    name: s.name.clone(),
-                    version: version.clone(),
-                    outcome: Err("could not start acceptor".to_owned()),
-                });
-            }
-            continue;
-        };
-        for s in scenarios.iter().filter(|s| s.versions.contains(version)) {
-            let outcome = run_scenario(s, addr).await;
+        for version in &s.versions {
+            let outcome = match start_acceptor(version, &s.tweaks).await {
+                Ok((addr, handle)) => {
+                    let outcome = run_scenario(s, addr).await;
+                    handle.abort();
+                    outcome
+                }
+                Err(e) => Err(format!("could not start acceptor: {e}")),
+            };
             results.push(ScenarioResult {
                 name: s.name.clone(),
                 version: version.clone(),
                 outcome,
             });
         }
-        handle.abort();
     }
     results
 }
