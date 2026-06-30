@@ -14,6 +14,8 @@ truefix-session.workspace = true
 truefix-store.workspace = true
 truefix-log.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 
@@ -24,6 +26,8 @@ truefix-session.workspace = true
 truefix-store.workspace = true
 truefix-log.workspace = true
 async-trait.workspace = true
+rcgen = "0.13"
+rustls.workspace = true
 
 [lints]
 workspace = true

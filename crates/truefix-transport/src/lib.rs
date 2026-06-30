@@ -1,9 +1,9 @@
 //! `truefix-transport` — tokio TCP Initiator and Acceptor that drive a [`Session`].
 //!
-//! Stage S2–S5: single-session initiator/acceptor over plain TCP, framing FIX messages off the
-//! stream and pumping the sans-IO [`Session`] engine, with optional [`Services`] (a persistent
-//! [`MessageStore`] for sequence-number continuity across restarts, and a [`Log`]). Multi/dynamic
-//! sessions, reconnect, and TLS arrive in later stages.
+//! Single- and multi-session initiator/acceptor over TCP or TLS (rustls), framing FIX messages off
+//! the stream and pumping the sans-IO [`Session`] engine. Supports routing by SessionID, dynamic
+//! sessions, allow-listing, reconnect, optional [`Services`] (persistent [`MessageStore`], [`Log`],
+//! socket options, [`Monitor`]), and an operational monitoring surface.
 //!
 //! Design: `specs/001-fix-engine-parity/`.
 #![cfg_attr(
@@ -22,10 +22,10 @@ use std::collections::HashMap;
 use std::future::pending;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -34,7 +34,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use truefix_core::{decode, Message};
 use truefix_log::Log;
 use truefix_session::{
-    Action, Application, Event, Session, SessionConfig, SessionId, SessionState,
+    Action, Application, Event, Session, SessionConfig, SessionId, SessionState, SessionStatus,
 };
 use truefix_store::MessageStore;
 
@@ -69,12 +69,107 @@ pub struct Services {
     pub log: Option<Arc<dyn Log>>,
     /// TCP socket options.
     pub socket_options: SocketOptions,
+    /// Operational monitor.
+    pub monitor: Option<Monitor>,
 }
 
 /// Control messages to a running session task.
 enum Control {
     /// Begin a graceful logout.
     Logout,
+    /// Operationally reset the session's sequence numbers and store.
+    Reset,
+}
+
+/// Operational monitoring (FR-L): live session status plus reset / force-logout actions
+/// (the JMX-equivalent surface).
+#[derive(Clone, Default)]
+pub struct Monitor {
+    inner: Arc<Mutex<HashMap<SessionId, MonitorEntry>>>,
+}
+
+struct MonitorEntry {
+    status: SessionStatus,
+    connected: bool,
+    control: mpsc::Sender<Control>,
+}
+
+impl Monitor {
+    /// Create an empty monitor.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn register(&self, id: SessionId, status: SessionStatus, control: mpsc::Sender<Control>) {
+        if let Ok(mut map) = self.inner.lock() {
+            map.insert(
+                id,
+                MonitorEntry {
+                    status,
+                    connected: true,
+                    control,
+                },
+            );
+        }
+    }
+
+    fn update(&self, id: &SessionId, status: SessionStatus) {
+        if let Ok(mut map) = self.inner.lock() {
+            if let Some(entry) = map.get_mut(id) {
+                entry.status = status;
+            }
+        }
+    }
+
+    fn mark_disconnected(&self, id: &SessionId) {
+        if let Ok(mut map) = self.inner.lock() {
+            if let Some(entry) = map.get_mut(id) {
+                entry.connected = false;
+            }
+        }
+    }
+
+    /// The latest status snapshot for `id`.
+    pub fn status(&self, id: &SessionId) -> Option<SessionStatus> {
+        self.inner.lock().ok()?.get(id).map(|e| e.status)
+    }
+
+    /// Whether `id`'s connection is currently up.
+    pub fn is_connected(&self, id: &SessionId) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|m| m.get(id).map(|e| e.connected))
+            .unwrap_or(false)
+    }
+
+    /// All known session ids.
+    pub fn sessions(&self) -> Vec<SessionId> {
+        self.inner
+            .lock()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn control_for(&self, id: &SessionId) -> Option<mpsc::Sender<Control>> {
+        self.inner.lock().ok()?.get(id).map(|e| e.control.clone())
+    }
+
+    /// Request a graceful logout of `id`.
+    pub async fn force_logout(&self, id: &SessionId) -> bool {
+        match self.control_for(id) {
+            Some(c) => c.send(Control::Logout).await.is_ok(),
+            None => false,
+        }
+    }
+
+    /// Request an operational sequence reset of `id`.
+    pub async fn reset(&self, id: &SessionId) -> bool {
+        match self.control_for(id) {
+            Some(c) => c.send(Control::Reset).await.is_ok(),
+            None => false,
+        }
+    }
 }
 
 /// A handle to a running session task.
@@ -119,6 +214,27 @@ where
 {
     let stream = TcpStream::connect(addr).await?;
     Ok(spawn_session(stream, config, app, services))
+}
+
+/// Connect out as an initiator over TLS (FR-F6).
+///
+/// `server_name` is the SNI/host name presented to the server (e.g. `"example.com"`).
+pub async fn connect_initiator_tls<A>(
+    addr: SocketAddr,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+    tls: Arc<rustls::ClientConfig>,
+    server_name: rustls::pki_types::ServerName<'static>,
+) -> io::Result<SessionHandle>
+where
+    A: Application + 'static,
+{
+    let tcp = TcpStream::connect(addr).await?;
+    services.socket_options.apply(&tcp);
+    let connector = tokio_rustls::TlsConnector::from(tls);
+    let stream = connector.connect(server_name, tcp).await?;
+    Ok(spawn_session_io(stream, config, app, services))
 }
 
 /// A listening acceptor that serves one static session configuration per connection.
@@ -180,10 +296,36 @@ fn spawn_session<A>(
 where
     A: Application + 'static,
 {
+    services.socket_options.apply(&stream);
+    spawn_session_io(stream, config, app, services)
+}
+
+fn spawn_session_io<A, S>(
+    stream: S,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> SessionHandle
+where
+    A: Application + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (control_tx, control_rx) = mpsc::channel(8);
-    let task = tokio::spawn(async move {
-        run_connection(stream, config, app, services, control_rx, Vec::new()).await;
-    });
+    let task = {
+        let control_tx = control_tx.clone();
+        tokio::spawn(async move {
+            run_connection(
+                stream,
+                config,
+                app,
+                services,
+                control_tx,
+                control_rx,
+                Vec::new(),
+            )
+            .await;
+        })
+    };
     SessionHandle {
         control: control_tx,
         task,
@@ -191,26 +333,31 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_connection<A>(
-    mut stream: TcpStream,
+async fn run_connection<A, S>(
+    mut stream: S,
     config: SessionConfig,
     app: Arc<A>,
     services: Services,
+    control_tx: mpsc::Sender<Control>,
     mut control: mpsc::Receiver<Control>,
     mut buf: Vec<u8>,
 ) where
     A: Application + 'static,
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut session = Session::new(config);
     let id = session.id().clone();
     app.on_create(&id).await;
-    services.socket_options.apply(&stream);
 
     // Restore sequence numbers from the store (continuity across restarts).
     if let Some(store) = &services.store {
         let out = store.next_sender_seq().await.unwrap_or(1);
         let inn = store.next_target_seq().await.unwrap_or(1);
         session.seed_sequences(out, inn);
+    }
+
+    if let Some(monitor) = &services.monitor {
+        monitor.register(id.clone(), session.status(), control_tx);
     }
 
     let mut chunk = [0u8; 4096];
@@ -287,12 +434,24 @@ async fn run_connection<A>(
                         closing = true;
                     }
                 }
+                Some(Control::Reset) => {
+                    session.reset();
+                    if let Some(store) = &services.store {
+                        let _ = store.reset().await;
+                    }
+                    if let Some(monitor) = &services.monitor {
+                        monitor.update(&id, session.status());
+                    }
+                }
                 None => control_open = false,
             },
         }
     }
 
     let _ = stream.shutdown().await;
+    if let Some(monitor) = &services.monitor {
+        monitor.mark_disconnected(&id);
+    }
     if logged_on {
         app.on_logout(&id).await;
         if let Some(log) = &services.log {
@@ -311,10 +470,10 @@ async fn recv_control(control: &mut mpsc::Receiver<Control>, open: bool) -> Opti
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn drain_messages<A>(
+async fn drain_messages<A, S>(
     buf: &mut Vec<u8>,
     session: &mut Session,
-    stream: &mut TcpStream,
+    stream: &mut S,
     app: &Arc<A>,
     id: &SessionId,
     services: &Services,
@@ -322,6 +481,7 @@ async fn drain_messages<A>(
 ) -> Result<(), ()>
 where
     A: Application + 'static,
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     loop {
         match frame_length(buf) {
@@ -331,11 +491,21 @@ where
                     if let Some(log) = &services.log {
                         log.on_incoming(&String::from_utf8_lossy(&raw));
                     }
-                    let inbound_ok = if is_admin(&msg) {
-                        app.from_admin(&msg, id).await.is_ok()
+                    // Authentication / admin acceptance: an admin message the application rejects
+                    // (e.g. a Logon with bad credentials) tears the session down without a response.
+                    if is_admin(&msg) {
+                        if app.from_admin(&msg, id).await.is_err() {
+                            if let Some(log) = &services.log {
+                                log.on_event(&format!(
+                                    "{id}: admin message rejected by application"
+                                ));
+                            }
+                            return Err(());
+                        }
                     } else {
-                        app.from_app(&msg, id).await.is_ok()
-                    };
+                        // Business rejects are produced by the dictionary hook; deliver regardless.
+                        let _ = app.from_app(&msg, id).await;
+                    }
                     dispatch(
                         session,
                         Event::Received(msg),
@@ -346,9 +516,6 @@ where
                         logged_on,
                     )
                     .await?;
-                    if !inbound_ok {
-                        return Err(());
-                    }
                 }
                 // Garbled frames are dropped at this stage; RejectGarbledMessage arrives in S3.
             }
@@ -364,10 +531,10 @@ where
 /// Run the engine for one event and perform the resulting actions. Returns `Err` if the
 /// session should be torn down.
 #[allow(clippy::too_many_arguments)]
-async fn dispatch<A>(
+async fn dispatch<A, S>(
     session: &mut Session,
     event: Event,
-    stream: &mut TcpStream,
+    stream: &mut S,
     app: &Arc<A>,
     id: &SessionId,
     services: &Services,
@@ -375,6 +542,7 @@ async fn dispatch<A>(
 ) -> Result<(), ()>
 where
     A: Application + 'static,
+    S: AsyncWrite + Unpin,
 {
     let actions = session.handle(event);
 
@@ -414,6 +582,10 @@ where
         let _ = store.set_next_target_seq(session.next_in_seq()).await;
     }
 
+    if let Some(monitor) = &services.monitor {
+        monitor.update(id, session.status());
+    }
+
     if disconnect || session.state() == SessionState::Disconnected {
         Err(())
     } else {
@@ -446,6 +618,7 @@ pub struct AcceptorBuilder<A: Application + 'static> {
     template: Option<SessionConfig>,
     allowed_remotes: Option<Vec<IpAddr>>,
     services: Services,
+    tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 impl<A: Application + 'static> AcceptorBuilder<A> {
@@ -459,7 +632,15 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
             template: None,
             allowed_remotes: None,
             services: Services::default(),
+            tls: None,
         })
+    }
+
+    /// Terminate TLS on each accepted connection using `config` (FR-F6).
+    #[must_use]
+    pub fn with_tls(mut self, config: Arc<rustls::ServerConfig>) -> Self {
+        self.tls = Some(config);
+        self
     }
 
     /// The bound local address.
@@ -506,35 +687,47 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         let app = self.app;
         let services = self.services;
         let listener = self.listener;
+        let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         tokio::spawn(async move {
             while let Ok((stream, peer)) = listener.accept().await {
+                if let Some(allowed) = &registry.allowed_remotes {
+                    if !allowed.contains(&peer.ip()) {
+                        continue; // refuse: not in the allow-list
+                    }
+                }
+                services.socket_options.apply(&stream);
                 let registry = registry.clone();
                 let app = app.clone();
                 let services = services.clone();
-                tokio::spawn(async move {
-                    serve_connection(stream, peer, app, registry, services).await;
-                });
+                match &tls {
+                    Some(acceptor) => {
+                        let acceptor = acceptor.clone();
+                        tokio::spawn(async move {
+                            if let Ok(tls_stream) = acceptor.accept(stream).await {
+                                route_and_run(tls_stream, app, registry, services).await;
+                            }
+                        });
+                    }
+                    None => {
+                        tokio::spawn(async move {
+                            route_and_run(stream, app, registry, services).await;
+                        });
+                    }
+                }
             }
         })
     }
 }
 
-async fn serve_connection<A>(
-    mut stream: TcpStream,
-    peer: SocketAddr,
+async fn route_and_run<A, S>(
+    mut stream: S,
     app: Arc<A>,
     registry: Arc<Registry>,
     services: Services,
 ) where
     A: Application + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    if let Some(allowed) = &registry.allowed_remotes {
-        if !allowed.contains(&peer.ip()) {
-            return; // refuse: not in the allow-list
-        }
-    }
-    services.socket_options.apply(&stream);
-
     // Read until the first complete message (the Logon) so we can route by SessionID.
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -573,8 +766,8 @@ async fn serve_connection<A>(
         return; // no static match and no template -> refuse
     };
 
-    let (_control_tx, control_rx) = mpsc::channel(1);
-    run_connection(stream, config, app, services, control_rx, buf).await;
+    let (control_tx, control_rx) = mpsc::channel(8);
+    run_connection(stream, config, app, services, control_tx, control_rx, buf).await;
 }
 
 fn field_str(msg: &Message, tag: u32) -> String {
@@ -637,12 +830,13 @@ where
     let task = tokio::spawn(async move {
         while !loop_stop.load(Ordering::SeqCst) {
             if let Ok(stream) = TcpStream::connect(addr).await {
-                let (_control_tx, control_rx) = mpsc::channel(1);
+                let (control_tx, control_rx) = mpsc::channel(8);
                 run_connection(
                     stream,
                     config.clone(),
                     app.clone(),
                     services.clone(),
+                    control_tx,
                     control_rx,
                     Vec::new(),
                 )

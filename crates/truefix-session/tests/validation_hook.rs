@@ -7,6 +7,7 @@ use truefix_session::{Action, Event, Role, Session, SessionConfig, SessionState}
 fn cfg() -> SessionConfig {
     let mut c = SessionConfig::new("FIX.4.4", "ME", "YOU", Role::Acceptor);
     c.heartbeat_interval = 30;
+    c.check_latency = false; // app fixtures use fixed timestamps
     c
 }
 

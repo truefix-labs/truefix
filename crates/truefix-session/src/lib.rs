@@ -29,4 +29,4 @@ pub use application::Application;
 pub use config::{Role, SessionConfig};
 pub use schedule::Schedule;
 pub use session_id::SessionId;
-pub use state::{Action, Event, Session, SessionState};
+pub use state::{Action, Event, Session, SessionState, SessionStatus};

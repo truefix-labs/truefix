@@ -46,6 +46,19 @@ pub enum Event {
     StartLogout,
 }
 
+/// A point-in-time snapshot of a session, for monitoring (FR-L1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionStatus {
+    /// Lifecycle state.
+    pub state: SessionState,
+    /// Whether the session is logged on.
+    pub logged_on: bool,
+    /// Next outbound sequence number.
+    pub next_sender_seq: u64,
+    /// Next inbound sequence number expected.
+    pub next_target_seq: u64,
+}
+
 /// An output from the engine for the transport to perform.
 #[derive(Debug)]
 pub enum Action {
@@ -64,6 +77,7 @@ pub struct Session {
     next_in_seq: u64,
     ticks_since_send: u32,
     ticks_since_recv: u32,
+    ticks_awaiting: u32,
     test_request_outstanding: bool,
     logon_sent: bool,
     resend_requested: bool,
@@ -87,6 +101,7 @@ impl Session {
             next_in_seq: 1,
             ticks_since_send: 0,
             ticks_since_recv: 0,
+            ticks_awaiting: 0,
             test_request_outstanding: false,
             logon_sent: false,
             resend_requested: false,
@@ -135,6 +150,22 @@ impl Session {
             self.next_out_seq = next_out.max(1);
             self.next_in_seq = next_in.max(1);
         }
+    }
+
+    /// A monitoring snapshot of the session (FR-L1).
+    pub fn status(&self) -> SessionStatus {
+        SessionStatus {
+            state: self.state,
+            logged_on: self.is_logged_on(),
+            next_sender_seq: self.next_out_seq,
+            next_target_seq: self.next_in_seq,
+        }
+    }
+
+    /// Operational reset: clear stored messages and set both sequence numbers back to 1 (FR-L2).
+    pub fn reset(&mut self) {
+        self.reset_sequences(true);
+        self.logon_sent = false;
     }
 
     /// Drive the engine with an [`Event`], producing [`Action`]s.
@@ -202,7 +233,22 @@ impl Session {
         }
     }
 
+    fn latency_ok(&self, msg: &Message) -> bool {
+        if !self.config.check_latency {
+            return true;
+        }
+        let Some(field) = msg.header.get(crate::tags::SENDING_TIME) else {
+            return true;
+        };
+        let Ok(ts) = field.as_utc_timestamp() else {
+            return true; // unparseable SendingTime is a dictionary/validation concern
+        };
+        let now = time::OffsetDateTime::now_utc();
+        (now - ts).whole_seconds().abs() <= i64::from(self.config.max_latency)
+    }
+
     fn on_connected(&mut self) -> Vec<Action> {
+        self.ticks_awaiting = 0;
         self.state = SessionState::AwaitingLogon;
         match self.config.role {
             Role::Initiator => {
@@ -227,6 +273,15 @@ impl Session {
     fn on_received(&mut self, msg: Message) -> Vec<Action> {
         self.ticks_since_recv = 0;
         self.test_request_outstanding = false;
+
+        // CheckLatency / MaxLatency: a stale SendingTime aborts the session.
+        if !self.latency_ok(&msg) {
+            let seq = self.next_seq();
+            let lo = admin::logout(&self.config, seq, Some("SendingTime accuracy problem"));
+            self.state = SessionState::Disconnected;
+            return vec![self.send_stored(lo), Action::Disconnect];
+        }
+
         let mt = msg.msg_type().map(str::to_owned);
 
         if mt.as_deref() == Some("A") {
@@ -526,6 +581,7 @@ impl Session {
         if self.state == SessionState::LoggedOn {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, None);
+            self.ticks_awaiting = 0;
             self.state = SessionState::AwaitingLogout;
             vec![self.send_stored(lo)]
         } else {
@@ -544,9 +600,16 @@ impl Session {
     fn on_tick(&mut self) -> Vec<Action> {
         self.ticks_since_send = self.ticks_since_send.saturating_add(1);
         self.ticks_since_recv = self.ticks_since_recv.saturating_add(1);
+        self.ticks_awaiting = self.ticks_awaiting.saturating_add(1);
         let hb = self.hb();
         let mut actions = Vec::new();
         match self.state {
+            SessionState::AwaitingLogon
+                if self.ticks_awaiting >= self.config.logon_timeout.max(1) =>
+            {
+                self.enter_disconnected();
+                return vec![Action::Disconnect];
+            }
             SessionState::LoggedOn => {
                 if self.ticks_since_recv >= 2 * hb + 2 {
                     self.enter_disconnected();
@@ -564,7 +627,9 @@ impl Session {
                     actions.push(self.send_stored(h));
                 }
             }
-            SessionState::AwaitingLogout if self.ticks_since_send >= 2 * hb + 2 => {
+            SessionState::AwaitingLogout
+                if self.ticks_awaiting >= self.config.logout_timeout.max(1) =>
+            {
                 self.enter_disconnected();
                 return vec![Action::Disconnect];
             }

@@ -7,6 +7,7 @@ fn cfg(role: Role) -> SessionConfig {
     let mut c = SessionConfig::new("FIX.4.4", "ME", "YOU", role);
     c.heartbeat_interval = 30;
     c.reset_on_logon = true;
+    c.check_latency = false; // fixtures use fixed timestamps; not testing latency here
     c
 }
 

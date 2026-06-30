@@ -117,8 +117,8 @@ later stages. Serves US2.
 - [X] T037 [US3] Implement ResendRequest issue/handle + range chunking in `crates/truefix-session/src/resend.rs`
 - [X] T038 [US3] Implement SequenceReset GapFill & Reset modes in `crates/truefix-session/src/seqreset.rs`
 - [X] T039 [US3] Implement PossDup/PossResend/OrigSendingTime handling (RequiresOrigSendingTime, AllowPosDup) in `crates/truefix-session/src/possdup.rs`
-- [ ] T040 [US3] Implement NextExpectedMsgSeqNum(789) + EnableLastMsgSeqNumProcessed(369) in `crates/truefix-session/src/next_expected.rs`
-- [ ] T041 [US10] Implement session-level Reject + Logon/Logout timeouts + CheckLatency/MaxLatency in `crates/truefix-session/src/reject.rs` (FR-D11, FR-K2)
+- [X] T040 [US3] Implement NextExpectedMsgSeqNum(789) + EnableLastMsgSeqNumProcessed(369) in `crates/truefix-session/src/next_expected.rs`
+- [X] T041 [US10] Implement session-level Reject + Logon/Logout timeouts + CheckLatency/MaxLatency in `crates/truefix-session/src/reject.rs` (FR-D11, FR-K2)
 - [X] T042 [US3] Implement ResetSeqNumFlag(141) + ResetOn{Logon,Logout,Disconnect} + RefreshOnLogon in `crates/truefix-session/src/reset.rs` (FR-D4/D5)
 
 **Checkpoint S3**: T032–T035 pass; sequence/resend AT-relevant behavior correct. (parity.md CHK021/CHK022/CHK037; Appendix B sequence cases)
@@ -231,16 +231,16 @@ later stages. Serves US2.
 
 ### Tests for S8 (write first)
 
-- [ ] T077 [P] [US10] TLS handshake integration (initiator+acceptor, client-auth, SNI) in `tests/tls.rs` (FR-F6)
-- [ ] T078 [P] [US10] Logon Username/Password auth accept/reject via from/toAdmin in `crates/truefix-session/tests/auth.rs` (FR-K1)
-- [ ] T079 [P] [US11] Monitoring surface test: session state, seq numbers, connection health, reset action in `crates/truefix/tests/monitoring.rs` (SC-007)
+- [X] T077 [P] [US10] TLS handshake integration (initiator+acceptor, client-auth, SNI) in `tests/tls.rs` (FR-F6)
+- [X] T078 [P] [US10] Logon Username/Password auth accept/reject via from/toAdmin in `crates/truefix-session/tests/auth.rs` (FR-K1)
+- [X] T079 [P] [US11] Monitoring surface test: session state, seq numbers, connection health, reset action in `crates/truefix/tests/monitoring.rs` (SC-007)
 
 ### Implementation for S8
 
-- [ ] T080 [US10] Implement rustls TLS for initiator+acceptor + SSL config keys (keystore/truststore/protocols/ciphers/client-auth/SNI) in `crates/truefix-transport/src/tls.rs` (FR-F6; Appendix A SSL group)
-- [ ] T081 [US10] Implement Logon Username/Password + custom auth via toAdmin/fromAdmin in `crates/truefix-session/src/auth.rs` (FR-K1)
-- [ ] T082 [P] [US11] Implement monitoring (tracing structured events + metrics gauges/counters for session state/seq/health) in `crates/truefix/src/monitor.rs` (FR-L1)
-- [ ] T083 [US11] Implement operational actions (reset seq, force logout) reflected in monitoring in `crates/truefix/src/admin_ops.rs` (FR-L2)
+- [X] T080 [US10] Implement rustls TLS for initiator+acceptor + SSL config keys (keystore/truststore/protocols/ciphers/client-auth/SNI) in `crates/truefix-transport/src/tls.rs` (FR-F6; Appendix A SSL group)
+- [X] T081 [US10] Implement Logon Username/Password + custom auth via toAdmin/fromAdmin in `crates/truefix-session/src/auth.rs` (FR-K1)
+- [X] T082 [P] [US11] Implement monitoring (tracing structured events + metrics gauges/counters for session state/seq/health) in `crates/truefix/src/monitor.rs` (FR-L1)
+- [X] T083 [US11] Implement operational actions (reset seq, force logout) reflected in monitoring in `crates/truefix/src/admin_ops.rs` (FR-L2)
 
 **Checkpoint S8**: T077–T079 pass; TLS+auth+monitoring operational. (contracts/transport.md; parity.md CHK009/CHK044)
 

@@ -43,6 +43,10 @@ pub struct SessionConfig {
     pub check_latency: bool,
     /// Maximum tolerated SendingTime latency, in seconds.
     pub max_latency: u32,
+    /// Seconds to wait for the Logon handshake before giving up (LogonTimeout).
+    pub logon_timeout: u32,
+    /// Seconds to wait for the counterparty Logout before disconnecting (LogoutTimeout).
+    pub logout_timeout: u32,
     /// Initiator reconnect interval, in seconds (ReconnectInterval).
     pub reconnect_interval: u32,
     /// Optional activity schedule (StartTime/EndTime/Weekdays/NonStop).
@@ -71,6 +75,8 @@ impl SessionConfig {
             enable_next_expected_msg_seq_num: false,
             check_latency: true,
             max_latency: 120,
+            logon_timeout: 10,
+            logout_timeout: 10,
             reconnect_interval: 5,
             schedule: None,
         }
