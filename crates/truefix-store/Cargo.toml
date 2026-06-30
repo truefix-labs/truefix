@@ -8,5 +8,18 @@ repository.workspace = true
 description = "FIX message stores (memory/file/cached/SQL/noop)."
 publish = false
 
+[dependencies]
+thiserror.workspace = true
+async-trait.workspace = true
+sqlx = { workspace = true, optional = true, features = ["sqlite"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[features]
+# SQL-backed store (JDBC-equivalent). Off by default to keep the core build light and
+# license-clean; enable with `--features sql`.
+sql = ["dep:sqlx"]
+
 [lints]
 workspace = true

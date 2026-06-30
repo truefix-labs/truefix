@@ -1,8 +1,9 @@
 //! `truefix-transport` — tokio TCP Initiator and Acceptor that drive a [`Session`].
 //!
-//! Stage S2: single-session initiator/acceptor over plain TCP, framing FIX messages off the
-//! stream and pumping the sans-IO [`Session`] engine. Multi/dynamic sessions, reconnect, and
-//! TLS arrive in later stages.
+//! Stage S2–S5: single-session initiator/acceptor over plain TCP, framing FIX messages off the
+//! stream and pumping the sans-IO [`Session`] engine, with optional [`Services`] (a persistent
+//! [`MessageStore`] for sequence-number continuity across restarts, and a [`Log`]). Multi/dynamic
+//! sessions, reconnect, and TLS arrive in later stages.
 //!
 //! Design: `specs/001-fix-engine-parity/`.
 #![cfg_attr(
@@ -29,11 +30,22 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
 use truefix_core::{decode, Message};
+use truefix_log::Log;
 use truefix_session::{
     Action, Application, Event, Session, SessionConfig, SessionId, SessionState,
 };
+use truefix_store::MessageStore;
 
 use framing::frame_length;
+
+/// Optional per-session services: a persistent message store and a log.
+#[derive(Clone, Default)]
+pub struct Services {
+    /// Persistent store for sequence-number continuity (and future cross-restart resend).
+    pub store: Option<Arc<dyn MessageStore>>,
+    /// Message/event log.
+    pub log: Option<Arc<dyn Log>>,
+}
 
 /// Control messages to a running session task.
 enum Control {
@@ -68,8 +80,21 @@ pub async fn connect_initiator<A>(
 where
     A: Application + 'static,
 {
+    connect_initiator_with(addr, config, app, Services::default()).await
+}
+
+/// Connect out as an initiator with persistent store/log services.
+pub async fn connect_initiator_with<A>(
+    addr: SocketAddr,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> io::Result<SessionHandle>
+where
+    A: Application + 'static,
+{
     let stream = TcpStream::connect(addr).await?;
-    Ok(spawn_session(stream, config, app))
+    Ok(spawn_session(stream, config, app, services))
 }
 
 /// A listening acceptor that serves one static session configuration per connection.
@@ -77,16 +102,28 @@ pub struct Acceptor<A: Application + 'static> {
     listener: TcpListener,
     config: SessionConfig,
     app: Arc<A>,
+    services: Services,
 }
 
 impl<A: Application + 'static> Acceptor<A> {
     /// Bind to `addr`.
     pub async fn bind(addr: SocketAddr, config: SessionConfig, app: Arc<A>) -> io::Result<Self> {
+        Self::bind_with(addr, config, app, Services::default()).await
+    }
+
+    /// Bind to `addr` with persistent store/log services.
+    pub async fn bind_with(
+        addr: SocketAddr,
+        config: SessionConfig,
+        app: Arc<A>,
+        services: Services,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
             config,
             app,
+            services,
         })
     }
 
@@ -99,19 +136,29 @@ impl<A: Application + 'static> Acceptor<A> {
     pub fn serve(self) -> JoinHandle<()> {
         tokio::spawn(async move {
             while let Ok((stream, _peer)) = self.listener.accept().await {
-                let _ = spawn_session(stream, self.config.clone(), self.app.clone());
+                let _ = spawn_session(
+                    stream,
+                    self.config.clone(),
+                    self.app.clone(),
+                    self.services.clone(),
+                );
             }
         })
     }
 }
 
-fn spawn_session<A>(stream: TcpStream, config: SessionConfig, app: Arc<A>) -> SessionHandle
+fn spawn_session<A>(
+    stream: TcpStream,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> SessionHandle
 where
     A: Application + 'static,
 {
     let (control_tx, control_rx) = mpsc::channel(8);
     let task = tokio::spawn(async move {
-        run_connection(stream, config, app, control_rx).await;
+        run_connection(stream, config, app, services, control_rx).await;
     });
     SessionHandle {
         control: control_tx,
@@ -123,6 +170,7 @@ async fn run_connection<A>(
     mut stream: TcpStream,
     config: SessionConfig,
     app: Arc<A>,
+    services: Services,
     mut control: mpsc::Receiver<Control>,
 ) where
     A: Application + 'static,
@@ -130,6 +178,13 @@ async fn run_connection<A>(
     let mut session = Session::new(config);
     let id = session.id().clone();
     app.on_create(&id).await;
+
+    // Restore sequence numbers from the store (continuity across restarts).
+    if let Some(store) = &services.store {
+        let out = store.next_sender_seq().await.unwrap_or(1);
+        let inn = store.next_target_seq().await.unwrap_or(1);
+        session.seed_sequences(out, inn);
+    }
 
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -146,6 +201,7 @@ async fn run_connection<A>(
         &mut stream,
         &app,
         &id,
+        &services,
         &mut logged_on,
     )
     .await
@@ -162,7 +218,7 @@ async fn run_connection<A>(
                     if let Some(slice) = chunk.get(..n) {
                         buf.extend_from_slice(slice);
                     }
-                    if drain_messages(&mut buf, &mut session, &mut stream, &app, &id, &mut logged_on)
+                    if drain_messages(&mut buf, &mut session, &mut stream, &app, &id, &services, &mut logged_on)
                         .await
                         .is_err()
                     {
@@ -171,7 +227,7 @@ async fn run_connection<A>(
                 }
             },
             _ = ticker.tick() => {
-                if dispatch(&mut session, Event::Tick, &mut stream, &app, &id, &mut logged_on)
+                if dispatch(&mut session, Event::Tick, &mut stream, &app, &id, &services, &mut logged_on)
                     .await
                     .is_err()
                 {
@@ -180,7 +236,7 @@ async fn run_connection<A>(
             },
             ctrl = recv_control(&mut control, control_open) => match ctrl {
                 Some(Control::Logout) => {
-                    if dispatch(&mut session, Event::StartLogout, &mut stream, &app, &id, &mut logged_on)
+                    if dispatch(&mut session, Event::StartLogout, &mut stream, &app, &id, &services, &mut logged_on)
                         .await
                         .is_err()
                     {
@@ -195,6 +251,9 @@ async fn run_connection<A>(
     let _ = stream.shutdown().await;
     if logged_on {
         app.on_logout(&id).await;
+        if let Some(log) = &services.log {
+            log.on_event(&format!("{id}: logout"));
+        }
     }
 }
 
@@ -207,12 +266,14 @@ async fn recv_control(control: &mut mpsc::Receiver<Control>, open: bool) -> Opti
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drain_messages<A>(
     buf: &mut Vec<u8>,
     session: &mut Session,
     stream: &mut TcpStream,
     app: &Arc<A>,
     id: &SessionId,
+    services: &Services,
     logged_on: &mut bool,
 ) -> Result<(), ()>
 where
@@ -223,12 +284,24 @@ where
             Ok(Some(total)) => {
                 let raw: Vec<u8> = buf.drain(..total).collect();
                 if let Ok(msg) = decode(&raw) {
+                    if let Some(log) = &services.log {
+                        log.on_incoming(&String::from_utf8_lossy(&raw));
+                    }
                     let inbound_ok = if is_admin(&msg) {
                         app.from_admin(&msg, id).await.is_ok()
                     } else {
                         app.from_app(&msg, id).await.is_ok()
                     };
-                    dispatch(session, Event::Received(msg), stream, app, id, logged_on).await?;
+                    dispatch(
+                        session,
+                        Event::Received(msg),
+                        stream,
+                        app,
+                        id,
+                        services,
+                        logged_on,
+                    )
+                    .await?;
                     if !inbound_ok {
                         return Err(());
                     }
@@ -246,12 +319,14 @@ where
 
 /// Run the engine for one event and perform the resulting actions. Returns `Err` if the
 /// session should be torn down.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch<A>(
     session: &mut Session,
     event: Event,
     stream: &mut TcpStream,
     app: &Arc<A>,
     id: &SessionId,
+    services: &Services,
     logged_on: &mut bool,
 ) -> Result<(), ()>
 where
@@ -262,6 +337,9 @@ where
     if !*logged_on && session.is_logged_on() {
         *logged_on = true;
         app.on_logon(id).await;
+        if let Some(log) = &services.log {
+            log.on_event(&format!("{id}: logon"));
+        }
     }
 
     let mut disconnect = false;
@@ -273,7 +351,11 @@ where
                 } else {
                     app.to_app(&mut msg, id).await;
                 }
-                if stream.write_all(&msg.encode()).await.is_err() {
+                let bytes = msg.encode();
+                if let Some(log) = &services.log {
+                    log.on_outgoing(&String::from_utf8_lossy(&bytes));
+                }
+                if stream.write_all(&bytes).await.is_err() {
                     return Err(());
                 }
             }
@@ -281,6 +363,12 @@ where
         }
     }
     let _ = stream.flush().await;
+
+    // Persist sequence numbers for restart continuity (best-effort).
+    if let Some(store) = &services.store {
+        let _ = store.set_next_sender_seq(session.next_out_seq()).await;
+        let _ = store.set_next_target_seq(session.next_in_seq()).await;
+    }
 
     if disconnect || session.state() == SessionState::Disconnected {
         Err(())

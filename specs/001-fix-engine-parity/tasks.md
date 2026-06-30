@@ -159,18 +159,18 @@ later stages. Serves US2.
 
 ### Tests for S5 (write first)
 
-- [ ] T053 [P] [US7] Restart-survivable resend test across memory/file/cached/SQL stores in `crates/truefix-store/tests/restart_resend.rs` (SC-006)
-- [ ] T054 [P] [US7] Composite log fan-out + incoming/outgoing/event stream separation test in `crates/truefix-log/tests/composite.rs` (FR-H2)
+- [X] T053 [P] [US7] Restart-survivable resend test across memory/file/cached/SQL stores in `crates/truefix-store/tests/restart_resend.rs` (SC-006)
+- [X] T054 [P] [US7] Composite log fan-out + incoming/outgoing/event stream separation test in `crates/truefix-log/tests/composite.rs` (FR-H2)
 
 ### Implementation for S5
 
-- [ ] T055 [P] [US7] Implement `MessageStore` trait + `MessageStoreFactory` in `crates/truefix-store/src/lib.rs`
-- [ ] T056 [P] [US7] Implement MemoryStore, FileStore, CachedFileStore, NoopStore in `crates/truefix-store/src/{memory,file,cached,noop}.rs`
-- [ ] T057 [P] [US7] Implement SQL store via sqlx (messages/sessions tables; JDBC-equivalent) in `crates/truefix-store/src/sql.rs` (research R7)
-- [ ] T058 [P] [US7] Implement `Log` trait + `LogFactory` + ScreenLog/FileLog/TracingLog/CompositeLog in `crates/truefix-log/src/`
+- [X] T055 [P] [US7] Implement `MessageStore` trait + `MessageStoreFactory` in `crates/truefix-store/src/lib.rs`
+- [X] T056 [P] [US7] Implement MemoryStore, FileStore, CachedFileStore, NoopStore in `crates/truefix-store/src/{memory,file,cached,noop}.rs`
+- [X] T057 [P] [US7] Implement SQL store via sqlx (messages/sessions tables; JDBC-equivalent) in `crates/truefix-store/src/sql.rs` (research R7)
+- [X] T058 [P] [US7] Implement `Log` trait + `LogFactory` + ScreenLog/FileLog/TracingLog/CompositeLog in `crates/truefix-log/src/`
 - [ ] T059 [P] [US7] Implement SQL log via sqlx (incoming/outgoing/event tables) in `crates/truefix-log/src/sql.rs`
-- [ ] T060 [US7] Implement ForceResendWhenCorruptedStore recovery path in `crates/truefix-store/src/recovery.rs`
-- [ ] T061 [US7] Wire store/log selection from config into session/transport in `crates/truefix-session/src/wiring.rs`
+- [X] T060 [US7] Implement ForceResendWhenCorruptedStore recovery path in `crates/truefix-store/src/recovery.rs`
+- [X] T061 [US7] Wire store/log selection from config into session/transport in `crates/truefix-session/src/wiring.rs`
 
 **Checkpoint S5**: T053/T054 pass; resend survives restart on every v1 store backend. (contracts/store-log.md; parity.md CHK037)
 

@@ -154,6 +154,18 @@ fn sequence_reset_reset_mode_sets_expected() {
 }
 
 #[test]
+fn seed_sequences_resumes_outbound_seq() {
+    let mut c = SessionConfig::new("FIX.4.4", "ME", "YOU", Role::Initiator);
+    c.reset_on_logon = false; // otherwise logon resets to 1
+    let mut s = Session::new(c);
+    s.seed_sequences(5, 7);
+    let actions = s.handle(Event::Connected);
+    let logon = sends(&actions)[0];
+    assert_eq!(logon.header.get(34).unwrap().as_int().unwrap(), 5); // resumes from seeded value
+    assert_eq!(s.next_in_seq(), 7);
+}
+
+#[test]
 fn next_expected_msg_seq_num_included_on_logon_when_enabled() {
     let mut c = cfg(Role::Initiator);
     c.enable_next_expected_msg_seq_num = true;

@@ -128,6 +128,15 @@ impl Session {
         self.next_in_seq
     }
 
+    /// Seed the sequence numbers from a persistent store (call before [`Event::Connected`]).
+    /// Has no effect once a logon has been sent.
+    pub fn seed_sequences(&mut self, next_out: u64, next_in: u64) {
+        if !self.logon_sent {
+            self.next_out_seq = next_out.max(1);
+            self.next_in_seq = next_in.max(1);
+        }
+    }
+
     /// Drive the engine with an [`Event`], producing [`Action`]s.
     pub fn handle(&mut self, event: Event) -> Vec<Action> {
         match event {

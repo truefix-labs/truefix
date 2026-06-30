@@ -36,6 +36,8 @@ truefix-dict = { path = "crates/truefix-dict" }
 truefix-session = { path = "crates/truefix-session" }
 truefix-transport = { path = "crates/truefix-transport" }
 truefix-config = { path = "crates/truefix-config" }
+truefix-store = { path = "crates/truefix-store" }
+truefix-log = { path = "crates/truefix-log" }
 
 [profile.release]
 # Production builds: keep debug info off, optimize. Benchmarks live in benches/.

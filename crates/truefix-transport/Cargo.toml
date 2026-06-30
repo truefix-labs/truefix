@@ -11,6 +11,8 @@ publish = false
 [dependencies]
 truefix-core.workspace = true
 truefix-session.workspace = true
+truefix-store.workspace = true
+truefix-log.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
@@ -19,6 +21,8 @@ tracing.workspace = true
 tokio = { workspace = true }
 truefix-core.workspace = true
 truefix-session.workspace = true
+truefix-store.workspace = true
+truefix-log.workspace = true
 async-trait.workspace = true
 
 [lints]

@@ -8,5 +8,9 @@ repository.workspace = true
 description = "FIX logging (screen/file/tracing/composite)."
 publish = false
 
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
 [lints]
 workspace = true
