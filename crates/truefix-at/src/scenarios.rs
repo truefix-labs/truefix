@@ -237,6 +237,48 @@ fn out_of_order_queued_then_drained(v: &str) -> Scenario {
     )
 }
 
+/// 2_dedup — once a gap has triggered a ResendRequest, further too-high messages are queued
+/// without emitting a second ResendRequest (the resend-pending guard).
+fn resend_request_not_duplicated(v: &str) -> Scenario {
+    let mut tr2 = client_message(v, "1", 2);
+    tr2.body.set(Field::string(112, "TWO"));
+    scenario(
+        "2_ResendRequestNotDuplicated",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(client_message(v, "0", 4)), // seq 4: gap → one ResendRequest
+            Step::Expect(ExpectMsg::of("2").field(7, "2")),
+            Step::Send(client_message(v, "0", 5)), // seq 5: still too high → no second request
+            Step::Send(tr2),                       // fills seq 2
+            // The next message must be the Heartbeat for seq 2, not a duplicate ResendRequest.
+            Step::Expect(ExpectMsg::of("0").field(112, "TWO")),
+        ],
+    )
+}
+
+/// 2_begin0 — a ResendRequest with BeginSeqNo=0 is ignored (no SequenceReset emitted).
+fn resend_request_begin_zero_ignored(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 2);
+    rr.body.set(Field::int(7, 0)); // BeginSeqNo=0
+    rr.body.set(Field::int(16, 0));
+    let mut tr = client_message(v, "1", 3); // ResendRequest consumed seq 2
+    tr.body.set(Field::string(112, "ZERO-OK"));
+    scenario(
+        "2_ResendRequestBeginZeroIgnored",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(rr),
+            Step::Send(tr),
+            // A Heartbeat (not a SequenceReset) proves the begin=0 request was ignored.
+            Step::Expect(ExpectMsg::of("0").field(112, "ZERO-OK")),
+        ],
+    )
+}
+
 /// 2f3 — a ResendRequest with an explicit (bounded) EndSeqNo still collapses admin traffic to a
 /// GapFill.
 fn resend_request_bounded_end(v: &str) -> Scenario {
@@ -373,6 +415,38 @@ fn new_order_single_42(seq: i64) -> Message {
     m.body.set(Field::int(38, 100)); // OrderQty
     m.body.set(Field::string(40, "2")); // OrdType
     m
+}
+
+/// 14a (FIX.4.2) — a tag not defined in the 4.2 dictionary draws a session-level Reject.
+fn invalid_tag_number_42() -> Scenario {
+    let mut order = new_order_single_42(2);
+    order.body.set(Field::string(999, "X")); // 999 undefined, below the UDF range
+    scenario(
+        "14a_InvalidTagNumber_42",
+        "FIX.4.2",
+        vec![
+            Step::Send(logon("FIX.4.2", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "0")), // InvalidTagNumber
+        ],
+    )
+}
+
+/// 14f (FIX.4.2) — a non-numeric OrderQty(38) draws a session-level Reject (IncorrectDataFormat).
+fn incorrect_data_format_42() -> Scenario {
+    let mut order = new_order_single_42(2);
+    order.body.set(Field::string(38, "abc")); // OrderQty is a QTY; "abc" is not numeric
+    scenario(
+        "14f_IncorrectDataFormat_42",
+        "FIX.4.2",
+        vec![
+            Step::Send(logon("FIX.4.2", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "6")), // IncorrectDataFormat
+        ],
+    )
 }
 
 /// 14_valid (FIX.4.2) — a fully-valid NewOrderSingle passes the 4.2 dictionary: no Reject.
@@ -707,6 +781,8 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(logon_adopts_heartbeat_interval(v));
         out.push(resend_request_gap_fill(v));
         out.push(resend_request_bounded_end(v));
+        out.push(resend_request_not_duplicated(v));
+        out.push(resend_request_begin_zero_ignored(v));
         out.push(out_of_order_queued_then_drained(v));
         out.push(sequence_reset_reset(v));
         out.push(sequence_reset_gap_fill_advances(v));
@@ -721,6 +797,8 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(valid_new_order_accepted_42());
     out.push(required_field_missing_42());
     out.push(incorrect_enum_value_42());
+    out.push(invalid_tag_number_42());
+    out.push(incorrect_data_format_42());
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(valid_new_order_accepted("FIX.4.4"));
     out.push(required_field_missing("FIX.4.4"));
