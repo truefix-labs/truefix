@@ -19,6 +19,7 @@
 mod admin;
 pub mod application;
 pub mod config;
+pub mod schedule;
 pub mod session_id;
 pub mod state;
 mod tags;
@@ -26,5 +27,6 @@ mod time_util;
 
 pub use application::Application;
 pub use config::{Role, SessionConfig};
+pub use schedule::Schedule;
 pub use session_id::SessionId;
 pub use state::{Action, Event, Session, SessionState};

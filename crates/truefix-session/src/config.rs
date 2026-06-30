@@ -43,6 +43,10 @@ pub struct SessionConfig {
     pub check_latency: bool,
     /// Maximum tolerated SendingTime latency, in seconds.
     pub max_latency: u32,
+    /// Initiator reconnect interval, in seconds (ReconnectInterval).
+    pub reconnect_interval: u32,
+    /// Optional activity schedule (StartTime/EndTime/Weekdays/NonStop).
+    pub schedule: Option<crate::schedule::Schedule>,
 }
 
 impl SessionConfig {
@@ -67,6 +71,8 @@ impl SessionConfig {
             enable_next_expected_msg_seq_num: false,
             check_latency: true,
             max_latency: 120,
+            reconnect_interval: 5,
+            schedule: None,
         }
     }
 

@@ -64,10 +64,12 @@ async fn sequence_numbers_persist_to_store_across_session() {
     let acc_services = Services {
         store: Some(acc_store.clone() as Arc<dyn MessageStore>),
         log: None,
+        ..Services::default()
     };
     let init_services = Services {
         store: Some(init_store.clone() as Arc<dyn MessageStore>),
         log: None,
+        ..Services::default()
     };
 
     let mut acc_cfg = SessionConfig::new("FIX.4.4", "SERVER", "CLIENT", Role::Acceptor);

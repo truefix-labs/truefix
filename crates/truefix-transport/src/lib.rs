@@ -18,8 +18,10 @@
 
 mod framing;
 
+use std::collections::HashMap;
 use std::future::pending;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,13 +40,35 @@ use truefix_store::MessageStore;
 
 use framing::frame_length;
 
-/// Optional per-session services: a persistent message store and a log.
+/// TCP socket options applied to each connection.
+#[derive(Debug, Clone, Copy)]
+pub struct SocketOptions {
+    /// Disable Nagle's algorithm (TCP_NODELAY).
+    pub tcp_no_delay: bool,
+}
+
+impl Default for SocketOptions {
+    fn default() -> Self {
+        Self { tcp_no_delay: true }
+    }
+}
+
+impl SocketOptions {
+    /// Apply the options to a connected stream (best-effort).
+    pub fn apply(&self, stream: &TcpStream) {
+        let _ = stream.set_nodelay(self.tcp_no_delay);
+    }
+}
+
+/// Optional per-session services: a persistent message store, a log, and socket options.
 #[derive(Clone, Default)]
 pub struct Services {
     /// Persistent store for sequence-number continuity (and future cross-restart resend).
     pub store: Option<Arc<dyn MessageStore>>,
     /// Message/event log.
     pub log: Option<Arc<dyn Log>>,
+    /// TCP socket options.
+    pub socket_options: SocketOptions,
 }
 
 /// Control messages to a running session task.
@@ -158,7 +182,7 @@ where
 {
     let (control_tx, control_rx) = mpsc::channel(8);
     let task = tokio::spawn(async move {
-        run_connection(stream, config, app, services, control_rx).await;
+        run_connection(stream, config, app, services, control_rx, Vec::new()).await;
     });
     SessionHandle {
         control: control_tx,
@@ -166,18 +190,21 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_connection<A>(
     mut stream: TcpStream,
     config: SessionConfig,
     app: Arc<A>,
     services: Services,
     mut control: mpsc::Receiver<Control>,
+    mut buf: Vec<u8>,
 ) where
     A: Application + 'static,
 {
     let mut session = Session::new(config);
     let id = session.id().clone();
     app.on_create(&id).await;
+    services.socket_options.apply(&stream);
 
     // Restore sequence numbers from the store (continuity across restarts).
     if let Some(store) = &services.store {
@@ -186,7 +213,6 @@ async fn run_connection<A>(
         session.seed_sequences(out, inn);
     }
 
-    let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
     let mut ticker = interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -206,6 +232,24 @@ async fn run_connection<A>(
     )
     .await
     .is_err()
+    {
+        closing = true;
+    }
+
+    // Drain any bytes pre-read while routing the connection (acceptor: the inbound Logon).
+    if !closing
+        && !buf.is_empty()
+        && drain_messages(
+            &mut buf,
+            &mut session,
+            &mut stream,
+            &app,
+            &id,
+            &services,
+            &mut logged_on,
+        )
+        .await
+        .is_err()
     {
         closing = true;
     }
@@ -382,4 +426,233 @@ fn is_admin(msg: &Message) -> bool {
         msg.msg_type(),
         Some("0" | "1" | "2" | "3" | "4" | "5" | "A")
     )
+}
+
+// ===========================================================================================
+// Multi-session acceptor (routing by SessionID), dynamic sessions, and allow-listing (S6).
+// ===========================================================================================
+
+struct Registry {
+    sessions: HashMap<SessionId, SessionConfig>,
+    template: Option<SessionConfig>,
+    allowed_remotes: Option<Vec<IpAddr>>,
+}
+
+/// Builds and serves a multi-session acceptor with optional dynamic sessions and allow-listing.
+pub struct AcceptorBuilder<A: Application + 'static> {
+    listener: TcpListener,
+    app: Arc<A>,
+    sessions: HashMap<SessionId, SessionConfig>,
+    template: Option<SessionConfig>,
+    allowed_remotes: Option<Vec<IpAddr>>,
+    services: Services,
+}
+
+impl<A: Application + 'static> AcceptorBuilder<A> {
+    /// Bind a multi-session acceptor.
+    pub async fn bind(addr: SocketAddr, app: Arc<A>) -> io::Result<Self> {
+        let listener = TcpListener::bind(addr).await?;
+        Ok(Self {
+            listener,
+            app,
+            sessions: HashMap::new(),
+            template: None,
+            allowed_remotes: None,
+            services: Services::default(),
+        })
+    }
+
+    /// The bound local address.
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    /// Register a static session (keyed by its SessionID).
+    #[must_use]
+    pub fn with_session(mut self, config: SessionConfig) -> Self {
+        self.sessions.insert(config.session_id(), config);
+        self
+    }
+
+    /// Set a dynamic-session template: connections that don't match a static session are accepted
+    /// using this template (AcceptorTemplate / DynamicSession).
+    #[must_use]
+    pub fn with_dynamic_template(mut self, template: SessionConfig) -> Self {
+        self.template = Some(template);
+        self
+    }
+
+    /// Only accept connections from these remote IP addresses (AllowedRemoteAddresses).
+    #[must_use]
+    pub fn allow_remotes(mut self, ips: Vec<IpAddr>) -> Self {
+        self.allowed_remotes = Some(ips);
+        self
+    }
+
+    /// Attach store/log/socket services.
+    #[must_use]
+    pub fn with_services(mut self, services: Services) -> Self {
+        self.services = services;
+        self
+    }
+
+    /// Spawn the accept loop.
+    pub fn serve(self) -> JoinHandle<()> {
+        let registry = Arc::new(Registry {
+            sessions: self.sessions,
+            template: self.template,
+            allowed_remotes: self.allowed_remotes,
+        });
+        let app = self.app;
+        let services = self.services;
+        let listener = self.listener;
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = listener.accept().await {
+                let registry = registry.clone();
+                let app = app.clone();
+                let services = services.clone();
+                tokio::spawn(async move {
+                    serve_connection(stream, peer, app, registry, services).await;
+                });
+            }
+        })
+    }
+}
+
+async fn serve_connection<A>(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    app: Arc<A>,
+    registry: Arc<Registry>,
+    services: Services,
+) where
+    A: Application + 'static,
+{
+    if let Some(allowed) = &registry.allowed_remotes {
+        if !allowed.contains(&peer.ip()) {
+            return; // refuse: not in the allow-list
+        }
+    }
+    services.socket_options.apply(&stream);
+
+    // Read until the first complete message (the Logon) so we can route by SessionID.
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let logon = loop {
+        match stream.read(&mut chunk).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                if let Some(slice) = chunk.get(..n) {
+                    buf.extend_from_slice(slice);
+                }
+            }
+        }
+        match frame_length(&buf) {
+            Ok(Some(total)) => match buf.get(..total).map(decode) {
+                Some(Ok(msg)) => break msg,
+                _ => return,
+            },
+            Ok(None) => continue,
+            Err(_) => return,
+        }
+    };
+
+    let begin = logon.begin_string().unwrap_or_default().to_owned();
+    let their_sender = field_str(&logon, 49);
+    let their_target = field_str(&logon, 56);
+    // Our SessionID reverses the counterparty's comp IDs.
+    let sid = SessionId::new(begin.clone(), their_target.clone(), their_sender.clone());
+
+    let config = registry.sessions.get(&sid).cloned().or_else(|| {
+        registry
+            .template
+            .as_ref()
+            .map(|t| dynamic_config(t, &begin, &their_target, &their_sender))
+    });
+    let Some(config) = config else {
+        return; // no static match and no template -> refuse
+    };
+
+    let (_control_tx, control_rx) = mpsc::channel(1);
+    run_connection(stream, config, app, services, control_rx, buf).await;
+}
+
+fn field_str(msg: &Message, tag: u32) -> String {
+    msg.header
+        .get(tag)
+        .and_then(|f| f.as_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn dynamic_config(
+    template: &SessionConfig,
+    begin: &str,
+    our_sender: &str,
+    our_target: &str,
+) -> SessionConfig {
+    let mut config = template.clone();
+    config.begin_string = begin.to_owned();
+    config.sender_comp_id = our_sender.to_owned();
+    config.target_comp_id = our_target.to_owned();
+    config
+}
+
+// ===========================================================================================
+// Reconnecting initiator (S6).
+// ===========================================================================================
+
+/// Handle to a reconnecting initiator loop.
+pub struct ReconnectHandle {
+    stop: Arc<AtomicBool>,
+    task: JoinHandle<()>,
+}
+
+impl ReconnectHandle {
+    /// Signal the loop to stop after the current attempt.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+
+    /// Wait for the loop to finish.
+    pub async fn join(self) {
+        let _ = self.task.await;
+    }
+}
+
+/// Connect out as an initiator, automatically reconnecting after `config.reconnect_interval`
+/// seconds whenever the connection drops, until stopped.
+pub fn connect_initiator_reconnecting<A>(
+    addr: SocketAddr,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> ReconnectHandle
+where
+    A: Application + 'static,
+{
+    let stop = Arc::new(AtomicBool::new(false));
+    let loop_stop = stop.clone();
+    let interval = Duration::from_secs(u64::from(config.reconnect_interval).max(1));
+    let task = tokio::spawn(async move {
+        while !loop_stop.load(Ordering::SeqCst) {
+            if let Ok(stream) = TcpStream::connect(addr).await {
+                let (_control_tx, control_rx) = mpsc::channel(1);
+                run_connection(
+                    stream,
+                    config.clone(),
+                    app.clone(),
+                    services.clone(),
+                    control_rx,
+                    Vec::new(),
+                )
+                .await;
+            }
+            if loop_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(interval).await;
+        }
+    });
+    ReconnectHandle { stop, task }
 }

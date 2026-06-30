@@ -184,19 +184,19 @@ later stages. Serves US2.
 
 ### Tests for S6 (write first)
 
-- [ ] T062 [P] [US4] Multi-session + dynamic-session integration (2 static + 1 template-matched) in `tests/multi_dynamic.rs` (SC-003)
-- [ ] T063 [P] [US4] Disallowed-remote refusal test (AllowedRemoteAddresses) in `crates/truefix-transport/tests/allowlist.rs`
-- [ ] T064 [P] [US6] Scheduling tests: daily window reset (disconnect→reset→clear→reconnect) + NonStopSession exclusion in `crates/truefix-session/tests/schedule.rs` (FR-E1/E2/E3)
-- [ ] T065 [P] [US4] Initiator reconnect test (ReconnectInterval) in `crates/truefix-transport/tests/reconnect.rs`
+- [X] T062 [P] [US4] Multi-session + dynamic-session integration (2 static + 1 template-matched) in `tests/multi_dynamic.rs` (SC-003)
+- [X] T063 [P] [US4] Disallowed-remote refusal test (AllowedRemoteAddresses) in `crates/truefix-transport/tests/allowlist.rs`
+- [X] T064 [P] [US6] Scheduling tests: daily window reset (disconnect→reset→clear→reconnect) + NonStopSession exclusion in `crates/truefix-session/tests/schedule.rs` (FR-E1/E2/E3)
+- [X] T065 [P] [US4] Initiator reconnect test (ReconnectInterval) in `crates/truefix-transport/tests/reconnect.rs`
 
 ### Implementation for S6
 
-- [ ] T066 [US4] Implement multi-session management + SessionID routing in acceptor/initiator in `crates/truefix-transport/src/sessions.rs`
-- [ ] T067 [US4] Implement dynamic sessions (AcceptorTemplate, DynamicSession) + AllowedRemoteAddresses in `crates/truefix-transport/src/dynamic.rs` (FR-F3)
-- [ ] T068 [US4] Implement initiator reconnect loop (ReconnectInterval) in `crates/truefix-transport/src/reconnect.rs`
-- [ ] T069 [P] [US6] Implement `Schedule` (StartTime/EndTime, StartDay/EndDay, Weekdays, TimeZone, NonStopSession) + in-session window calc in `crates/truefix-session/src/schedule.rs`
+- [X] T066 [US4] Implement multi-session management + SessionID routing in acceptor/initiator in `crates/truefix-transport/src/sessions.rs`
+- [X] T067 [US4] Implement dynamic sessions (AcceptorTemplate, DynamicSession) + AllowedRemoteAddresses in `crates/truefix-transport/src/dynamic.rs` (FR-F3)
+- [X] T068 [US4] Implement initiator reconnect loop (ReconnectInterval) in `crates/truefix-transport/src/reconnect.rs`
+- [X] T069 [P] [US6] Implement `Schedule` (StartTime/EndTime, StartDay/EndDay, Weekdays, TimeZone, NonStopSession) + in-session window calc in `crates/truefix-session/src/schedule.rs`
 - [ ] T070 [US6] Implement scheduled-reset semantics (disconnect→reset seq→clear store→reconnect) in `crates/truefix-session/src/schedule_reset.rs` (FR-E3)
-- [ ] T071 [P] [US4] Implement socket options (keep-alive, nodelay, reuse, linger, buffers, etc.) in `crates/truefix-transport/src/socket_opts.rs` (FR-F5)
+- [X] T071 [P] [US4] Implement socket options (keep-alive, nodelay, reuse, linger, buffers, etc.) in `crates/truefix-transport/src/socket_opts.rs` (FR-F5)
 
 **Checkpoint S6**: T062–T065 pass; acceptor multi/dynamic at parity with initiator (Constitution VI). (contracts/transport.md; parity.md CHK041/CHK039)
 
