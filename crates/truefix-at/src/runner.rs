@@ -64,6 +64,8 @@ pub struct SessionTweaks {
     pub check_latency: bool,
     /// ResendRequest chunk size (0 = request the whole range at once).
     pub resend_chunk_size: u32,
+    /// Use an active application that replies to each NewOrderSingle with an ExecutionReport.
+    pub executor_app: bool,
 }
 
 /// A scripted acceptance-test scenario.
@@ -96,10 +98,22 @@ pub async fn start_acceptor(
     version: &str,
     tweaks: &SessionTweaks,
 ) -> std::io::Result<(SocketAddr, JoinHandle<()>)> {
-    struct PassiveApp;
+    // One app type: when it holds a Monitor it acts as an executor, replying to each
+    // NewOrderSingle(35=D) with an ExecutionReport(35=8); otherwise it is passive.
+    struct AtApp {
+        monitor: Option<truefix_transport::Monitor>,
+    }
     #[async_trait::async_trait]
-    impl Application for PassiveApp {
+    impl Application for AtApp {
         async fn on_logon(&self, _s: &SessionId) {}
+        async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), String> {
+            if let Some(monitor) = &self.monitor {
+                if message.msg_type() == Some("D") {
+                    monitor.send_app(id, execution_report(message)).await;
+                }
+            }
+            Ok(())
+        }
     }
 
     let mut template = SessionConfig::new(version, "SERVER", "CLIENT", Role::Acceptor);
@@ -117,14 +131,16 @@ pub async fn start_acceptor(
         _ => None,
     }
     .map(|dict| (dict, truefix_dict::ValidationOptions::default()));
+    let monitor = tweaks.executor_app.then(truefix_transport::Monitor::new);
     let services = truefix_transport::Services {
         validator,
+        monitor: monitor.clone(),
         ..truefix_transport::Services::default()
     };
 
     let acceptor = AcceptorBuilder::bind(
         "127.0.0.1:0".parse().unwrap_or_else(|_| unreachable_addr()),
-        Arc::new(PassiveApp),
+        Arc::new(AtApp { monitor }),
     )
     .await?
     .with_dynamic_template(template)
@@ -132,6 +148,23 @@ pub async fn start_acceptor(
     let addr = acceptor.local_addr()?;
     let handle = acceptor.serve();
     Ok((addr, handle))
+}
+
+/// Build a minimal ExecutionReport (35=8) acknowledging `order`, echoing its key fields. The
+/// engine stamps the session header (BeginString/CompIDs/MsgSeqNum/SendingTime) on send.
+fn execution_report(order: &Message) -> Message {
+    let mut m = Message::new();
+    m.header.set(Field::string(35, "8"));
+    m.body.set(Field::string(37, "ORDER-1")); // OrderID
+    m.body.set(Field::string(17, "EXEC-1")); // ExecID
+    m.body.set(Field::string(150, "0")); // ExecType = New
+    m.body.set(Field::string(39, "0")); // OrdStatus = New
+    for tag in [11u32, 55, 54, 38] {
+        if let Some(f) = order.body.get(tag) {
+            m.body.set(Field::new(tag, f.value_bytes().to_vec()));
+        }
+    }
+    m
 }
 
 fn unreachable_addr() -> SocketAddr {

@@ -568,6 +568,45 @@ fn valid_new_order_accepted(v: &str) -> Scenario {
     )
 }
 
+/// app1 — an active acceptor fills each NewOrderSingle with an ExecutionReport (35=8).
+fn app_order_executed(v: &str) -> Scenario {
+    scenario_with(
+        "app_NewOrderSingleExecuted",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(new_order_single(2)),
+            // ExecutionReport echoing ClOrdID with ExecType=New.
+            Step::Expect(ExpectMsg::of("8").field(11, "ORDER-1").field(150, "0")),
+        ],
+        SessionTweaks {
+            executor_app: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// app2 — successive application responses carry increasing outbound MsgSeqNum.
+fn app_orders_sequenced(v: &str) -> Scenario {
+    scenario_with(
+        "app_OrdersOutboundSequenced",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(new_order_single(2)),
+            Step::Expect(ExpectMsg::of("8").field(34, "2")), // first ExecutionReport: outbound seq 2
+            Step::Send(new_order_single(3)),
+            Step::Expect(ExpectMsg::of("8").field(34, "3")), // second ExecutionReport: outbound seq 3
+        ],
+        SessionTweaks {
+            executor_app: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// 14b — a NewOrderSingle missing a required field draws a session-level Reject.
 fn required_field_missing(v: &str) -> Scenario {
     let mut order = new_order_single(2);
@@ -848,6 +887,8 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(incorrect_data_format_42());
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(valid_new_order_accepted("FIX.4.4"));
+    out.push(app_order_executed("FIX.4.4"));
+    out.push(app_orders_sequenced("FIX.4.4"));
     out.push(required_field_missing("FIX.4.4"));
     out.push(incorrect_enum_value("FIX.4.4"));
     out.push(invalid_tag_number("FIX.4.4"));

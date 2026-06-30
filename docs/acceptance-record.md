@@ -13,7 +13,7 @@ to the automated tests that verify them (T098). All run under `cargo test --work
 | V5 Dictionary validation, dual-track (US5) | toggles, two rejection layers, FIXT split, same-source | `truefix-dict` `toggles.rs`, `rejection_layers.rs`, `fixt.rs`, `dual_track.rs`, `versions.rs` |
 | V6 Store persistence across restart (US7, SC-006) | file/cached/SQL survive restart; recovery | `truefix-store` `restart_resend.rs` (+ `--features sql`) |
 | V7 Config full key coverage (US8, SC-004) | every Appendix A key has a known stance | `truefix-config` `key_coverage.rs` |
-| V8 Acceptance Test suite (US12, gate) | 41 scripted scenarios / 67 runs across versions | `truefix-at` `conformance.rs` |
+| V8 Acceptance Test suite (US12, gate) | 43 scripted scenarios / 69 runs across versions | `truefix-at` `conformance.rs` |
 | V9 Observability (US11, SC-007) | session state/seq/health + reset/force-logout | `truefix-transport` `monitor.rs` |
 | TLS / auth / timeouts (US10) | TLS handshake; auth accept/reject; timeouts/latency | `truefix-transport` `tls.rs`, `auth.rs`; `truefix-session` `timeouts.rs` |
 | Examples (US13) | executor↔banzai order→ExecutionReport; multi-session | `truefix` `examples_smoke.rs` |
