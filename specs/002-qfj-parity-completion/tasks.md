@@ -14,15 +14,15 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 
 ## Phase 1: Setup
 
-- [ ] T001 [P] Enable `sqlx` Postgres+MySQL features, add `rustls-pemfile`, and confirm `metrics` is a real dependency in `Cargo.toml` (workspace) and the consuming crates' `Cargo.toml`
-- [ ] T002 [P] Add Postgres + MySQL service containers and `DATABASE_URL_PG`/`DATABASE_URL_MYSQL` env to CI; gate SQL tests on availability (SQLite always) in `.github/workflows/` (or existing CI config)
-- [ ] T003 [P] Run `cargo deny` license audit for new deps (`rustls-pemfile`, `sqlx-postgres`, `sqlx-mysql`, `metrics`); record Apache-2.0/MIT compatibility in `docs/parity-matrix.md` (Principle III, research R11)
-- [ ] T004 [P] Scaffold `MIGRATION.md` (breaking callback change section placeholder) and a stance-update table stub in `docs/parity-matrix.md`
-- [ ] T005 [P] Add shared test fixtures: `.cfg` fixtures under `crates/truefix/tests/fixtures/`, an `rcgen` cert helper, a `metrics` test-recorder helper, and a DB-availability gate helper in `crates/truefix-store/tests/common/`
+- [X] T001 [P] Enable `sqlx` Postgres+MySQL features, add `rustls-pemfile`, and confirm `metrics` is a real dependency in `Cargo.toml` (workspace) and the consuming crates' `Cargo.toml`
+- [X] T002 [P] Add Postgres + MySQL service containers and `DATABASE_URL_PG`/`DATABASE_URL_MYSQL` env to CI; gate SQL tests on availability (SQLite always) in `.github/workflows/` (or existing CI config)
+- [X] T003 [P] Run `cargo deny` license audit for new deps (`rustls-pemfile`, `sqlx-postgres`, `sqlx-mysql`, `metrics`); record Apache-2.0/MIT compatibility in `docs/parity-matrix.md` (Principle III, research R11)
+- [X] T004 [P] Scaffold `MIGRATION.md` (breaking callback change section placeholder) and a stance-update table stub in `docs/parity-matrix.md`
+- [ ] T005 [P] (folded into US1/US7 when first consumer lands) Add shared test fixtures: `.cfg` fixtures under `crates/truefix/tests/fixtures/`, an `rcgen` cert helper, a `metrics` test-recorder helper, and a DB-availability gate helper in `crates/truefix-store/tests/common/`
 
 ## Phase 2: Foundational (blocking prerequisites)
 
-- [ ] T006 Define the shared typed-error surfaces with docs so dependent stories compile against stable types: `ConfigError` in `crates/truefix-config/src/error.rs`, and callback outcome types `Reject`/`DoNotSend`/`BusinessReject` in `crates/truefix-core/src/error.rs` (bodies filled in their owning stories)
+- [X] T006 Define the shared typed-error surfaces with docs so dependent stories compile against stable types: `ConfigError` in `crates/truefix-config/src/error.rs`, and callback outcome types `Reject`/`DoNotSend`/`BusinessReject` in `crates/truefix-core/src/error.rs` (bodies filled in their owning stories)
 
 ---
 

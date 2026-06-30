@@ -42,3 +42,17 @@ across the target versions and is the CI gate.
 
 `crates/truefix-core/tests/fixtures/reference/` holds QuickFIX/J-sourced wire vectors,
 cross-validated in `tests/reference_vectors.rs` (byte-exact BodyLength/CheckSum).
+
+## Feature 002 — dependency license audit (T003, Constitution III)
+
+New/newly-exercised dependencies for the parity-completion work, verified Apache-2.0 OR
+MIT-compatible (no copyleft introduced); enforced in CI by the `deny` job (`deny.toml`):
+
+| Dependency | Use (002) | License |
+|------------|-----------|---------|
+| `rustls-pemfile` | load TLS key/cert/CA from `.cfg` paths (US7) | MIT OR Apache-2.0 |
+| `sqlx-postgres` | SQL store/log Postgres backend (US12) | MIT OR Apache-2.0 |
+| `sqlx-mysql` | SQL store/log MySQL backend (US12) | MIT OR Apache-2.0 |
+| `metrics` | observability facade export (US9) | MIT |
+
+All within the existing Apache-2.0 OR MIT release posture; `cargo deny check` gates regressions.

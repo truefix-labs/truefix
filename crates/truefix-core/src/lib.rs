@@ -32,7 +32,7 @@ pub mod tags;
 
 pub use codec::{decode, encode};
 pub use cracker::MessageCracker;
-pub use error::{DecodeError, FieldError};
+pub use error::{BusinessReject, DecodeError, DoNotSend, FieldError, Reject};
 pub use factory::MessageFactory;
 pub use field::Field;
 pub use field_map::FieldMap;

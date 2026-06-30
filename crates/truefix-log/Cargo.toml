@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
-sqlx = { workspace = true, optional = true, features = ["sqlite"] }
+sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "mysql"] }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]

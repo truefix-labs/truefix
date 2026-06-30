@@ -32,3 +32,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  sql:
+    name: SQL backends (sqlite/postgres/mysql)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+          MYSQL_DATABASE: truefix
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost" --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      # The SQL tests read these and skip a backend whose URL is absent; SQLite always runs.
+      DATABASE_URL_PG: postgres://postgres:postgres@localhost:5432/postgres
+      DATABASE_URL_MYSQL: mysql://root:mysql@localhost:3306/truefix
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (sql feature, all backends)
+        run: cargo test -p truefix-store -p truefix-log --features sql
