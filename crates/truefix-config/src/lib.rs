@@ -16,9 +16,13 @@
     )
 )]
 
+pub mod keys;
+
 use std::collections::BTreeMap;
 
 use thiserror::Error;
+
+pub use keys::{key_info, KeyInfo, Stance, APPENDIX_A_KEYS};
 
 /// An error parsing a settings document.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

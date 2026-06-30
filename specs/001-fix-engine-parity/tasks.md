@@ -274,13 +274,13 @@ later stages. Serves US2.
 
 ## Phase 11: Polish & Cross-Cutting Concerns
 
-- [ ] T092 [US8] Full Appendix A config-key coverage: implement remaining keys (proxy, all socket opts, file/SQL store+log keys, SLF4J-equiv keys) and a coverage enumeration test asserting every key is implemented or documented-unsupported in `crates/truefix-config/tests/key_coverage.rs` (FR-I2, SC-004; parity.md CHK001)
-- [ ] T093 [US8] Document Sleepycat/JE key group as unsupported-with-reason (v1 deferral) in `crates/truefix-config/src/unsupported.rs` + docs (parity.md CHK012)
-- [ ] T094 [P] Establish reproducible benchmarks (codec throughput, session round-trip latency) in `benches/` and run in CI for regression visibility (no numeric gate) (SC-008)
-- [ ] T095 [P] Public-API docs pass: ensure every public type/trait/fn has doc comments; `#![deny(missing_docs)]` on facade in `crates/truefix/src/lib.rs` (Constitution I)
-- [ ] T096 [P] Add a parity traceability matrix (Appendix A key → owning crate/test; Appendix B scenario → fixture/version) in `docs/parity-matrix.md` (parity.md CHK033/CHK036)
-- [ ] T097 [P] No-panic audit on critical paths (clippy lint review + manual scan of codec/session/io/timer) documented in `docs/no-panic-audit.md` (SC-005; parity.md CHK038)
-- [ ] T098 Run `quickstart.md` V1–V9 end-to-end and record results; finalize `cargo deny` clean report (release acceptance)
+- [X] T092 [US8] Full Appendix A config-key coverage: implement remaining keys (proxy, all socket opts, file/SQL store+log keys, SLF4J-equiv keys) and a coverage enumeration test asserting every key is implemented or documented-unsupported in `crates/truefix-config/tests/key_coverage.rs` (FR-I2, SC-004; parity.md CHK001)
+- [X] T093 [US8] Document Sleepycat/JE key group as unsupported-with-reason (v1 deferral) in `crates/truefix-config/src/unsupported.rs` + docs (parity.md CHK012)
+- [X] T094 [P] Establish reproducible benchmarks (codec throughput, session round-trip latency) in `benches/` and run in CI for regression visibility (no numeric gate) (SC-008)
+- [X] T095 [P] Public-API docs pass: ensure every public type/trait/fn has doc comments; `#![deny(missing_docs)]` on facade in `crates/truefix/src/lib.rs` (Constitution I)
+- [X] T096 [P] Add a parity traceability matrix (Appendix A key → owning crate/test; Appendix B scenario → fixture/version) in `docs/parity-matrix.md` (parity.md CHK033/CHK036)
+- [X] T097 [P] No-panic audit on critical paths (clippy lint review + manual scan of codec/session/io/timer) documented in `docs/no-panic-audit.md` (SC-005; parity.md CHK038)
+- [X] T098 Run `quickstart.md` V1–V9 end-to-end and record results; finalize `cargo deny` clean report (release acceptance)
 
 ---
 

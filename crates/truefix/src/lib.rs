@@ -5,6 +5,7 @@
 //! [`Acceptor`] or [`connect_initiator`].
 //!
 //! Design: `specs/001-fix-engine-parity/`.
+#![deny(missing_docs)]
 #![cfg_attr(
     not(test),
     deny(
