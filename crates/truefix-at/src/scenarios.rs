@@ -178,6 +178,103 @@ fn poss_dup_too_low(v: &str) -> Scenario {
     )
 }
 
+/// 2d — a SequenceReset-GapFill advances the expected inbound sequence number.
+fn sequence_reset_gap_fill_advances(v: &str) -> Scenario {
+    let mut sr = client_message(v, "4", 2);
+    sr.body.set(Field::string(123, "Y")); // GapFillFlag
+    sr.body.set(Field::int(36, 5)); // NewSeqNo
+    let mut tr = client_message(v, "1", 5);
+    tr.body.set(Field::string(112, "GAP-FILLED"));
+    scenario(
+        "2d_SequenceResetGapFillAdvances",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(sr),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "GAP-FILLED")),
+        ],
+    )
+}
+
+/// 2e — a SequenceReset-GapFill whose NewSeqNo is behind the expected number is ignored.
+fn sequence_reset_gap_fill_backward_ignored(v: &str) -> Scenario {
+    // After logon the server expects seq 2; a GapFill to NewSeqNo=1 must not rewind it.
+    let mut sr = client_message(v, "4", 2);
+    sr.body.set(Field::string(123, "Y"));
+    sr.body.set(Field::int(36, 1)); // backward NewSeqNo
+    let mut tr = client_message(v, "1", 2); // still the expected sequence
+    tr.body.set(Field::string(112, "NO-REWIND"));
+    scenario(
+        "2e_SequenceResetGapFillBackwardIgnored",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(sr),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "NO-REWIND")),
+        ],
+    )
+}
+
+/// 2h — a ResendRequest for messages that were never sent yields no response (session continues).
+fn resend_request_nothing_to_resend(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 2);
+    rr.body.set(Field::int(7, 5)); // BeginSeqNo beyond anything sent
+    rr.body.set(Field::int(16, 0));
+    let mut tr = client_message(v, "1", 3); // ResendRequest consumed seq 2
+    tr.body.set(Field::string(112, "ALIVE"));
+    scenario(
+        "2h_ResendRequestNothingToResend",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(rr),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "ALIVE")),
+        ],
+    )
+}
+
+/// 3a — a received Reject is consumed (no reply) and the sequence number advances.
+fn reject_message_consumed(v: &str) -> Scenario {
+    let mut rej = client_message(v, "3", 2);
+    rej.body.set(Field::int(45, 1)); // RefSeqNum
+    let mut tr = client_message(v, "1", 3); // Reject consumed seq 2
+    tr.body.set(Field::string(112, "AFTER-REJECT"));
+    scenario(
+        "3a_ReceivedRejectConsumed",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(rej),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "AFTER-REJECT")),
+        ],
+    )
+}
+
+/// 0a — a received Heartbeat is consumed (no reply) and the sequence number advances.
+fn heartbeat_consumed(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 3); // Heartbeat consumed seq 2
+    tr.body.set(Field::string(112, "AFTER-HB"));
+    scenario(
+        "0a_ReceivedHeartbeatConsumed",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(client_message(v, "0", 2)), // Heartbeat at the expected sequence
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "AFTER-HB")),
+        ],
+    )
+}
+
 /// A valid FIX.4.4 NewOrderSingle (all required fields present).
 fn new_order_single(seq: i64) -> Message {
     let mut m = client_message("FIX.4.4", "D", seq);
@@ -188,6 +285,24 @@ fn new_order_single(seq: i64) -> Message {
     m.body.set(Field::string(60, "20240101-00:00:00")); // TransactTime
     m.body.set(Field::string(40, "2")); // OrdType
     m
+}
+
+/// 14_valid — a fully-valid NewOrderSingle passes validation: no Reject, sequence advances.
+fn valid_new_order_accepted(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 3); // order consumed seq 2
+    tr.body.set(Field::string(112, "ORDER-OK"));
+    scenario(
+        "14_valid_NewOrderSingleAccepted",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(new_order_single(2)),
+            Step::Send(tr),
+            // A Heartbeat (not a Reject) proves the order was accepted and seq advanced.
+            Step::Expect(ExpectMsg::of("0").field(112, "ORDER-OK")),
+        ],
+    )
 }
 
 /// 14b — a NewOrderSingle missing a required field draws a session-level Reject.
@@ -446,9 +561,15 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(unsolicited_logout(v));
         out.push(resend_request_gap_fill(v));
         out.push(sequence_reset_reset(v));
+        out.push(sequence_reset_gap_fill_advances(v));
+        out.push(sequence_reset_gap_fill_backward_ignored(v));
+        out.push(resend_request_nothing_to_resend(v));
+        out.push(reject_message_consumed(v));
+        out.push(heartbeat_consumed(v));
         out.push(poss_dup_too_low(v));
     }
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
+    out.push(valid_new_order_accepted("FIX.4.4"));
     out.push(required_field_missing("FIX.4.4"));
     out.push(incorrect_enum_value("FIX.4.4"));
     out.push(invalid_tag_number("FIX.4.4"));
