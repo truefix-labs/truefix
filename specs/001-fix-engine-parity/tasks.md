@@ -254,19 +254,19 @@ later stages. Serves US2.
 
 ### AT framework & porting (tests are the deliverable here)
 
-- [ ] T084 [US12] Implement AT runner (scenario steps: configure/connect/initiate/expect/expect-disconnect; timestamp/seq wildcard matching) driving a real acceptor + facade Application in `crates/truefix-at/src/runner.rs` (FR-M1; contracts/at-runner.md)
+- [X] T084 [US12] Implement AT runner (scenario steps: configure/connect/initiate/expect/expect-disconnect; timestamp/seq wildcard matching) driving a real acceptor + facade Application in `crates/truefix-at/src/runner.rs` (FR-M1; contracts/at-runner.md)
 - [ ] T085 [US12] Enumerate & author the 73 distinct **server** AT scenarios as independent fixtures (logon 1a–1e, sequence 2a–2c/10/11, PossDup 2e–2g/19, validity/reject 2i–2t/3/14/15/21, heartbeat 4/6, routing 8/ReverseRoute, named regressions QFJ*/MinQty/SessionReset) in `crates/truefix-at/scenarios/server/` (Appendix B; parity.md CHK019–CHK026). No copied source
 - [ ] T086 [P] [US12] Author special-category suites: nextExpectedMsgSeqNum, lastMsgSeqNumProcessed, resendRequestChunkSize, validateChecksum, rejectGarbledMessages, timestamps, resynch in `crates/truefix-at/scenarios/special/` (Appendix B; CHK027)
-- [ ] T087 [US12] Wire per-version scenario matrix using the **available** AT sets (fix40/41/42/43/44/50 + fixLatest) + applicability map; map FIX 5.0→fix50 and 5.0SP1/5.0SP2/FIXT 1.1→fixLatest (no distinct SP1/SP2 AT sets exist — their conformance is also covered by per-version round-trip T072 + dict validation T073) in `crates/truefix-at/src/matrix.rs` (CHK028; FR-M2/M3)
-- [ ] T088 [US12] Add AT report (`--report`: scenario × version pass/deferred) + CI gate requiring all targeted versions green in `crates/truefix-at/src/report.rs` and CI (FR-M3; CHK030)
+- [X] T087 [US12] Wire per-version scenario matrix using the **available** AT sets (fix40/41/42/43/44/50 + fixLatest) + applicability map; map FIX 5.0→fix50 and 5.0SP1/5.0SP2/FIXT 1.1→fixLatest (no distinct SP1/SP2 AT sets exist — their conformance is also covered by per-version round-trip T072 + dict validation T073) in `crates/truefix-at/src/matrix.rs` (CHK028; FR-M2/M3)
+- [X] T088 [US12] Add AT report (`--report`: scenario × version pass/deferred) + CI gate requiring all targeted versions green in `crates/truefix-at/src/report.rs` and CI (FR-M3; CHK030)
 
 ### Examples (US13)
 
-- [ ] T089 [P] [US13] `executor` example (acceptor that executes orders) in `examples/executor/`
-- [ ] T090 [P] [US13] `banzai` example (initiator client) in `examples/banzai/`
-- [ ] T091 [P] [US13] `ordermatch` example (order-matching acceptor) in `examples/ordermatch/`
-- [ ] T100 [P] [US13] `multi_acceptor` example (single acceptor serving multiple sessions, incl. a dynamic-session template) in `examples/multi_acceptor/` — the 4th example required by FR-N1
-- [ ] T101 [P] [US13] Example smoke tests asserting each example runs end-to-end (executor↔banzai order→ExecutionReport; ordermatch crossing; multi_acceptor serves ≥2 sessions) in `tests/examples_smoke.rs` (closes SC-001 for domain N)
+- [X] T089 [P] [US13] `executor` example (acceptor that executes orders) in `examples/executor/`
+- [X] T090 [P] [US13] `banzai` example (initiator client) in `examples/banzai/`
+- [X] T091 [P] [US13] `ordermatch` example (order-matching acceptor) in `examples/ordermatch/`
+- [X] T100 [P] [US13] `multi_acceptor` example (single acceptor serving multiple sessions, incl. a dynamic-session template) in `examples/multi_acceptor/` — the 4th example required by FR-N1
+- [X] T101 [P] [US13] Example smoke tests asserting each example runs end-to-end (executor↔banzai order→ExecutionReport; ordermatch crossing; multi_acceptor serves ≥2 sessions) in `tests/examples_smoke.rs` (closes SC-001 for domain N)
 
 **Checkpoint S9 (RELEASE GATE)**: T084–T088 green — all targeted FIX versions pass in-scope AT scenarios (deferrals listed+justified); examples runnable (T089–T091, T100) and smoke-tested (T101). (US12; FR-M3; Constitution II/V)
 

@@ -79,6 +79,8 @@ enum Control {
     Logout,
     /// Operationally reset the session's sequence numbers and store.
     Reset,
+    /// Send an application message on this session.
+    Send(Box<Message>),
 }
 
 /// Operational monitoring (FR-L): live session status plus reset / force-logout actions
@@ -170,6 +172,15 @@ impl Monitor {
             None => false,
         }
     }
+
+    /// Send an application `message` on session `id`. The engine stamps the header
+    /// (sequence number, comp IDs, SendingTime).
+    pub async fn send_app(&self, id: &SessionId, message: Message) -> bool {
+        match self.control_for(id) {
+            Some(c) => c.send(Control::Send(Box::new(message))).await.is_ok(),
+            None => false,
+        }
+    }
 }
 
 /// A handle to a running session task.
@@ -182,6 +193,11 @@ impl SessionHandle {
     /// Request a graceful logout.
     pub async fn logout(&self) {
         let _ = self.control.send(Control::Logout).await;
+    }
+
+    /// Send an application message on this session.
+    pub async fn send(&self, message: Message) {
+        let _ = self.control.send(Control::Send(Box::new(message))).await;
     }
 
     /// Wait for the session task to finish.
@@ -443,6 +459,14 @@ async fn run_connection<A, S>(
                         monitor.update(&id, session.status());
                     }
                 }
+                Some(Control::Send(msg)) => {
+                    if send_app(&mut session, *msg, &mut stream, &app, &id, &services)
+                        .await
+                        .is_err()
+                    {
+                        closing = true;
+                    }
+                }
                 None => control_open = false,
             },
         }
@@ -598,6 +622,41 @@ fn is_admin(msg: &Message) -> bool {
         msg.msg_type(),
         Some("0" | "1" | "2" | "3" | "4" | "5" | "A")
     )
+}
+
+/// Send an application message initiated by the application (via the control channel).
+async fn send_app<A, S>(
+    session: &mut Session,
+    message: Message,
+    stream: &mut S,
+    app: &Arc<A>,
+    id: &SessionId,
+    services: &Services,
+) -> Result<(), ()>
+where
+    A: Application + 'static,
+    S: AsyncWrite + Unpin,
+{
+    for action in session.send_app(message) {
+        if let Action::Send(mut msg) = action {
+            app.to_app(&mut msg, id).await;
+            let bytes = msg.encode();
+            if let Some(log) = &services.log {
+                log.on_outgoing(&String::from_utf8_lossy(&bytes));
+            }
+            if stream.write_all(&bytes).await.is_err() {
+                return Err(());
+            }
+        }
+    }
+    let _ = stream.flush().await;
+    if let Some(store) = &services.store {
+        let _ = store.set_next_sender_seq(session.next_out_seq()).await;
+    }
+    if let Some(monitor) = &services.monitor {
+        monitor.update(id, session.status());
+    }
+    Ok(())
 }
 
 // ===========================================================================================

@@ -14,5 +14,9 @@ truefix-session.workspace = true
 truefix-transport.workspace = true
 truefix-config.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true }
+async-trait.workspace = true
+
 [lints]
 workspace = true
