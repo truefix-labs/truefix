@@ -48,12 +48,12 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Satisfy a post-restart ResendRequest from durable storage (FR-001/002/003).
 **Independent test**: Restart against the same file store; a ResendRequest replays exact PossDup bodies; admin ranges gap-fill; `PersistMessages=N` gap-fills (SC-002).
 
-- [ ] T014 [P] [US2] Session test: store-backed resend replays exact PossDup bodies; admin → GapFill; `PersistMessages=N` → GapFill in `crates/truefix-session/tests/restart_resend.rs`
-- [ ] T015 [P] [US2] Two-process test: send→drop→restart→ResendRequest replays across process boundary in `crates/truefix-transport/tests/restart_continuity.rs`
-- [ ] T016 [US2] Add a synchronous range-snapshot accessor to the session-store contract in `crates/truefix-store/src/lib.rs`
-- [ ] T017 [US2] `Session::with_store`: `send_stored` writes the encoded body to the store; `build_resend` uses store-provided bodies; skip writes when `PersistMessages=N` in `crates/truefix-session/src/state.rs`
-- [ ] T018 [US2] Transport pre-loads the requested resend range from the async store and feeds `build_resend` in `crates/truefix-transport/src/lib.rs`
-- [ ] T019 [US2] Stance updates for `PersistMessages` in `crates/truefix-config/src/keys.rs` (FR-027)
+- [X] T014 [P] [US2] Session test: store-backed resend replays exact PossDup bodies; admin → GapFill; `PersistMessages=N` → GapFill in `crates/truefix-session/tests/restart_resend.rs`
+- [X] T015 [P] [US2] Two-process test: send→drop→restart→ResendRequest replays across process boundary in `crates/truefix-transport/tests/restart_continuity.rs`
+- [X] T016 [US2] Session-store range access (MessageStore::get(begin,end) already provided it); added `Session::seed_sent_messages` as the rehydration injection point in `crates/truefix-session/src/state.rs`
+- [X] T017 [US2] `Session::with_store`: `send_stored` writes the encoded body to the store; `build_resend` uses store-provided bodies; skip writes when `PersistMessages=N` in `crates/truefix-session/src/state.rs`
+- [X] T018 [US2] Transport pre-loads the requested resend range from the async store and feeds `build_resend` in `crates/truefix-transport/src/lib.rs`
+- [X] T019 [US2] Stance updates for `PersistMessages` in `crates/truefix-config/src/keys.rs` (FR-027)
 
 **Checkpoint G1**: restart-resend tests green (SC-002); sans-IO `Session` purity preserved; gate green.
 

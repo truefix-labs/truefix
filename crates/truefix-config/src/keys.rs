@@ -84,7 +84,7 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("ResetOnDisconnect", "session", Impl),
     k("ResetOnError", "session", Rec),
     k("RefreshOnLogon", "session", Rec),
-    k("PersistMessages", "session", Rec),
+    k("PersistMessages", "session", Impl),
     k("ResendRequestChunkSize", "session", Impl),
     k("SendRedundantResendRequests", "session", Rec),
     k("ClosedResendInterval", "session", Rec),

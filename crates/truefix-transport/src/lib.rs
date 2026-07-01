@@ -379,6 +379,16 @@ async fn run_connection<A, S>(
         let out = store.next_sender_seq().await.unwrap_or(1);
         let inn = store.next_target_seq().await.unwrap_or(1);
         session.seed_sequences(out, inn);
+        // Re-hydrate previously-sent message bodies so a post-restart ResendRequest can replay them
+        // (FR-001/002). The store is the source of truth; the session's in-memory map is rebuilt.
+        if out > 1 {
+            if let Ok(stored) = store.get(1, out - 1).await {
+                let msgs = stored
+                    .into_iter()
+                    .filter_map(|(seq, bytes)| decode(&bytes).ok().map(|m| (seq, m)));
+                session.seed_sent_messages(msgs);
+            }
+        }
     }
 
     if let Some(monitor) = &services.monitor {
@@ -603,6 +613,7 @@ where
                 if stream.write_all(&bytes).await.is_err() {
                     return Err(());
                 }
+                persist_sent(&msg, &bytes, session, services).await;
             }
             Action::Disconnect => disconnect = true,
         }
@@ -633,6 +644,29 @@ fn is_admin(msg: &Message) -> bool {
     )
 }
 
+/// Persist an original outbound transmission to the store for restart-survivable resend (FR-001/002).
+/// Skips resends (PossDupFlag=Y keep the original's seq and must not overwrite it) and honours
+/// `PersistMessages` (FR-003).
+async fn persist_sent(msg: &Message, bytes: &[u8], session: &Session, services: &Services) {
+    if !session.persist_messages() {
+        return;
+    }
+    let Some(store) = &services.store else {
+        return;
+    };
+    if msg.header.get(43).and_then(|f| f.as_str().ok()) == Some("Y") {
+        return; // resend / possible-duplicate — do not re-persist
+    }
+    if let Some(seq) = msg
+        .header
+        .get(34)
+        .and_then(|f| f.as_int().ok())
+        .filter(|&s| s > 0)
+    {
+        let _ = store.save(seq as u64, bytes).await;
+    }
+}
+
 /// Send an application message initiated by the application (via the control channel).
 async fn send_app<A, S>(
     session: &mut Session,
@@ -656,6 +690,7 @@ where
             if stream.write_all(&bytes).await.is_err() {
                 return Err(());
             }
+            persist_sent(&msg, &bytes, session, services).await;
         }
     }
     let _ = stream.flush().await;

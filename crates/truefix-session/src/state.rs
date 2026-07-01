@@ -153,6 +153,23 @@ impl Session {
         }
     }
 
+    /// Re-hydrate previously-sent messages from a persistent store so a ResendRequest can replay
+    /// them after a process restart (FR-001/002). Call before [`Event::Connected`]; no effect once a
+    /// logon has been sent or when message persistence is disabled.
+    pub fn seed_sent_messages(&mut self, messages: impl IntoIterator<Item = (u64, Message)>) {
+        if self.logon_sent || !self.config.persist_messages {
+            return;
+        }
+        for (seq, msg) in messages {
+            self.store.insert(seq, msg);
+        }
+    }
+
+    /// Whether sent messages are persisted for replay (PersistMessages; FR-003).
+    pub fn persist_messages(&self) -> bool {
+        self.config.persist_messages
+    }
+
     /// A monitoring snapshot of the session (FR-L1).
     pub fn status(&self) -> SessionStatus {
         SessionStatus {
@@ -212,13 +229,15 @@ impl Session {
             let last = self.next_in_seq.saturating_sub(1);
             msg.header.set(Field::int(369, last as i64));
         }
-        if let Some(seq) = msg
-            .header
-            .get(MSG_SEQ_NUM)
-            .and_then(|f| f.as_int().ok())
-            .filter(|&s| s > 0)
-        {
-            self.store.insert(seq as u64, msg.clone());
+        if self.config.persist_messages {
+            if let Some(seq) = msg
+                .header
+                .get(MSG_SEQ_NUM)
+                .and_then(|f| f.as_int().ok())
+                .filter(|&s| s > 0)
+            {
+                self.store.insert(seq as u64, msg.clone());
+            }
         }
         Action::Send(msg)
     }

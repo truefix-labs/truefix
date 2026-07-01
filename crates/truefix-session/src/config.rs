@@ -35,6 +35,9 @@ pub struct SessionConfig {
     pub reset_on_disconnect: bool,
     /// Whether to refresh state from the store on logon.
     pub refresh_on_logon: bool,
+    /// Whether to persist sent messages for replay (PersistMessages). When `false`, sent messages
+    /// are not stored, so a ResendRequest is satisfied with a SequenceReset-GapFill (FR-003).
+    pub persist_messages: bool,
     /// ResendRequest chunk size; `0` means request the whole range at once.
     pub resend_request_chunk_size: u32,
     /// Whether to use NextExpectedMsgSeqNum (789) on logon (FIX ≥ 4.4).
@@ -73,6 +76,7 @@ impl SessionConfig {
             reset_on_logout: false,
             reset_on_disconnect: false,
             refresh_on_logon: false,
+            persist_messages: true,
             resend_request_chunk_size: 0,
             enable_next_expected_msg_seq_num: false,
             enable_last_msg_seq_num_processed: false,
