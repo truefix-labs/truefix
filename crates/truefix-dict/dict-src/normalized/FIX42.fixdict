@@ -26,9 +26,16 @@ field 55 Symbol STRING
 field 54 Side CHAR 1 2
 field 38 OrderQty QTY
 field 40 OrdType CHAR 1 2
+# NoAllocs repeating group — FIX 4.2.
+field 78 NoAllocs NUMINGROUP
+field 79 AllocAccount STRING
+field 80 AllocShares QTY
 
 header 8 9 35 34 49 56 52 43 122
 trailer 10
+
+# Repeating-group definitions: group <NoTag> <Name> <delimiter> <member,member,...>
+group 78 NoAllocs 79 79,80
 
 message 0 Heartbeat opt:112
 message 1 TestRequest req:112
@@ -37,4 +44,4 @@ message 3 Reject req:45 opt:58
 message 4 SequenceReset req:36 opt:123
 message 5 Logout opt:58
 message A Logon req:98,108 opt:141
-message D NewOrderSingle req:11,55,54,38,40
+message D NewOrderSingle req:11,55,54,38,40 opt:78

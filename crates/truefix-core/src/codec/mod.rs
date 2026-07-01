@@ -3,5 +3,5 @@
 mod decode;
 mod encode;
 
-pub use decode::decode;
+pub use decode::{decode, decode_with_groups};
 pub use encode::encode;

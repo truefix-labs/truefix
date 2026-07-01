@@ -58,7 +58,7 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("TransportDataDictionary", "validation", Impl),
     k("ValidateFieldsOutOfOrder", "validation", Rec),
     k("ValidateFieldsHaveValues", "validation", Impl),
-    k("ValidateUnorderedGroupFields", "validation", Rec),
+    k("ValidateUnorderedGroupFields", "validation", Impl),
     k("ValidateUserDefinedFields", "validation", Impl),
     k("ValidateIncomingMessage", "validation", Impl),
     k("ValidateSequenceNumbers", "validation", Impl),
@@ -70,7 +70,7 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("RejectGarbledMessage", "validation", Rec),
     k("RejectInvalidMessage", "validation", Impl),
     k("RejectMessageOnUnhandledException", "validation", Rec),
-    k("FirstFieldInGroupIsDelimiter", "validation", Rec),
+    k("FirstFieldInGroupIsDelimiter", "validation", Impl),
     // Session behavior
     k("HeartBtInt", "session", Impl),
     k("HeartBeatTimeoutMultiplier", "session", Rec),

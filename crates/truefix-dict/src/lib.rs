@@ -29,7 +29,7 @@ mod validate;
 
 pub use fixt::FixtDictionaries;
 pub use model::{
-    DataDictionary, FieldDef, FieldType, MessageDef, RejectReason, ValidationError,
+    DataDictionary, FieldDef, FieldType, GroupDef, MessageDef, RejectReason, ValidationError,
     ValidationOptions,
 };
 pub use parser::{parse, ParseError};

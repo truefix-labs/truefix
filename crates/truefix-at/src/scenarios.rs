@@ -624,6 +624,92 @@ fn valid_new_order_accepted(v: &str) -> Scenario {
     )
 }
 
+/// A FIX.4.4 NewOrderSingle with the given repeating-group fields appended in wire order.
+fn nos_with_group(seq: i64, group: &[(u32, &str)]) -> Message {
+    let mut m = new_order_single(seq);
+    for (t, v) in group {
+        m.body.set(Field::string(*t, v));
+    }
+    m
+}
+
+/// 14i — a NoXxx count that does not match the number of group entries draws a session Reject.
+fn group_count_mismatch(v: &str) -> Scenario {
+    let order = nos_with_group(2, &[(453, "2"), (448, "A"), (447, "1"), (452, "1")]);
+    scenario(
+        "14i_RepeatingGroupCountNotEqual",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "16")), // IncorrectNumInGroupCount
+        ],
+    )
+}
+
+/// 14j — out-of-order repeating-group members draw a session Reject.
+fn group_out_of_order(v: &str) -> Scenario {
+    // Entry: delimiter 448, then 452 (PartyRole), then 447 (PartyIDSource) — out of order.
+    let order = nos_with_group(2, &[(453, "1"), (448, "A"), (452, "1"), (447, "1")]);
+    scenario(
+        "14j_OutOfOrderRepeatingGroupMembers",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "14")), // RepeatingGroupFieldsOutOfOrder
+        ],
+    )
+}
+
+/// QFJ934 — a nested group whose entry omits its delimiter draws a session Reject.
+fn nested_group_missing_delimiter(v: &str) -> Scenario {
+    // NoPartySubIDs entry starts with 803 instead of the delimiter 523.
+    let order = nos_with_group(
+        2,
+        &[
+            (453, "1"),
+            (448, "A"),
+            (447, "1"),
+            (452, "1"),
+            (802, "1"),
+            (803, "1"),
+            (523, "S"),
+        ],
+    );
+    scenario(
+        "QFJ934_MissingDelimiterNestedRepeatingGroup",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "14")),
+        ],
+    )
+}
+
+/// 21 — a repeating-group count of zero is accepted as an empty group.
+fn group_zero_count(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 3);
+    tr.body.set(Field::string(112, "ZERO-GRP-OK"));
+    let order = nos_with_group(2, &[(453, "0")]);
+    scenario(
+        "21_RepeatingGroupSpecifierWithValueOfZero",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Send(tr),
+            // A Heartbeat (not a Reject) proves the zero-count group was accepted.
+            Step::Expect(ExpectMsg::of("0").field(112, "ZERO-GRP-OK")),
+        ],
+    )
+}
+
 /// app1 — an active acceptor fills each NewOrderSingle with an ExecutionReport (35=8).
 fn app_order_executed(v: &str) -> Scenario {
     scenario_with(
@@ -997,6 +1083,10 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(incorrect_data_format_42());
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(valid_new_order_accepted("FIX.4.4"));
+    out.push(group_count_mismatch("FIX.4.4"));
+    out.push(group_out_of_order("FIX.4.4"));
+    out.push(nested_group_missing_delimiter("FIX.4.4"));
+    out.push(group_zero_count("FIX.4.4"));
     out.push(app_order_executed("FIX.4.4"));
     out.push(app_orders_sequenced("FIX.4.4"));
     out.push(app_message_resent_as_poss_dup("FIX.4.4"));

@@ -64,13 +64,13 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Dictionary-driven group/component decode + group validation (FR-004/005).
 **Independent test**: Correct group accepted; wrong-count/missing-delimiter/out-of-order/nested/zero-count rejected per toggle (SC-003).
 
-- [ ] T020 [P] [US3] Core decode table tests: correct + wrong-count + missing-delimiter + out-of-order + nested + zero-count in `crates/truefix-core/tests/groups.rs`
-- [ ] T021 [P] [US3] Dict group-validation tests per toggle in `crates/truefix-dict/tests/group_validation.rs`
-- [ ] T022 [P] [US3] AT scenarios `14i`/`14j`/`21`/`QFJ934` in `crates/truefix-at/src/scenarios.rs`
-- [ ] T023 [US3] Implement `decode_with_dict` (group/component, nested, delimiter-bounded) in `crates/truefix-core/src/codec/decode.rs` and `crates/truefix-core/src/group.rs`
-- [ ] T024 [US3] Implement group validation (count/delimiter/order) + `ValidationOptions` toggles in `crates/truefix-dict/src/validate.rs` and `src/model.rs`
-- [ ] T025 [US3] Wire `decode_with_dict` into the transport/session validation path in `crates/truefix-transport/src/lib.rs`
-- [ ] T026 [US3] Stance updates for `ValidateUnorderedGroupFields` / `FirstFieldInGroupIsDelimiter` in `crates/truefix-config/src/keys.rs`
+- [X] T020 [P] [US3] Core decode table tests: correct + wrong-count + missing-delimiter + out-of-order + nested + zero-count in `crates/truefix-core/tests/groups.rs`
+- [X] T021 [P] [US3] Dict group-validation tests per toggle in `crates/truefix-dict/tests/group_validation.rs`
+- [X] T022 [P] [US3] AT scenarios `14i`/`14j`/`21`/`QFJ934` in `crates/truefix-at/src/scenarios.rs`
+- [X] T023 [US3] Implement `decode_with_dict` (group/component, nested, delimiter-bounded) in `crates/truefix-core/src/codec/decode.rs` and `crates/truefix-core/src/group.rs`
+- [X] T024 [US3] Implement group validation (count/delimiter/order) + `ValidationOptions` toggles in `crates/truefix-dict/src/validate.rs` and `src/model.rs`
+- [X] T025 [US3] Group validation flows through the acceptor's dict validator (Services.validator -> DataDictionary::validate, now group-aware); structured `decode_with_groups` available for US6 (proven by AT 14i/14j/21/QFJ934)
+- [X] T026 [US3] Stance updates for `ValidateUnorderedGroupFields` / `FirstFieldInGroupIsDelimiter` in `crates/truefix-config/src/keys.rs`
 
 **Checkpoint G2**: group decode/validation tests + 14i/14j/21/QFJ934 AT green (SC-003); gate green.
 

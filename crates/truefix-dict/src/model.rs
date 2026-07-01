@@ -115,12 +115,21 @@ pub struct MessageDef {
     pub required: Vec<u32>,
     /// Optional body field tags.
     pub optional: Vec<u32>,
+    /// All valid body tags, including transitively-nested repeating-group member tags. Computed by
+    /// the parser once groups are known; used for the "tag defined for message type" check.
+    pub member_tags: BTreeSet<u32>,
 }
 
 impl MessageDef {
-    /// Whether `tag` is a defined body field of this message.
+    /// Whether `tag` is a directly required or optional body field of this message.
     pub fn allows_tag(&self, tag: u32) -> bool {
         self.required.contains(&tag) || self.optional.contains(&tag)
+    }
+
+    /// Whether `tag` is valid anywhere in this message's body, including within its repeating
+    /// groups (transitively).
+    pub fn contains_member(&self, tag: u32) -> bool {
+        self.allows_tag(tag) || self.member_tags.contains(&tag)
     }
 }
 
@@ -133,6 +142,7 @@ pub struct DataDictionary {
     pub(crate) messages: BTreeMap<String, MessageDef>,
     pub(crate) header: BTreeSet<u32>,
     pub(crate) trailer: BTreeSet<u32>,
+    pub(crate) groups: BTreeMap<u32, GroupDef>,
     pub(crate) hash: u64,
 }
 
@@ -160,6 +170,16 @@ impl DataDictionary {
     /// Look up a message definition by MsgType.
     pub fn message(&self, msg_type: &str) -> Option<&MessageDef> {
         self.messages.get(msg_type)
+    }
+
+    /// Look up a repeating-group definition by its NoXxx count tag.
+    pub fn group(&self, count_tag: u32) -> Option<&GroupDef> {
+        self.groups.get(&count_tag)
+    }
+
+    /// Whether `tag` is a repeating-group count tag in this dictionary.
+    pub fn is_group_count(&self, tag: u32) -> bool {
+        self.groups.contains_key(&tag)
     }
 
     /// Whether `tag` is a header field.
@@ -202,6 +222,10 @@ pub enum RejectReason {
     IncorrectDataFormat,
     /// Invalid or unsupported MsgType (11).
     InvalidMsgType,
+    /// A repeating group's fields are out of order / delimiter missing (14).
+    RepeatingGroupFieldsOutOfOrder,
+    /// The NoXxx count does not match the number of group entries (16).
+    IncorrectNumInGroupCount,
 }
 
 impl RejectReason {
@@ -216,8 +240,22 @@ impl RejectReason {
             Self::ValueIsIncorrect => 5,
             Self::IncorrectDataFormat => 6,
             Self::InvalidMsgType => 11,
+            Self::RepeatingGroupFieldsOutOfOrder => 14,
+            Self::IncorrectNumInGroupCount => 16,
         }
     }
+}
+
+/// A repeating-group definition: the NoXxx count tag, the entry delimiter (first field), and the
+/// ordered member tags (a member that is itself a count tag denotes a nested group).
+#[derive(Debug, Clone)]
+pub struct GroupDef {
+    /// The NoXxx count tag (e.g. 453 NoPartyIDs).
+    pub count_tag: u32,
+    /// The delimiter tag that starts each entry (e.g. 448 PartyID).
+    pub delimiter: u32,
+    /// The ordered member tags of each entry (including the delimiter first).
+    pub members: Vec<u32>,
 }
 
 /// A validation failure.
@@ -267,6 +305,12 @@ pub struct ValidationOptions {
     pub check_required_fields: bool,
     /// Check field value formats and enumerations.
     pub check_field_types: bool,
+    /// Validate repeating-group structure (count matches entries; delimiter; ordering).
+    pub check_groups: bool,
+    /// Require each group entry to begin with its delimiter (FirstFieldInGroupIsDelimiter).
+    pub first_field_in_group_is_delimiter: bool,
+    /// Reject out-of-order fields within a group entry (ValidateUnorderedGroupFields).
+    pub validate_unordered_group_fields: bool,
 }
 
 impl Default for ValidationOptions {
@@ -277,6 +321,9 @@ impl Default for ValidationOptions {
             allow_unknown_msg_fields: false,
             check_required_fields: true,
             check_field_types: true,
+            check_groups: true,
+            first_field_in_group_is_delimiter: true,
+            validate_unordered_group_fields: true,
         }
     }
 }
