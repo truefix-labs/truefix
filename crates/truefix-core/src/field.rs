@@ -34,6 +34,14 @@ impl Field {
         Self::new(tag, value.to_string().into_bytes())
     }
 
+    /// Create a UTC-timestamp-valued field at millisecond precision
+    /// (`YYYYMMDD-HH:MM:SS.sss`) — the FIX wire format, which does *not* match
+    /// `OffsetDateTime`'s own `Display` output. Sessions needing other precisions format their
+    /// own SendingTime; this constructor is the safe default for typed-message setters.
+    pub fn utc_timestamp(tag: u32, value: OffsetDateTime) -> Self {
+        Self::string(tag, &format_utc_timestamp_millis(value))
+    }
+
     /// The field's tag number.
     pub fn tag(&self) -> u32 {
         self.tag
@@ -101,6 +109,20 @@ impl Field {
             value: s.to_owned(),
         })
     }
+}
+
+/// Format `dt` as a FIX UTCTimestamp `YYYYMMDD-HH:MM:SS.sss` at millisecond precision.
+fn format_utc_timestamp_millis(dt: OffsetDateTime) -> String {
+    format!(
+        "{:04}{:02}{:02}-{:02}:{:02}:{:02}.{:03}",
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second(),
+        dt.millisecond()
+    )
 }
 
 /// Parse `YYYYMMDD-HH:MM:SS[.fraction]` as UTC. Returns `None` on any malformation.

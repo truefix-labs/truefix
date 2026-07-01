@@ -56,3 +56,32 @@ MIT-compatible (no copyleft introduced); enforced in CI by the `deny` job (`deny
 | `metrics` | observability facade export (US9) | MIT |
 
 All within the existing Apache-2.0 OR MIT release posture; `cargo deny check` gates regressions.
+
+## Feature 002 — US6: all-message typed codegen + MessageCracker (Principle IV complete)
+
+`build.rs` now generates, per bundled dictionary version (`fix40`..`fix50sp2`, `fixt11`), from the
+same normalized source the runtime parses:
+
+- **Typed message structs** (`truefix_dict::fix44::NewOrderSingle`, etc.) — thin wrappers over the
+  generic `Message`, so encode/decode is byte-identical with the generic codec path by construction
+  (no separate wire representation to keep in sync).
+- **Named field accessors** (`.symbol()`/`.set_symbol()`) typed per the field's dictionary type
+  (`i64`/`rust_decimal::Decimal`/`char`/`bool`/`time::OffsetDateTime`/`&str`).
+- **Field-value enums** (`Side::Buy`, `OrdType::Market`, ...) for fields carrying labeled enum
+  values (the normalized `.fixdict` format gained an optional `Value=Label` enum-token suffix,
+  authored from the public FIX specification's standard enum tables — protocol facts, not copied
+  source, per Constitution Principle III).
+- **Typed repeating-group entry structs** (`NoPartyIDsEntry`, with nested `NoPartySubIDsEntry`),
+  generated recursively from the dictionary's `group` directives.
+- **A `crack_<version>` dispatcher** + `<Version>MessageHandler` trait (e.g. `crack_fix44`,
+  `FIX44MessageHandler`) routing an inbound message to its typed handler method by
+  `(BeginString, MsgType)` — completing `truefix_core::MessageCracker`'s contract (FR-020/022).
+
+This completes the previously partially-met **Constitution Principle IV (dual-track data
+dictionary)**: build-time codegen now produces genuinely strongly-typed messages, not only MsgType
+constants, alongside the unchanged runtime `DataDictionary` validator — both still provably from one
+source (`dual_track.rs`).
+
+A real bug was caught while wiring the UTCTIMESTAMP field type: `time::OffsetDateTime`'s own
+`Display` output is not the FIX wire format. Fixed via a dedicated `Field::utc_timestamp`
+constructor (millisecond precision) used by the generated setters instead of `.to_string()`.

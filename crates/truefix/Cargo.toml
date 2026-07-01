@@ -14,6 +14,7 @@ truefix-session.workspace = true
 truefix-transport.workspace = true
 truefix-config.workspace = true
 truefix-store.workspace = true
+truefix-dict.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 

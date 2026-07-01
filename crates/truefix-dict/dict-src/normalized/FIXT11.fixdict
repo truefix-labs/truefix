@@ -9,7 +9,7 @@ field 49 SenderCompID STRING
 field 56 TargetCompID STRING
 field 52 SendingTime UTCTIMESTAMP
 field 10 CheckSum STRING
-field 98 EncryptMethod INT 0
+field 98 EncryptMethod INT 0=None
 field 108 HeartBtInt INT
 field 141 ResetSeqNumFlag BOOLEAN
 field 1137 DefaultApplVerID STRING

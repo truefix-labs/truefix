@@ -11,6 +11,8 @@ publish = false
 [dependencies]
 truefix-core.workspace = true
 thiserror.workspace = true
+rust_decimal.workspace = true
+time.workspace = true
 
 [lints]
 workspace = true

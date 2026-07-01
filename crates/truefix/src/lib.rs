@@ -27,6 +27,7 @@ pub use truefix_session::{
 pub use truefix_transport::{self as transport, connect_initiator, Acceptor, SessionHandle};
 
 pub use truefix_config as config;
+pub use truefix_dict as dict;
 
 use std::sync::Arc;
 

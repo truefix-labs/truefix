@@ -127,15 +127,15 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Typed message/group/component structs for every message + a working cracker (FR-020/021/022; Principle IV).
 **Independent test**: Typed messages round-trip byte-identically; cracker dispatches by MsgType/version; dual-track hash holds (SC-007).
 
-- [ ] T043 [P] [US6] Codegen golden/shape tests in `crates/truefix-dict/tests/codegen.rs`
-- [ ] T044 [P] [US6] Typed↔generic byte-identical round-trip test in `crates/truefix-dict/tests/typed_roundtrip.rs`
-- [ ] T045 [P] [US6] MessageCracker dispatch test in `crates/truefix/tests/cracker.rs`
-- [ ] T046 [P] [US6] Dual-track FNV-1a hash assertion (codegen vs runtime dict) in `crates/truefix-dict/tests/dual_track.rs`
-- [ ] T047 [US6] Codegen field module: typed accessors + value enums in `crates/truefix-dict/src/codegen/fields.rs` (invoked from `build.rs`)
-- [ ] T048 [US6] Codegen per-message structs (all messages, wrapping generic `Message`) in `crates/truefix-dict/src/codegen/messages.rs`
-- [ ] T049 [US6] Codegen nested group/component structs in `crates/truefix-dict/src/codegen/groups.rs`
-- [ ] T050 [US6] Implement `MessageCracker` dispatch by `(BeginString, MsgType)` in `crates/truefix/src/cracker.rs`
-- [ ] T051 [US6] Generate across all targeted versions and verify dual-track hash in `crates/truefix-dict/build.rs`
+- [X] T043 [P] [US6] Codegen golden/shape tests in `crates/truefix-dict/tests/codegen.rs`
+- [X] T044 [P] [US6] Typed↔generic byte-identical round-trip test in `crates/truefix-dict/tests/typed_roundtrip.rs`
+- [X] T045 [P] [US6] MessageCracker dispatch test in `crates/truefix/tests/cracker.rs`
+- [X] T046 [P] [US6] Dual-track FNV-1a hash assertion (codegen vs runtime dict) in `crates/truefix-dict/tests/dual_track.rs`
+- [X] T047 [US6] Codegen field module: typed accessors + value enums in `crates/truefix-dict/src/codegen/fields.rs` (invoked from `build.rs`)
+- [X] T048 [US6] Codegen per-message structs (all messages, wrapping generic `Message`) in `crates/truefix-dict/src/codegen/messages.rs`
+- [X] T049 [US6] Codegen nested group/component structs in `crates/truefix-dict/src/codegen/groups.rs`
+- [X] T050 [US6] Implement `MessageCracker` dispatch by `(BeginString, MsgType)` in `crates/truefix/src/cracker.rs`
+- [X] T051 [US6] Generate across all targeted versions and verify dual-track hash in `crates/truefix-dict/build.rs`
 
 **Checkpoint G6**: codegen + round-trip + cracker + dual-track tests green (SC-007; Principle IV complete); gate green.
 

@@ -11,7 +11,7 @@ field 52 SendingTime UTCTIMESTAMP
 field 43 PossDupFlag BOOLEAN
 field 122 OrigSendingTime UTCTIMESTAMP
 field 10 CheckSum STRING
-field 98 EncryptMethod INT 0
+field 98 EncryptMethod INT 0=None
 field 108 HeartBtInt INT
 field 112 TestReqID STRING
 field 7 BeginSeqNo SEQNUM
@@ -23,9 +23,9 @@ field 45 RefSeqNum SEQNUM
 field 141 ResetSeqNumFlag BOOLEAN
 field 11 ClOrdID STRING
 field 55 Symbol STRING
-field 54 Side CHAR 1 2
+field 54 Side CHAR 1=Buy 2=Sell
 field 38 OrderQty QTY
-field 40 OrdType CHAR 1 2
+field 40 OrdType CHAR 1=Market 2=Limit
 # NoAllocs repeating group — FIX 4.2.
 field 78 NoAllocs NUMINGROUP
 field 79 AllocAccount STRING

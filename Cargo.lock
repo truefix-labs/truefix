@@ -1871,6 +1871,7 @@ dependencies = [
  "tokio",
  "truefix-config",
  "truefix-core",
+ "truefix-dict",
  "truefix-session",
  "truefix-store",
  "truefix-transport",
@@ -1911,7 +1912,9 @@ dependencies = [
 name = "truefix-dict"
 version = "0.0.0"
 dependencies = [
+ "rust_decimal",
  "thiserror",
+ "time",
  "truefix-core",
 ]
 

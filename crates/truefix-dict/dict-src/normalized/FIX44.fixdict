@@ -18,7 +18,7 @@ field 52 SendingTime UTCTIMESTAMP
 field 43 PossDupFlag BOOLEAN
 field 122 OrigSendingTime UTCTIMESTAMP
 field 10 CheckSum STRING
-field 98 EncryptMethod INT 0 1 2 3 4 5 6
+field 98 EncryptMethod INT 0=None 1=PgpDes 2=PgpDesMd5 3=Pkcs 4=PkcsDes 5=PkcsDesMd5 6=PemDesMd5
 field 108 HeartBtInt INT
 field 141 ResetSeqNumFlag BOOLEAN
 field 112 TestReqID STRING
@@ -29,12 +29,12 @@ field 123 GapFillFlag BOOLEAN
 field 58 Text STRING
 field 45 RefSeqNum SEQNUM
 field 11 ClOrdID STRING
-field 21 HandlInst CHAR 1 2 3
+field 21 HandlInst CHAR 1=AutomatedNoIntervention 2=AutomatedInterventionOk 3=Manual
 field 55 Symbol STRING
-field 54 Side CHAR 1 2 5 6
+field 54 Side CHAR 1=Buy 2=Sell 5=SellShort 6=SellShortExempt
 field 60 TransactTime UTCTIMESTAMP
 field 38 OrderQty QTY
-field 40 OrdType CHAR 1 2 3 4
+field 40 OrdType CHAR 1=Market 2=Limit 3=Stop 4=StopLimit
 field 44 Price PRICE
 # Parties component (NoPartyIDs) with nested NoPartySubIDs — FIX 4.4 repeating groups.
 field 453 NoPartyIDs NUMINGROUP

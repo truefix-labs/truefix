@@ -3,12 +3,12 @@
 version FIX.5.0SP2
 
 field 11 ClOrdID STRING
-field 21 HandlInst CHAR 1 2 3
+field 21 HandlInst CHAR 1=AutomatedNoIntervention 2=AutomatedInterventionOk 3=Manual
 field 55 Symbol STRING
-field 54 Side CHAR 1 2 5 6
+field 54 Side CHAR 1=Buy 2=Sell 5=SellShort 6=SellShortExempt
 field 60 TransactTime UTCTIMESTAMP
 field 38 OrderQty QTY
-field 40 OrdType CHAR 1 2 3 4
+field 40 OrdType CHAR 1=Market 2=Limit 3=Stop 4=StopLimit
 field 44 Price PRICE
 field 58 Text STRING
 

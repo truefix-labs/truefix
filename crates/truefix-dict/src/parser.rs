@@ -72,7 +72,11 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                         line: line_no,
                         token: type_token.to_owned(),
                     })?;
-                let values: Vec<String> = tokens.map(str::to_owned).collect();
+                // Enum tokens may carry an optional `=Label` suffix for codegen's benefit (e.g.
+                // `1=Buy`); runtime validation only compares the raw wire value, so it is stripped.
+                let values: Vec<String> = tokens
+                    .map(|t| t.split('=').next().unwrap_or(t).to_owned())
+                    .collect();
                 fields.insert(
                     tag,
                     FieldDef {
