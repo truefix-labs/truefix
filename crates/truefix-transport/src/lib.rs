@@ -47,24 +47,86 @@ use truefix_store::MessageStore;
 
 use framing::frame_length;
 
-/// TCP socket options applied to each connection.
+/// TCP socket options applied to each connection (US10; FR-019).
 #[derive(Debug, Clone, Copy)]
 pub struct SocketOptions {
-    /// Disable Nagle's algorithm (TCP_NODELAY).
+    /// Disable Nagle's algorithm (`SocketTcpNoDelay`).
     pub tcp_no_delay: bool,
+    /// Enable TCP keepalive (`SocketKeepAlive`).
+    pub keep_alive: bool,
+    /// `SO_REUSEADDR` on the acceptor's listening socket (`SocketReuseAddress`); has no effect on
+    /// an already-connected initiator stream, only on a freshly-bound listener.
+    pub reuse_address: bool,
+    /// `SO_LINGER` timeout (`SocketLinger`); `None` leaves the OS default in place.
+    pub linger: Option<Duration>,
+    /// `SO_OOBINLINE` (`SocketOobInline`).
+    pub oob_inline: bool,
+    /// `SO_RCVBUF` size in bytes (`SocketReceiveBufferSize`); `None` leaves the OS default.
+    pub recv_buffer_size: Option<usize>,
+    /// `SO_SNDBUF` size in bytes (`SocketSendBufferSize`); `None` leaves the OS default.
+    pub send_buffer_size: Option<usize>,
+    /// IP_TOS / traffic class (`SocketTrafficClass`); `None` leaves the OS default.
+    pub traffic_class: Option<u32>,
 }
 
 impl Default for SocketOptions {
     fn default() -> Self {
-        Self { tcp_no_delay: true }
+        Self {
+            tcp_no_delay: true,
+            keep_alive: false,
+            reuse_address: false,
+            linger: None,
+            oob_inline: false,
+            recv_buffer_size: None,
+            send_buffer_size: None,
+            traffic_class: None,
+        }
     }
 }
 
 impl SocketOptions {
-    /// Apply the options to a connected stream (best-effort).
+    /// Apply the connection-level options to a connected/accepted stream (best-effort: each
+    /// option that fails to apply — e.g. unsupported on the platform — is silently skipped rather
+    /// than aborting the connection).
     pub fn apply(&self, stream: &TcpStream) {
         let _ = stream.set_nodelay(self.tcp_no_delay);
+        let sock = socket2::SockRef::from(stream);
+        let _ = sock.set_keepalive(self.keep_alive);
+        if let Some(linger) = self.linger {
+            let _ = sock.set_linger(Some(linger));
+        }
+        let _ = sock.set_out_of_band_inline(self.oob_inline);
+        if let Some(size) = self.recv_buffer_size {
+            let _ = sock.set_recv_buffer_size(size);
+        }
+        if let Some(size) = self.send_buffer_size {
+            let _ = sock.set_send_buffer_size(size);
+        }
+        if let Some(tos) = self.traffic_class {
+            let _ = sock.set_tos(tos);
+        }
+        // `reuse_address` applies to a listener at bind time (see `bind_listener_with_options`),
+        // not to an already-connected stream.
     }
+}
+
+/// Bind a `TcpListener`, optionally setting `SO_REUSEADDR` before binding (`SocketReuseAddress`).
+/// Plain `TcpListener::bind` cannot express this — the option must be set on the raw socket
+/// before the bind syscall.
+fn bind_listener_with_options(addr: SocketAddr, reuse_address: bool) -> io::Result<TcpListener> {
+    let domain = if addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    if reuse_address {
+        socket.set_reuse_address(true)?;
+    }
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    TcpListener::from_std(socket.into())
 }
 
 /// Optional per-session services: a persistent message store, a log, and socket options.
@@ -287,7 +349,7 @@ impl<A: Application + 'static> Acceptor<A> {
         app: Arc<A>,
         services: Services,
     ) -> io::Result<Self> {
-        let listener = TcpListener::bind(addr).await?;
+        let listener = bind_listener_with_options(addr, services.socket_options.reuse_address)?;
         Ok(Self {
             listener,
             config,
@@ -993,13 +1055,36 @@ pub fn connect_initiator_reconnecting<A>(
 where
     A: Application + 'static,
 {
+    connect_initiator_reconnecting_multi(vec![addr], config, app, services)
+}
+
+/// Connect out as an initiator against an ordered set of candidate endpoints
+/// (`SocketConnectHost<N>`/`SocketConnectPort<N>`; FR-019), rotating to the next endpoint on each
+/// (re)connect attempt and automatically reconnecting after `config.reconnect_interval` seconds
+/// whenever the connection drops, until stopped. Endpoints are tried round-robin; if all are
+/// unreachable the loop keeps retrying (starting again from the next endpoint) rather than
+/// busy-looping or giving up.
+pub fn connect_initiator_reconnecting_multi<A>(
+    addrs: Vec<SocketAddr>,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> ReconnectHandle
+where
+    A: Application + 'static,
+{
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
     let interval = Duration::from_secs(u64::from(config.reconnect_interval).max(1));
     let id = config.session_id();
     let task = tokio::spawn(async move {
         let mut connected_before = false;
+        let mut next_endpoint = 0usize;
         while !loop_stop.load(Ordering::SeqCst) {
+            let Some(&addr) = addrs.get(next_endpoint % addrs.len().max(1)) else {
+                break; // addrs is empty; nothing to connect to
+            };
+            next_endpoint = next_endpoint.wrapping_add(1);
             if let Ok(stream) = TcpStream::connect(addr).await {
                 if connected_before {
                     metrics_export::record_reconnect(&id);

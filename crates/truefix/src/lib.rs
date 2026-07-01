@@ -33,11 +33,24 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use truefix_config::{ConnectionType, SessionSettings};
+use truefix_config::{ConnectionType, SessionSettings, SocketOptionsSpec};
 use truefix_transport::{
     build_client_config, build_server_config, connect_initiator_tls, connect_initiator_with,
-    Services,
+    Services, SocketOptions,
 };
+
+fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {
+    SocketOptions {
+        tcp_no_delay: spec.tcp_no_delay,
+        keep_alive: spec.keep_alive,
+        reuse_address: spec.reuse_address,
+        linger: spec.linger,
+        oob_inline: spec.oob_inline,
+        recv_buffer_size: spec.recv_buffer_size,
+        send_buffer_size: spec.send_buffer_size,
+        traffic_class: spec.traffic_class,
+    }
+}
 
 /// An error starting the engine from configuration (FR-015).
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +98,7 @@ impl Engine {
                 .map_err(|e| EngineError::Store(e.to_string()))?;
             let services = Services {
                 store: Some(Arc::from(store)),
+                socket_options: to_transport_socket_options(rs.socket_options),
                 ..Services::default()
             };
             match rs.connection {

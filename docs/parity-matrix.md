@@ -85,3 +85,33 @@ source (`dual_track.rs`).
 A real bug was caught while wiring the UTCTIMESTAMP field type: `time::OffsetDateTime`'s own
 `Display` output is not the FIX wire format. Fixed via a dedicated `Field::utc_timestamp`
 constructor (millisecond precision) used by the generated setters instead of `.to_string()`.
+
+## Feature 002 — US10: full socket options + multi-endpoint failover (FR-019)
+
+`truefix_transport::SocketOptions` now covers the full Appendix A socket-tuning surface —
+`SocketKeepAlive`/`SocketReuseAddress`/`SocketLinger`/`SocketOobInline`/
+`SocketReceiveBufferSize`/`SocketSendBufferSize`/`SocketTrafficClass` alongside the pre-existing
+`SocketTcpNoDelay` — applied via `socket2::SockRef` best-effort against a live connection, and
+`SO_REUSEADDR` applied at bind time (`bind_listener_with_options`) since `tokio::net::TcpListener`
+cannot express it directly. `connect_initiator_reconnecting_multi` rotates round-robin through a
+`Vec<SocketAddr>` on every (re)connect attempt, so a dead primary endpoint fails over to a
+configured backup instead of retrying the same dead address forever.
+
+`truefix-config` gained a data-only `SocketOptionsSpec` (mirroring `SocketOptions`'s fields, kept
+in `truefix-config` rather than `truefix-transport` since `SocketOptions::apply()` is an inherent
+impl that must live alongside its `socket2`-consuming type) plus `failover_addresses: Vec<SocketAddr>`
+on `ResolvedSession`, parsed from numbered `SocketConnectHost<N>`/`SocketConnectPort<N>` keys
+(N=1,2,... contiguous from 1; a gap stops enumeration; a host without its matching port, or vice
+versa, is a typed `ConfigError`). `Engine::start` converts `SocketOptionsSpec` into
+`transport::SocketOptions` and threads it through `Services` for both acceptor and initiator
+sessions, so socket options are fully config-driven end-to-end.
+
+**Scope boundary (documented, not a regression)**: `Engine::start`'s initiator path still uses the
+one-shot `connect_initiator_with`/`connect_initiator_tls` (returning `SessionHandle`, which supports
+`.logout()`/`.send()`) rather than `connect_initiator_reconnecting_multi` (returning the more
+limited `ReconnectHandle`, supporting only `.stop()`/`.join()`); unifying them would require
+extending `ReconnectHandle` to proxy send/logout to whichever endpoint is currently active, which is
+a real API design task of its own. `failover_addresses` is therefore fully parsed and tested at the
+config layer, and the rotation mechanism is fully implemented and tested at the transport layer
+(`crates/truefix-transport/tests/failover.rs`), but `Engine::start` does not yet wire the two
+together — no different from `Engine::start` not doing single-endpoint auto-reconnect today either.

@@ -66,6 +66,10 @@ async fn socket_options_apply_nodelay() {
     let (client, _server) = tokio::join!(TcpStream::connect(addr), listener.accept());
     let stream = client.unwrap();
 
-    SocketOptions { tcp_no_delay: true }.apply(&stream);
+    SocketOptions {
+        tcp_no_delay: true,
+        ..Default::default()
+    }
+    .apply(&stream);
     assert!(stream.nodelay().unwrap());
 }

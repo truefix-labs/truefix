@@ -116,20 +116,24 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     // Initiator
     k("SocketConnectHost", "initiator", Impl),
     k("SocketConnectPort", "initiator", Impl),
+    // Numbered backup endpoints (SocketConnectHost1/Port1, SocketConnectHost2/Port2, ...) for
+    // multi-endpoint failover (FR-019); N=1 shown as the representative entry.
+    k("SocketConnectHost1", "initiator", Impl),
+    k("SocketConnectPort1", "initiator", Impl),
     k("SocketConnectProtocol", "initiator", Rec),
     k("SocketConnectTimeout", "initiator", Rec),
     k("SocketLocalHost", "initiator", Rec),
     k("SocketLocalPort", "initiator", Rec),
     k("ReconnectInterval", "initiator", Impl),
-    // Socket options
-    k("SocketKeepAlive", "socket", Rec),
+    // Socket options (FR-019)
+    k("SocketKeepAlive", "socket", Impl),
     k("SocketTcpNoDelay", "socket", Impl),
-    k("SocketReuseAddress", "socket", Rec),
-    k("SocketLinger", "socket", Rec),
-    k("SocketOobInline", "socket", Rec),
-    k("SocketReceiveBufferSize", "socket", Rec),
-    k("SocketSendBufferSize", "socket", Rec),
-    k("SocketTrafficClass", "socket", Rec),
+    k("SocketReuseAddress", "socket", Impl),
+    k("SocketLinger", "socket", Impl),
+    k("SocketOobInline", "socket", Impl),
+    k("SocketReceiveBufferSize", "socket", Impl),
+    k("SocketSendBufferSize", "socket", Impl),
+    k("SocketTrafficClass", "socket", Impl),
     k("SocketSynchronousWrites", "socket", Rec),
     k("SocketSynchronousWriteTimeout", "socket", Rec),
     // SSL/TLS (FR-017: config-driven rustls, PEM-based — not Java keystores)

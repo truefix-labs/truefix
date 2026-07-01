@@ -16,6 +16,7 @@ truefix-store.workspace = true
 truefix-log.workspace = true
 truefix-config.workspace = true
 metrics.workspace = true
+socket2 = "0.5"
 tokio.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true

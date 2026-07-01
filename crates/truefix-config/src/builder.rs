@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use time::Weekday;
 use truefix_session::{Role, Schedule, SessionConfig, TimeStampPrecision};
@@ -35,6 +36,50 @@ pub struct ResolvedSession {
     pub store: StoreConfig,
     /// TLS material and settings, present when `SocketUseSSL=Y` (FR-017).
     pub tls: Option<TlsSpec>,
+    /// Socket-level tuning options (FR-019).
+    pub socket_options: SocketOptionsSpec,
+    /// Additional backup endpoints (initiator only), in failover order, parsed from numbered
+    /// `SocketConnectHost<N>`/`SocketConnectPort<N>` keys (FR-019). Empty when no backups are
+    /// configured.
+    pub failover_addresses: Vec<SocketAddr>,
+}
+
+/// Socket-level tuning options resolved from configuration (FR-019). Data-only mirror of
+/// `truefix_transport::SocketOptions`; the mechanism that applies these to a live socket (via
+/// `socket2`) lives in `truefix-transport`, which depends on this crate for the shared shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocketOptionsSpec {
+    /// `TCP_NODELAY`. Maps from `SocketTcpNoDelay`.
+    pub tcp_no_delay: bool,
+    /// `SO_KEEPALIVE`. Maps from `SocketKeepAlive`.
+    pub keep_alive: bool,
+    /// `SO_REUSEADDR` (acceptor bind only). Maps from `SocketReuseAddress`.
+    pub reuse_address: bool,
+    /// `SO_LINGER` timeout. Maps from `SocketLinger` (seconds; absent/negative = disabled).
+    pub linger: Option<Duration>,
+    /// `SO_OOBINLINE`. Maps from `SocketOobInline`.
+    pub oob_inline: bool,
+    /// `SO_RCVBUF` size in bytes. Maps from `SocketReceiveBufferSize`.
+    pub recv_buffer_size: Option<usize>,
+    /// `SO_SNDBUF` size in bytes. Maps from `SocketSendBufferSize`.
+    pub send_buffer_size: Option<usize>,
+    /// `IP_TOS` traffic class. Maps from `SocketTrafficClass`.
+    pub traffic_class: Option<u32>,
+}
+
+impl Default for SocketOptionsSpec {
+    fn default() -> Self {
+        Self {
+            tcp_no_delay: true,
+            keep_alive: false,
+            reuse_address: false,
+            linger: None,
+            oob_inline: false,
+            recv_buffer_size: None,
+            send_buffer_size: None,
+            traffic_class: None,
+        }
+    }
 }
 
 /// TLS material and settings resolved from configuration (FR-017). The mechanism that consumes
@@ -124,6 +169,37 @@ fn f64_key(map: &Map, key: &str, session: &str, default: f64) -> Result<f64, Con
     }
 }
 
+fn usize_key(
+    map: &Map,
+    key: &str,
+    session: &str,
+    default: Option<usize>,
+) -> Result<Option<usize>, ConfigError> {
+    match map.get(key) {
+        None => Ok(default),
+        Some(v) => v.parse().map(Some).map_err(|_| ConfigError::InvalidValue {
+            key: key.to_owned(),
+            session: session.to_owned(),
+            reason: format!("expected a non-negative integer, got {v:?}"),
+        }),
+    }
+}
+
+/// `SocketLinger` (seconds); a negative value means "disabled" (`None`), matching QuickFIX/J.
+fn linger_key(map: &Map, key: &str, session: &str) -> Result<Option<Duration>, ConfigError> {
+    match map.get(key) {
+        None => Ok(None),
+        Some(v) => {
+            let secs: i64 = v.parse().map_err(|_| ConfigError::InvalidValue {
+                key: key.to_owned(),
+                session: session.to_owned(),
+                reason: format!("expected an integer number of seconds, got {v:?}"),
+            })?;
+            Ok((secs >= 0).then(|| Duration::from_secs(secs as u64)))
+        }
+    }
+}
+
 fn precision_key(
     map: &Map,
     key: &str,
@@ -199,6 +275,11 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     let address = resolve_address(map, connection, &session)?;
     let store = resolve_store(map);
     let tls = resolve_tls(map, &session)?;
+    let socket_options = resolve_socket_options(map, &session)?;
+    let failover_addresses = match connection {
+        ConnectionType::Initiator => resolve_failover_addresses(map, &session)?,
+        ConnectionType::Acceptor => Vec::new(),
+    };
 
     Ok(ResolvedSession {
         session: cfg,
@@ -206,7 +287,88 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         address,
         store,
         tls,
+        socket_options,
+        failover_addresses,
     })
+}
+
+/// Resolve the full socket-option set (FR-019): `SocketTcpNoDelay`/`SocketKeepAlive`/
+/// `SocketReuseAddress`/`SocketLinger`/`SocketOobInline`/`SocketReceiveBufferSize`/
+/// `SocketSendBufferSize`/`SocketTrafficClass`.
+fn resolve_socket_options(map: &Map, session: &str) -> Result<SocketOptionsSpec, ConfigError> {
+    let default = SocketOptionsSpec::default();
+    Ok(SocketOptionsSpec {
+        tcp_no_delay: bool_key(map, "SocketTcpNoDelay", default.tcp_no_delay),
+        keep_alive: bool_key(map, "SocketKeepAlive", default.keep_alive),
+        reuse_address: bool_key(map, "SocketReuseAddress", default.reuse_address),
+        linger: linger_key(map, "SocketLinger", session)?,
+        oob_inline: bool_key(map, "SocketOobInline", default.oob_inline),
+        recv_buffer_size: usize_key(
+            map,
+            "SocketReceiveBufferSize",
+            session,
+            default.recv_buffer_size,
+        )?,
+        send_buffer_size: usize_key(
+            map,
+            "SocketSendBufferSize",
+            session,
+            default.send_buffer_size,
+        )?,
+        traffic_class: opt_u32_key(map, "SocketTrafficClass", session)?,
+    })
+}
+
+fn opt_u32_key(map: &Map, key: &str, session: &str) -> Result<Option<u32>, ConfigError> {
+    match map.get(key) {
+        None => Ok(None),
+        Some(v) => v.parse().map(Some).map_err(|_| ConfigError::InvalidValue {
+            key: key.to_owned(),
+            session: session.to_owned(),
+            reason: format!("expected an integer, got {v:?}"),
+        }),
+    }
+}
+
+/// Resolve numbered backup endpoints `SocketConnectHost<N>`/`SocketConnectPort<N>` (N = 1, 2, ...;
+/// the unnumbered `SocketConnectHost`/`SocketConnectPort` is the primary `address` and is not
+/// repeated here) into failover order (FR-019). Stops at the first missing `N`.
+fn resolve_failover_addresses(map: &Map, session: &str) -> Result<Vec<SocketAddr>, ConfigError> {
+    let mut addrs = Vec::new();
+    let mut n = 1u32;
+    loop {
+        let host_key = format!("SocketConnectHost{n}");
+        let port_key = format!("SocketConnectPort{n}");
+        let (host, port_str) = match (map.get(&host_key), map.get(&port_key)) {
+            (Some(h), Some(p)) => (h.as_str(), p.as_str()),
+            (None, None) => break,
+            _ => {
+                return Err(ConfigError::InvalidValue {
+                    key: format!("{host_key}/{port_key}"),
+                    session: session.to_owned(),
+                    reason: "both host and port must be set for a numbered backup endpoint"
+                        .to_owned(),
+                })
+            }
+        };
+        let port: u16 = port_str.parse().map_err(|_| ConfigError::InvalidValue {
+            key: port_key.clone(),
+            session: session.to_owned(),
+            reason: format!("expected a port number, got {port_str:?}"),
+        })?;
+        let addr = (host, port)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut it| it.next())
+            .ok_or_else(|| ConfigError::InvalidValue {
+                key: host_key.clone(),
+                session: session.to_owned(),
+                reason: format!("could not resolve address {host}:{port}"),
+            })?;
+        addrs.push(addr);
+        n += 1;
+    }
+    Ok(addrs)
 }
 
 /// Resolve TLS settings when `SocketUseSSL=Y` (FR-017): key/trust-store paths, mTLS, minimum

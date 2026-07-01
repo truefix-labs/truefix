@@ -188,11 +188,11 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Full socket options + initiator failover (FR-019).
 **Independent test**: Socket options applied; initiator fails over to a backup when the primary is unreachable (SC-011).
 
-- [ ] T064 [P] [US10] Failover test: backup-endpoint rotation on reconnect; all-unreachable retries without panic in `crates/truefix-transport/tests/failover.rs`
-- [ ] T065 [P] [US10] Socket-options-applied test in `crates/truefix-transport/tests/socket_options.rs`
-- [ ] T066 [US10] Extend `SocketOptions` and `apply()` for the full set (keep-alive, buffers, reuse-address, linger, etc.) in `crates/truefix-transport/src/lib.rs`
-- [ ] T067 [US10] Implement `ConnectEndpointSet` from `SocketConnectHost<N>`/`SocketConnectPort<N>` and rotate on reconnect in `crates/truefix-transport/src/lib.rs` + `crates/truefix-session/src/config.rs`
-- [ ] T068 [US10] Stance updates for socket/connect keys in `crates/truefix-config/src/keys.rs`
+- [X] T064 [P] [US10] Failover test: backup-endpoint rotation on reconnect; all-unreachable retries without panic in `crates/truefix-transport/tests/failover.rs`
+- [X] T065 [P] [US10] Socket-options-applied test in `crates/truefix-transport/tests/socket_options.rs`
+- [X] T066 [US10] Extend `SocketOptions` and `apply()` for the full set (keep-alive, buffers, reuse-address, linger, etc.) in `crates/truefix-transport/src/lib.rs`
+- [X] T067 [US10] Implement `ConnectEndpointSet` from `SocketConnectHost<N>`/`SocketConnectPort<N>` and rotate on reconnect in `crates/truefix-transport/src/lib.rs` + `crates/truefix-session/src/config.rs`
+- [X] T068 [US10] Stance updates for socket/connect keys in `crates/truefix-config/src/keys.rs`
 
 **Checkpoint G7-Socket**: failover + socket-options tests green (SC-011); gate green.
 
