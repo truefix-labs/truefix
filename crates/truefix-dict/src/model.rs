@@ -222,7 +222,12 @@ pub enum RejectReason {
     IncorrectDataFormat,
     /// Invalid or unsupported MsgType (11).
     InvalidMsgType,
-    /// A repeating group's fields are out of order / delimiter missing (14).
+    /// A tag appears more than once outside a repeating group (13).
+    TagAppearsMoreThanOnce,
+    /// A tag is out of the required order — e.g. the standard header's first fields, or
+    /// header/body/trailer sectioning (14).
+    TagOutOfRequiredOrder,
+    /// A repeating group's fields are out of order / delimiter missing (15).
     RepeatingGroupFieldsOutOfOrder,
     /// The NoXxx count does not match the number of group entries (16).
     IncorrectNumInGroupCount,
@@ -240,7 +245,9 @@ impl RejectReason {
             Self::ValueIsIncorrect => 5,
             Self::IncorrectDataFormat => 6,
             Self::InvalidMsgType => 11,
-            Self::RepeatingGroupFieldsOutOfOrder => 14,
+            Self::TagAppearsMoreThanOnce => 13,
+            Self::TagOutOfRequiredOrder => 14,
+            Self::RepeatingGroupFieldsOutOfOrder => 15,
             Self::IncorrectNumInGroupCount => 16,
         }
     }

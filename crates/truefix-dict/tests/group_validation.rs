@@ -62,16 +62,16 @@ fn zero_count_is_accepted() {
 
 #[test]
 fn missing_delimiter_is_rejected() {
-    // Entry starts with 447 instead of the delimiter 448 → RepeatingGroupFieldsOutOfOrder (14).
+    // Entry starts with 447 instead of the delimiter 448 → RepeatingGroupFieldsOutOfOrder (15).
     let m = nos(&[(453, "1"), (447, "1"), (448, "A")]);
-    assert_eq!(code(&m, &ValidationOptions::default()), Err(14));
+    assert_eq!(code(&m, &ValidationOptions::default()), Err(15));
 }
 
 #[test]
 fn out_of_order_members_rejected_only_when_toggle_on() {
     // Entry: delimiter 448, then 452 (idx 2), then 447 (idx 1) → out of order.
     let m = nos(&[(453, "1"), (448, "A"), (452, "1"), (447, "1")]);
-    assert_eq!(code(&m, &ValidationOptions::default()), Err(14));
+    assert_eq!(code(&m, &ValidationOptions::default()), Err(15));
 
     let lax = ValidationOptions {
         validate_unordered_group_fields: false,
@@ -99,5 +99,5 @@ fn nested_group_valid_is_accepted() {
 fn nested_group_missing_delimiter_is_rejected() {
     // Nested NoPartySubIDs=1 but its entry starts with 803 instead of the delimiter 523 (QFJ934).
     let m = nos(&[(453, "1"), (448, "A"), (802, "1"), (803, "1"), (523, "S")]);
-    assert_eq!(code(&m, &ValidationOptions::default()), Err(14));
+    assert_eq!(code(&m, &ValidationOptions::default()), Err(15));
 }

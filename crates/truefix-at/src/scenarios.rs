@@ -659,7 +659,7 @@ fn group_out_of_order(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(order),
-            Step::Expect(ExpectMsg::of("3").field(373, "14")), // RepeatingGroupFieldsOutOfOrder
+            Step::Expect(ExpectMsg::of("3").field(373, "15")), // RepeatingGroupFieldsOutOfOrder (15)
         ],
     )
 }
@@ -686,7 +686,7 @@ fn nested_group_missing_delimiter(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(order),
-            Step::Expect(ExpectMsg::of("3").field(373, "14")),
+            Step::Expect(ExpectMsg::of("3").field(373, "15")),
         ],
     )
 }

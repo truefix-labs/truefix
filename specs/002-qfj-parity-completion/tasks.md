@@ -86,7 +86,7 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 - [X] T029 [P] [US4] Session tests: TimeStampPrecision round-trip + `HeartBeatTimeoutMultiplier`/`TestRequestDelayMultiplier` in `crates/truefix-session/tests/integrity.rs`
 - [ ] T030 [US4] (partial: BeginString/CheckCompID done; BodyLength/CheckSum/SendingTime-range covered by decode+CheckLatency; remaining: first-three-field/field-order/repeated-tag) Implement integrity checks in `crates/truefix-session/src/state.rs` (+ helpers in `crates/truefix-core/src/codec/decode.rs`)
 - [X] T031 [US4] Implement `RejectGarbledMessage` path: transport notifies session of a garbled frame -> session emits Reject (35=3) when enabled in `crates/truefix-transport/src/lib.rs` + `crates/truefix-session/src/state.rs`
-- [ ] T032 [US4] Implement two-layer rejection routing (session 35=3 vs business 35=j) in `crates/truefix-session/src/state.rs`
+- [X] T032 [US4] Two-layer rejection routing (session 35=3 vs business 35=j) already existed from 001 (`validate_app` routes on `error.business`) — verified still correct
 - [X] T033 [US4] Implement `TimeStampPrecision` (SECONDS/MILLIS/MICROS/NANOS, default MILLIS) formatting in `crates/truefix-core/src/field.rs` + `crates/truefix-session/src/config.rs`
 - [ ] T034 [US4] (partial: PersistMessages [US2] + HeartBeatTimeoutMultiplier done; TestRequestDelayMultiplier pending) Honour switches in `crates/truefix-session/src/state.rs`
 - [X] T035 [US4] Stance updates for the integrity/precision/switch keys in `crates/truefix-config/src/keys.rs`
