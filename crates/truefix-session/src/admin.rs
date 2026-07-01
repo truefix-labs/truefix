@@ -8,7 +8,7 @@ use crate::tags::{
     NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM, ORIG_SENDING_TIME, POSS_DUP_FLAG, REF_MSG_TYPE,
     REF_SEQ_NUM, RESET_SEQ_NUM_FLAG, SENDING_TIME, SESSION_REJECT_REASON, TEST_REQ_ID, TEXT,
 };
-use crate::time_util::now_utc_timestamp;
+use crate::time_util::{now_utc_timestamp, now_utc_timestamp_prec};
 
 /// Build a message with the standard header (8/35/49/56/34/52).
 fn base(config: &SessionConfig, msg_type: &str, seq: u64) -> Message {
@@ -18,7 +18,10 @@ fn base(config: &SessionConfig, msg_type: &str, seq: u64) -> Message {
     m.header.set(Field::string(49, &config.sender_comp_id));
     m.header.set(Field::string(56, &config.target_comp_id));
     m.header.set(Field::int(34, seq as i64));
-    m.header.set(Field::string(52, &now_utc_timestamp()));
+    m.header.set(Field::string(
+        52,
+        &now_utc_timestamp_prec(config.timestamp_precision),
+    ));
     m
 }
 

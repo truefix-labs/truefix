@@ -83,12 +83,12 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 
 - [ ] T027 [P] [US4] AT integrity scenarios: `3b_InvalidChecksum`, `2m_BodyLengthValueNotCorrect`, `1d_InvalidLogonWrongBeginString`, `1c_InvalidSenderCompID`/`1c_InvalidTargetCompID`, `2o_SendingTimeValueOutOfRange`, `2t_FirstThreeFieldsOutOfOrder`, `14g`/`14h` in `crates/truefix-at/src/scenarios.rs`
 - [ ] T028 [P] [US4] AT garbled scenarios `2d`/`3c` with `RejectGarbledMessage` on/off in `crates/truefix-at/src/scenarios.rs`
-- [ ] T029 [P] [US4] Session tests: TimeStampPrecision round-trip + `HeartBeatTimeoutMultiplier`/`TestRequestDelayMultiplier` in `crates/truefix-session/tests/integrity.rs`
-- [ ] T030 [US4] Implement integrity checks (BeginString/BodyLength/CheckSum/CheckCompID/SendingTime-range/first-three-field/field-order/repeated-tag) in `crates/truefix-session/src/state.rs` (+ helpers in `crates/truefix-core/src/codec/decode.rs`)
+- [X] T029 [P] [US4] Session tests: TimeStampPrecision round-trip + `HeartBeatTimeoutMultiplier`/`TestRequestDelayMultiplier` in `crates/truefix-session/tests/integrity.rs`
+- [ ] T030 [US4] (partial: CheckCompID + BeginString done) Implement integrity checks (BeginString/BodyLength/CheckSum/CheckCompID/SendingTime-range/first-three-field/field-order/repeated-tag) in `crates/truefix-session/src/state.rs` (+ helpers in `crates/truefix-core/src/codec/decode.rs`)
 - [ ] T031 [US4] Implement `RejectGarbledMessage` path: transport notifies session of a garbled frame → session emits Reject (35=3) when enabled in `crates/truefix-transport/src/lib.rs` + `crates/truefix-session/src/state.rs`
 - [ ] T032 [US4] Implement two-layer rejection routing (session 35=3 vs business 35=j) in `crates/truefix-session/src/state.rs`
-- [ ] T033 [US4] Implement `TimeStampPrecision` (SECONDS/MILLIS/MICROS/NANOS, default MILLIS) formatting in `crates/truefix-core/src/field.rs` + `crates/truefix-session/src/config.rs`
-- [ ] T034 [US4] Honour `PersistMessages`/`HeartBeatTimeoutMultiplier`/`TestRequestDelayMultiplier` in `crates/truefix-session/src/state.rs`
+- [X] T033 [US4] Implement `TimeStampPrecision` (SECONDS/MILLIS/MICROS/NANOS, default MILLIS) formatting in `crates/truefix-core/src/field.rs` + `crates/truefix-session/src/config.rs`
+- [ ] T034 [US4] (partial: PersistMessages [US2] + HeartBeatTimeoutMultiplier done; TestRequestDelayMultiplier pending) Honour switches in `crates/truefix-session/src/state.rs`
 - [ ] T035 [US4] Stance updates for the integrity/precision/switch keys in `crates/truefix-config/src/keys.rs`
 
 **Checkpoint G4**: integrity + garbled AT scenarios green; precision/switch tests green (SC-004/005); gate green.

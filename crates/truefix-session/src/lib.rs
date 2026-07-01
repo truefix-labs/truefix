@@ -26,7 +26,7 @@ mod tags;
 mod time_util;
 
 pub use application::Application;
-pub use config::{Role, SessionConfig};
+pub use config::{Role, SessionConfig, TimeStampPrecision};
 pub use schedule::Schedule;
 pub use session_id::SessionId;
 pub use state::{Action, Event, Session, SessionState, SessionStatus};

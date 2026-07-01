@@ -19,7 +19,7 @@ use crate::tags::{
     GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM, POSS_DUP_FLAG,
     RESET_SEQ_NUM_FLAG,
 };
-use crate::time_util::now_utc_timestamp;
+use crate::time_util::now_utc_timestamp_prec;
 
 /// Session lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,7 +206,10 @@ impl Session {
         msg.header
             .set(Field::string(56, &self.config.target_comp_id));
         msg.header.set(Field::int(MSG_SEQ_NUM, seq as i64));
-        msg.header.set(Field::string(52, &now_utc_timestamp()));
+        msg.header.set(Field::string(
+            52,
+            &now_utc_timestamp_prec(self.config.timestamp_precision),
+        ));
         vec![self.send_stored(msg)]
     }
 
@@ -258,6 +261,30 @@ impl Session {
         }
     }
 
+    /// Detect a BeginString or CompID mismatch (CheckCompID). Returns a Logout reason on failure.
+    fn identity_problem(&self, msg: &Message) -> Option<&'static str> {
+        if let Some(bs) = msg.header.get(8).and_then(|f| f.as_str().ok()) {
+            if bs != self.config.begin_string {
+                return Some("Incorrect BeginString");
+            }
+        }
+        if self.config.check_comp_id {
+            // Inbound SenderCompID(49) is the peer's sender = our target; TargetCompID(56) = ours.
+            // Only a present-but-mismatched value is a CompID problem (absence is a separate concern).
+            if let Some(sender) = msg.header.get(49).and_then(|f| f.as_str().ok()) {
+                if sender != self.config.target_comp_id {
+                    return Some("CompID problem");
+                }
+            }
+            if let Some(target) = msg.header.get(56).and_then(|f| f.as_str().ok()) {
+                if target != self.config.sender_comp_id {
+                    return Some("CompID problem");
+                }
+            }
+        }
+        None
+    }
+
     fn latency_ok(&self, msg: &Message) -> bool {
         if !self.config.check_latency {
             return true;
@@ -303,6 +330,14 @@ impl Session {
         if !self.latency_ok(&msg) {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, Some("SendingTime accuracy problem"));
+            self.state = SessionState::Disconnected;
+            return vec![self.send_stored(lo), Action::Disconnect];
+        }
+
+        // BeginString / CheckCompID: a mismatched identity aborts the session (FR-007).
+        if let Some(reason) = self.identity_problem(&msg) {
+            let seq = self.next_seq();
+            let lo = admin::logout(&self.config, seq, Some(reason));
             self.state = SessionState::Disconnected;
             return vec![self.send_stored(lo), Action::Disconnect];
         }
@@ -653,7 +688,8 @@ impl Session {
                 return vec![Action::Disconnect];
             }
             SessionState::LoggedOn => {
-                if self.ticks_since_recv >= 2 * hb + 2 {
+                if self.ticks_since_recv >= hb * self.config.heartbeat_timeout_multiplier.max(1) + 2
+                {
                     self.enter_disconnected();
                     return vec![Action::Disconnect];
                 }
