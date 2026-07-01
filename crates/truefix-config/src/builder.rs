@@ -42,6 +42,23 @@ pub struct ResolvedSession {
     /// `SocketConnectHost<N>`/`SocketConnectPort<N>` keys (FR-019). Empty when no backups are
     /// configured.
     pub failover_addresses: Vec<SocketAddr>,
+    /// A file-backed log to build for this session, present when `FileLogPath` is set (FR-026).
+    pub log: Option<LogSpec>,
+}
+
+/// A file-backed log resolved from configuration (FR-026). Data-only mirror of
+/// `truefix_log::FileLogOptions`; the mechanism that builds a live `Log` from this lives in
+/// `truefix-log`, which the facade (already depending on both crates) converts through.
+#[derive(Debug, Clone)]
+pub struct LogSpec {
+    /// Directory holding `messages.log`/`event.log`. Maps from `FileLogPath`.
+    pub dir: PathBuf,
+    /// `FileLogHeartbeats`.
+    pub include_heartbeats: bool,
+    /// `FileIncludeTimeStampForMessages`.
+    pub include_timestamp: bool,
+    /// `FileIncludeMilliseconds`.
+    pub include_milliseconds: bool,
 }
 
 /// Socket-level tuning options resolved from configuration (FR-019). Data-only mirror of
@@ -273,13 +290,14 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.schedule = resolve_schedule(map, &session)?;
 
     let address = resolve_address(map, connection, &session)?;
-    let store = resolve_store(map);
+    let store = resolve_store(map, &session)?;
     let tls = resolve_tls(map, &session)?;
     let socket_options = resolve_socket_options(map, &session)?;
     let failover_addresses = match connection {
         ConnectionType::Initiator => resolve_failover_addresses(map, &session)?,
         ConnectionType::Acceptor => Vec::new(),
     };
+    let log = resolve_log(map);
 
     Ok(ResolvedSession {
         session: cfg,
@@ -289,6 +307,19 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         tls,
         socket_options,
         failover_addresses,
+        log,
+    })
+}
+
+/// Resolve a file-backed log from `FileLogPath` and its output-switch keys (FR-026); `None` when
+/// `FileLogPath` is absent (matching the engine's pre-existing default of no log).
+fn resolve_log(map: &Map) -> Option<LogSpec> {
+    let dir = PathBuf::from(map.get("FileLogPath")?);
+    Some(LogSpec {
+        dir,
+        include_heartbeats: bool_key(map, "FileLogHeartbeats", true),
+        include_timestamp: bool_key(map, "FileIncludeTimeStampForMessages", false),
+        include_milliseconds: bool_key(map, "FileIncludeMilliseconds", false),
     })
 }
 
@@ -440,13 +471,35 @@ fn resolve_address(
         })
 }
 
-fn resolve_store(map: &Map) -> StoreConfig {
-    match map.get("FileStorePath") {
-        Some(dir) => StoreConfig::File {
-            dir: PathBuf::from(dir),
+/// Resolve `FileStorePath`/`FileStoreSync`/`FileStoreMaxCachedMsgs` (FR-025): a bare
+/// `FileStorePath` builds a plain [`StoreConfig::File`]; adding `FileStoreMaxCachedMsgs` opts into
+/// [`StoreConfig::CachedFile`] (its bound applies once you've asked to tune it).
+fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
+    let Some(dir) = map.get("FileStorePath") else {
+        return Ok(StoreConfig::Memory);
+    };
+    let dir = PathBuf::from(dir);
+    let sync = bool_key(map, "FileStoreSync", true);
+    Ok(match map.get("FileStoreMaxCachedMsgs") {
+        Some(_) => {
+            let max_cached_msgs =
+                usize_key(map, "FileStoreMaxCachedMsgs", session, Some(0))?.unwrap_or(0);
+            StoreConfig::CachedFile {
+                dir,
+                options: truefix_store::FileStoreOptions {
+                    sync,
+                    max_cached_msgs,
+                },
+            }
+        }
+        None => StoreConfig::File {
+            dir,
+            options: truefix_store::FileStoreOptions {
+                sync,
+                max_cached_msgs: 0,
+            },
         },
-        None => StoreConfig::Memory,
-    }
+    })
 }
 
 /// Resolve `NonStopSession`/`StartTime`/`EndTime`/`Weekdays`/`TimeZone`/`StartDay`/`EndDay` into a

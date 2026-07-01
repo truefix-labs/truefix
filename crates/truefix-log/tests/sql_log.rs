@@ -22,18 +22,24 @@ async fn sql_log_persists_messages_and_events() {
 
     use sqlx::Row;
     let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
-    let msgs: i64 = sqlx::query("SELECT COUNT(*) AS c FROM log_messages")
+    let incoming: i64 = sqlx::query("SELECT COUNT(*) AS c FROM log_incoming")
         .fetch_one(&pool)
         .await
         .unwrap()
         .get("c");
-    let events: i64 = sqlx::query("SELECT COUNT(*) AS c FROM log_events")
+    let outgoing: i64 = sqlx::query("SELECT COUNT(*) AS c FROM log_outgoing")
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .get("c");
+    let events: i64 = sqlx::query("SELECT COUNT(*) AS c FROM log_event")
         .fetch_one(&pool)
         .await
         .unwrap()
         .get("c");
 
-    assert_eq!(msgs, 2, "two messages logged");
+    assert_eq!(incoming, 1, "one incoming message logged");
+    assert_eq!(outgoing, 1, "one outgoing message logged");
     assert_eq!(events, 1, "one event logged");
 
     let _ = std::fs::remove_dir_all(&dir);

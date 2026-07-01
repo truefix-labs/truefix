@@ -27,11 +27,11 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use thiserror::Error;
 
-pub use file::{CachedFileStore, FileStore};
+pub use file::{CachedFileStore, FileStore, FileStoreOptions};
 pub use memory::MemoryStore;
 pub use noop::NoopStore;
 #[cfg(feature = "sql")]
-pub use sql::SqlStore;
+pub use sql::{SqlPoolOptions, SqlStore, SqlStoreConfig};
 
 /// An error from a message store.
 #[derive(Debug, Error)]
@@ -73,11 +73,15 @@ pub enum StoreConfig {
     File {
         /// Directory holding the store files.
         dir: PathBuf,
+        /// `FileStoreSync` (FR-025).
+        options: FileStoreOptions,
     },
     /// File-backed store that also caches messages in memory.
     CachedFile {
         /// Directory holding the store files.
         dir: PathBuf,
+        /// `FileStoreSync`/`FileStoreMaxCachedMsgs` (FR-025).
+        options: FileStoreOptions,
     },
     /// No-op store (never persists; sequence numbers stay at 1).
     Noop,
@@ -93,8 +97,12 @@ pub enum StoreConfig {
 pub async fn build_store(config: &StoreConfig) -> Result<Box<dyn MessageStore>, StoreError> {
     Ok(match config {
         StoreConfig::Memory => Box::new(MemoryStore::new()),
-        StoreConfig::File { dir } => Box::new(FileStore::open(dir)?),
-        StoreConfig::CachedFile { dir } => Box::new(CachedFileStore::open(dir)?),
+        StoreConfig::File { dir, options } => {
+            Box::new(FileStore::open_with_options(dir, *options)?)
+        }
+        StoreConfig::CachedFile { dir, options } => {
+            Box::new(CachedFileStore::open_with_options(dir, *options)?)
+        }
         StoreConfig::Noop => Box::new(NoopStore),
         #[cfg(feature = "sql")]
         StoreConfig::Sql { url } => Box::new(SqlStore::connect(url).await?),

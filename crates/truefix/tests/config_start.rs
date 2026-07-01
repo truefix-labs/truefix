@@ -73,3 +73,68 @@ async fn engine_starts_acceptor_and_initiator_from_cfg() {
 
     engine.shutdown();
 }
+
+/// T072-adjacent (US12/FR-026): `FileLogPath` alone builds a working session log, with
+/// `FileLogHeartbeats=N` filtering heartbeats and each line prefixed by the session ID.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_builds_file_log_from_cfg() {
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("truefix-engine-log-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let cfg = format!(
+        "[DEFAULT]\n\
+         BeginString=FIX.4.4\n\
+         HeartBtInt=1\n\
+         ResetOnLogon=Y\n\
+         FileLogPath={}\n\
+         FileLogHeartbeats=N\n\
+         \n\
+         [SESSION]\n\
+         ConnectionType=acceptor\n\
+         SenderCompID=SERVER\n\
+         TargetCompID=CLIENT\n\
+         SocketAcceptAddress=127.0.0.1\n\
+         SocketAcceptPort={port}\n\
+         \n\
+         [SESSION]\n\
+         ConnectionType=initiator\n\
+         SenderCompID=CLIENT\n\
+         TargetCompID=SERVER\n\
+         SocketConnectHost=127.0.0.1\n\
+         SocketConnectPort={port}\n",
+        dir.display()
+    );
+
+    let settings = SessionSettings::parse(&cfg).expect("parse cfg");
+    let logons = Arc::new(AtomicU32::new(0));
+    let engine = Engine::start(
+        &settings,
+        Arc::new(App {
+            logons: logons.clone(),
+        }),
+    )
+    .await
+    .expect("engine starts from cfg");
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) && logons.load(Ordering::SeqCst) < 2 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(logons.load(Ordering::SeqCst), 2);
+    // Give the file log a moment to flush the logon event.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let events = std::fs::read_to_string(dir.join("event.log")).expect("event.log written");
+    assert!(
+        events.contains("FIX.4.4:SERVER->CLIENT") || events.contains("FIX.4.4:CLIENT->SERVER"),
+        "event lines should be prefixed with the session ID: {events}"
+    );
+    let messages = std::fs::read_to_string(dir.join("messages.log")).expect("messages.log written");
+    assert!(
+        !messages.contains("35=0"),
+        "FileLogHeartbeats=N should filter heartbeats from the message log"
+    );
+
+    engine.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

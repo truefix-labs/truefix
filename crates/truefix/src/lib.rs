@@ -67,6 +67,28 @@ pub enum EngineError {
     /// A TLS configuration could not be built from the session's `TlsSpec` (FR-017).
     #[error("tls: {0}")]
     Tls(String),
+    /// A log could not be built from the session's `LogSpec` (FR-026).
+    #[error("log: {0}")]
+    Log(String),
+}
+
+fn build_log(
+    spec: &truefix_config::LogSpec,
+    session_id: &str,
+) -> Result<Arc<dyn truefix_log::Log>, EngineError> {
+    let file_log = truefix_log::FileLog::open_with_options(
+        &spec.dir,
+        truefix_log::FileLogOptions {
+            include_heartbeats: spec.include_heartbeats,
+            include_timestamp: spec.include_timestamp,
+            include_milliseconds: spec.include_milliseconds,
+        },
+    )
+    .map_err(|e| EngineError::Log(e.to_string()))?;
+    Ok(Arc::new(truefix_log::SessionPrefixLog::new(
+        session_id.to_owned(),
+        file_log,
+    )))
 }
 
 /// A running engine: the started acceptor listeners and initiator sessions (FR-013/014).
@@ -96,9 +118,19 @@ impl Engine {
             let store = truefix_store::build_store(&rs.store)
                 .await
                 .map_err(|e| EngineError::Store(e.to_string()))?;
+            let session_id = format!(
+                "{}:{}->{}",
+                rs.session.begin_string, rs.session.sender_comp_id, rs.session.target_comp_id
+            );
+            let log = rs
+                .log
+                .as_ref()
+                .map(|spec| build_log(spec, &session_id))
+                .transpose()?;
             let services = Services {
                 store: Some(Arc::from(store)),
                 socket_options: to_transport_socket_options(rs.socket_options),
+                log,
                 ..Services::default()
             };
             match rs.connection {

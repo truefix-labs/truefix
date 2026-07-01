@@ -17,6 +17,7 @@
 
 mod composite;
 mod file;
+mod prefix;
 mod screen;
 #[cfg(feature = "sql")]
 mod sql;
@@ -27,11 +28,19 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 pub use composite::CompositeLog;
-pub use file::FileLog;
-pub use screen::ScreenLog;
+pub use file::{FileLog, FileLogOptions};
+pub use prefix::SessionPrefixLog;
+pub use screen::{ScreenLog, ScreenLogOptions};
 #[cfg(feature = "sql")]
-pub use sql::SqlLog;
-pub use tracing_log::TracingLog;
+pub use sql::{SqlLog, SqlLogConfig, SqlLogPoolOptions};
+pub use tracing_log::{TracingLog, TracingLogOptions};
+
+/// Whether a raw FIX wire message is a Heartbeat (`35=0`), used by the `*LogHeartbeats`/
+/// `*ShowHeartBeats` switches (FR-026). Matches on an exact SOH-delimited field to avoid
+/// false positives from substrings like `3510=0`.
+pub(crate) fn is_heartbeat(message: &str) -> bool {
+    message.split('\u{1}').any(|field| field == "35=0")
+}
 
 /// An error constructing a log.
 #[derive(Debug, Error)]

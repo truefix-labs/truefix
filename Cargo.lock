@@ -2013,6 +2013,7 @@ dependencies = [
  "truefix-config",
  "truefix-core",
  "truefix-dict",
+ "truefix-log",
  "truefix-session",
  "truefix-store",
  "truefix-transport",
@@ -2065,6 +2066,7 @@ version = "0.0.0"
 dependencies = [
  "sqlx",
  "thiserror",
+ "time",
  "tokio",
  "tracing",
 ]

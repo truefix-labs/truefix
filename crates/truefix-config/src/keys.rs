@@ -217,15 +217,15 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
         "proxy",
         Unsup("HTTP/SOCKS proxy is not yet implemented"),
     ),
-    // File store
+    // File store (FR-025)
     k("FileStorePath", "file-store", Impl),
-    k("FileStoreSync", "file-store", Rec),
-    k("FileStoreMaxCachedMsgs", "file-store", Rec),
-    // File log
+    k("FileStoreSync", "file-store", Impl),
+    k("FileStoreMaxCachedMsgs", "file-store", Impl),
+    // File log (FR-026)
     k("FileLogPath", "file-log", Impl),
-    k("FileLogHeartbeats", "file-log", Rec),
-    k("FileIncludeMilliseconds", "file-log", Rec),
-    k("FileIncludeTimeStampForMessages", "file-log", Rec),
+    k("FileLogHeartbeats", "file-log", Impl),
+    k("FileIncludeMilliseconds", "file-log", Impl),
+    k("FileIncludeTimeStampForMessages", "file-log", Impl),
     // Screen log
     k("ScreenLogShowEvents", "screen-log", Rec),
     k("ScreenLogShowHeartBeats", "screen-log", Rec),

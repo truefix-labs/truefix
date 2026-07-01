@@ -115,3 +115,60 @@ a real API design task of its own. `failover_addresses` is therefore fully parse
 config layer, and the rotation mechanism is fully implemented and tested at the transport layer
 (`crates/truefix-transport/tests/failover.rs`), but `Engine::start` does not yet wire the two
 together — no different from `Engine::start` not doing single-endpoint auto-reconnect today either.
+
+## Feature 002 — US12: storage & logging completeness (FR-024/025/026)
+
+**SQL store/log (FR-024)**: `truefix_store::SqlStore` and `truefix_log::SqlLog` now support
+PostgreSQL, MySQL, and SQLite, selected by the connect URL's scheme (`postgres://`/`postgresql://`,
+`mysql://`, else SQLite). Each backend gets its own native SQL text (placeholder style, upsert
+syntax, column types) via a `Pool` enum matched once per call — deliberately not the `sqlx::Any`
+driver, since `Any` doesn't unify bind-placeholder syntax across backends and native per-backend SQL
+is both simpler and more correct. `SqlStoreConfig`/`SqlLogConfig` add configurable table names
+(`JdbcStoreSessionsTableName`/`JdbcStoreMessagesTableName`/`JdbcLogIncomingTable`/
+`JdbcLogOutgoingTable`/`JdbcLogEventTable`) and pool settings (`JdbcMaxActiveConnection`/
+`JdbcMinIdleConnection`/`JdbcConnectionTimeout`/`JdbcConnectionIdleTimeout`/
+`JdbcMaxConnectionLifeTime`). A `session_id` discriminator column lets multiple sessions share one
+table pair, matching QuickFIX/J's JDBC schema more faithfully than the previous single-session
+SQLite-only store. PostgreSQL/MySQL are exercised by `crates/truefix-store/tests/sql_backends.rs`,
+gated on `TRUEFIX_TEST_POSTGRES_URL`/`TRUEFIX_TEST_MYSQL_URL` (unset in this sandbox — no live
+service available — so those cases skip cleanly rather than failing the suite); SQLite runs
+unconditionally. These `Jdbc*` keys remain **Recognized** rather than **Implemented**: the
+capability is real and tested at the Rust-API level, but `.cfg` doesn't yet auto-select a SQL store
+via `JdbcURL` the way `FileStorePath` auto-selects a file store — that auto-wiring is a natural next
+step, not attempted here to keep this change bounded.
+
+**CachedFileStore cache + FileStoreSync (FR-025)**: `FileStore` and `CachedFileStore` were
+refactored onto a shared `BodyLog` (an append-only record log plus an in-memory *offset* index,
+not the message bytes). `FileStore` now reads message bodies from disk on every `get()` — no
+process-memory message cache — matching plain QuickFIX file-store semantics. `CachedFileStore`
+additionally keeps a bounded in-memory byte cache (`FileStoreMaxCachedMsgs`; `0` = unbounded,
+preserving the pre-FR-025 behavior as the default), evicting the oldest entry past the bound and
+falling back to disk for cache misses; the cache is rewarmed from disk on reopen. Both honor a
+`FileStoreSync` fsync toggle. `StoreConfig::File`/`CachedFile` gained an `options: FileStoreOptions`
+field; `truefix-config`'s `resolve_store` now maps `FileStoreSync`/`FileStoreMaxCachedMsgs` from
+`.cfg`, selecting `CachedFile` the moment `FileStoreMaxCachedMsgs` is set (both keys move
+Recognized → **Implemented**).
+
+**Log output switches (FR-026)**: `ScreenLog`/`FileLog`/`TracingLog` gained options structs
+honoring their registered switches — heartbeat filtering (`FileLogHeartbeats`/
+`ScreenLogShowHeartBeats`/`SLF4JLogHeartbeats`, detected via an exact SOH-delimited `35=0` field
+match), incoming/outgoing/event visibility (`ScreenLogShow*`), and timestamp/millisecond inclusion
+(`FileIncludeTimeStampForMessages`/`FileIncludeMilliseconds`/`ScreenIncludeMilliseconds`). Session-ID
+prefixing (`SLF4JLogPrependSessionID` and its file/screen equivalents) is provided generically by a
+new `SessionPrefixLog<L: Log>` decorator that wraps *any* `Log` implementation, rather than
+duplicating a prefix option across every sink.
+
+`truefix-config` gained a `FileLogPath`-triggered `LogSpec` (mirroring the `FileStorePath` → store
+pattern) parsing the three `File*` switch keys; `Engine::start` converts it into a
+`FileLog` wrapped in `SessionPrefixLog` and wires it into `Services.log` — closing a real,
+pre-existing gap where `FileLogPath` was marked **Implemented** in the Appendix A registry despite
+no actual `.cfg`-to-engine wiring existing anywhere in the codebase (verified by grep before this
+change: the key appeared only in the registry itself). `FileLogPath`/`FileLogHeartbeats`/
+`FileIncludeMilliseconds`/`FileIncludeTimeStampForMessages` are now genuinely
+`.cfg`-to-running-log, proven by `crates/truefix/tests/config_start.rs`'s
+`engine_builds_file_log_from_cfg` (asserts session-ID-prefixed event lines and heartbeat-filtered
+message lines from a config-only start) and `crates/truefix-config/tests/store_and_log_mapping.rs`.
+`ScreenLogShow*`/`ScreenIncludeMilliseconds`/`SLF4JLogPrependSessionID`/`SLF4JLogHeartbeats` remain
+**Recognized**: the switch behavior is implemented and tested at the crate level, but there's no
+natural `.cfg` key that selects "use the screen/tracing log" the way `FileLogPath` does, so no
+auto-wiring was added for them.

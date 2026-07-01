@@ -203,14 +203,14 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: SQL PG/MySQL/SQLite, CachedFileStore cache+fsync, log switches (FR-024/025/026).
 **Independent test**: SQL suite green across the three DBs (gated); cached store caches/flushes + survives restart; log switches change output (SC-012).
 
-- [ ] T069 [P] [US12] SQL store tests for Postgres/MySQL/SQLite (gated on availability) in `crates/truefix-store/tests/sql_backends.rs`
-- [ ] T070 [P] [US12] CachedFileStore cache + `FileStoreSync` + restart test in `crates/truefix-store/tests/cached.rs`
-- [ ] T071 [P] [US12] Log output-switch tests (heartbeat filter, ms, visibility, session-id prefix) in `crates/truefix-log/tests/switches.rs`
-- [ ] T072 [US12] Add Postgres + MySQL pools + portable schema + table-name/pool config to `crates/truefix-store/src/sql.rs`
-- [ ] T073 [US12] Add Postgres + MySQL to `crates/truefix-log/src/sql.rs`
-- [ ] T074 [US12] Implement real in-memory cache + `FileStoreSync` fsync toggle in `crates/truefix-store/src/file.rs`
-- [ ] T075 [US12] Implement log output switches in `crates/truefix-log/src/{screen,file}.rs`
-- [ ] T076 [US12] Final Appendix A stance sweep + `key_coverage` assertion in `crates/truefix-config/src/keys.rs` and `crates/truefix-config/tests/key_coverage.rs` (FR-027; SC-014)
+- [X] T069 [P] [US12] SQL store tests for Postgres/MySQL/SQLite (gated on availability) in `crates/truefix-store/tests/sql_backends.rs`
+- [X] T070 [P] [US12] CachedFileStore cache + `FileStoreSync` + restart test in `crates/truefix-store/tests/cached.rs`
+- [X] T071 [P] [US12] Log output-switch tests (heartbeat filter, ms, visibility, session-id prefix) in `crates/truefix-log/tests/switches.rs`
+- [X] T072 [US12] Add Postgres + MySQL pools + portable schema + table-name/pool config to `crates/truefix-store/src/sql.rs`
+- [X] T073 [US12] Add Postgres + MySQL to `crates/truefix-log/src/sql.rs`
+- [X] T074 [US12] Implement real in-memory cache + `FileStoreSync` fsync toggle in `crates/truefix-store/src/file.rs`
+- [X] T075 [US12] Implement log output switches in `crates/truefix-log/src/{screen,file}.rs`
+- [X] T076 [US12] Final Appendix A stance sweep + `key_coverage` assertion in `crates/truefix-config/src/keys.rs` and `crates/truefix-config/tests/key_coverage.rs` (FR-027; SC-014)
 
 **Checkpoint G10**: SQL multi-backend + cached + log-switch tests green (SC-012); stances accurate (SC-014); gate green.
 

@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use truefix_store::{
-    build_store, CachedFileStore, FileStore, MemoryStore, MessageStore, NoopStore, StoreConfig,
+    build_store, CachedFileStore, FileStore, FileStoreOptions, MemoryStore, MessageStore,
+    NoopStore, StoreConfig,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -116,8 +117,14 @@ async fn factory_builds_each_backend() {
     let configs = [
         StoreConfig::Memory,
         StoreConfig::Noop,
-        StoreConfig::File { dir: dir.clone() },
-        StoreConfig::CachedFile { dir: dir.clone() },
+        StoreConfig::File {
+            dir: dir.clone(),
+            options: FileStoreOptions::default(),
+        },
+        StoreConfig::CachedFile {
+            dir: dir.clone(),
+            options: FileStoreOptions::default(),
+        },
     ];
     for cfg in configs {
         let s = build_store(&cfg).await.unwrap();
