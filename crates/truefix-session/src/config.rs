@@ -50,6 +50,14 @@ pub struct SessionConfig {
     pub max_latency: u32,
     /// Whether to validate inbound SenderCompID/TargetCompID against the session (CheckCompID).
     pub check_comp_id: bool,
+    /// Whether a garbled (undecodable) frame draws a session Reject (RejectGarbledMessage). When
+    /// `false` (the default), garbled frames are silently dropped without advancing the sequence
+    /// number (FR-006).
+    pub reject_garbled_message: bool,
+    /// Multiplier applied to the heartbeat interval before probing a silent peer with a
+    /// TestRequest (TestRequestDelayMultiplier; the probe fires after
+    /// `heartbeat_interval * this` idle ticks, default matches `heartbeat_interval + 1`).
+    pub test_request_delay_multiplier: f64,
     /// Heartbeat-interval multiplier after which a silent peer is disconnected
     /// (HeartBeatTimeoutMultiplier; the timeout is `heartbeat_interval * this + 2` ticks).
     pub heartbeat_timeout_multiplier: u32,
@@ -103,6 +111,8 @@ impl SessionConfig {
             check_latency: true,
             max_latency: 120,
             check_comp_id: true,
+            reject_garbled_message: false,
+            test_request_delay_multiplier: 1.0,
             heartbeat_timeout_multiplier: 2,
             timestamp_precision: TimeStampPrecision::Milliseconds,
             logon_timeout: 10,

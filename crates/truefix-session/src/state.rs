@@ -45,6 +45,10 @@ pub enum Event {
     Tick,
     /// The application requested a graceful logout.
     StartLogout,
+    /// A frame failed to decode (bad checksum/body-length/tag). Honors `RejectGarbledMessage`
+    /// (FR-006): emits a session Reject when enabled, otherwise produces no action (silent drop,
+    /// sequence number not advanced).
+    Garbled,
 }
 
 /// A point-in-time snapshot of a session, for monitoring (FR-L1).
@@ -193,7 +197,20 @@ impl Session {
             Event::Received(msg) => self.on_received(msg),
             Event::Tick => self.on_tick(),
             Event::StartLogout => self.on_start_logout(),
+            Event::Garbled => self.on_garbled(),
         }
+    }
+
+    /// A frame failed to decode. Per `RejectGarbledMessage` (FR-006), either emit a session
+    /// Reject (35=3, SessionRejectReason=0) or silently drop (no sequence number is available to
+    /// advance, so a drop is always sequence-neutral).
+    fn on_garbled(&mut self) -> Vec<Action> {
+        if !self.config.reject_garbled_message || self.state != SessionState::LoggedOn {
+            return Vec::new();
+        }
+        let seq = self.next_seq();
+        let rej = admin::reject_with_reason(&self.config, seq, 0, 0, "garbled message");
+        vec![self.send_stored(rej)]
     }
 
     /// Send an application message: stamps the header (seq, comp IDs, SendingTime), stores it for
@@ -693,7 +710,10 @@ impl Session {
                     self.enter_disconnected();
                     return vec![Action::Disconnect];
                 }
-                if self.ticks_since_recv > hb && !self.test_request_outstanding {
+                let test_request_delay = f64::from(hb) * self.config.test_request_delay_multiplier;
+                if (self.ticks_since_recv as f64) > test_request_delay
+                    && !self.test_request_outstanding
+                {
                     let seq = self.next_seq();
                     let tr = admin::test_request(&self.config, seq, "TEST");
                     self.test_request_outstanding = true;

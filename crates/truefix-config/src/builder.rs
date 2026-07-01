@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 
-use truefix_session::{Role, Schedule, SessionConfig};
+use truefix_session::{Role, Schedule, SessionConfig, TimeStampPrecision};
 use truefix_store::StoreConfig;
 
 use crate::{ConfigError, SessionSettings};
@@ -82,6 +82,37 @@ fn bool_key(map: &Map, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn f64_key(map: &Map, key: &str, session: &str, default: f64) -> Result<f64, ConfigError> {
+    match map.get(key) {
+        None => Ok(default),
+        Some(v) => v.parse().map_err(|_| ConfigError::InvalidValue {
+            key: key.to_owned(),
+            session: session.to_owned(),
+            reason: format!("expected a number, got {v:?}"),
+        }),
+    }
+}
+
+fn precision_key(
+    map: &Map,
+    key: &str,
+    session: &str,
+    default: TimeStampPrecision,
+) -> Result<TimeStampPrecision, ConfigError> {
+    match map.get(key).map(String::as_str) {
+        None => Ok(default),
+        Some("SECONDS") => Ok(TimeStampPrecision::Seconds),
+        Some("MILLIS") => Ok(TimeStampPrecision::Milliseconds),
+        Some("MICROS") => Ok(TimeStampPrecision::Microseconds),
+        Some("NANOS") => Ok(TimeStampPrecision::Nanoseconds),
+        Some(other) => Err(ConfigError::InvalidValue {
+            key: key.to_owned(),
+            session: session.to_owned(),
+            reason: format!("expected SECONDS/MILLIS/MICROS/NANOS, got {other:?}"),
+        }),
+    }
+}
+
 fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> {
     let session = label(map, index);
     let begin_string = required(map, "BeginString", &session)?.to_owned();
@@ -116,6 +147,22 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.resend_request_chunk_size = u32_key(map, "ResendRequestChunkSize", &session, 0)?;
     cfg.enable_last_msg_seq_num_processed = bool_key(map, "EnableLastMsgSeqNumProcessed", false);
     cfg.enable_next_expected_msg_seq_num = bool_key(map, "EnableNextExpectedMsgSeqNum", false);
+    cfg.check_comp_id = bool_key(map, "CheckCompID", cfg.check_comp_id);
+    cfg.reject_garbled_message = bool_key(map, "RejectGarbledMessage", cfg.reject_garbled_message);
+    cfg.heartbeat_timeout_multiplier = u32_key(
+        map,
+        "HeartBeatTimeoutMultiplier",
+        &session,
+        cfg.heartbeat_timeout_multiplier,
+    )?;
+    cfg.test_request_delay_multiplier = f64_key(
+        map,
+        "TestRequestDelayMultiplier",
+        &session,
+        cfg.test_request_delay_multiplier,
+    )?;
+    cfg.timestamp_precision =
+        precision_key(map, "TimeStampPrecision", &session, cfg.timestamp_precision)?;
     if bool_key(map, "NonStopSession", false) {
         cfg.schedule = Some(Schedule::non_stop());
     }

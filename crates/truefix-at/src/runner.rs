@@ -66,6 +66,8 @@ pub struct SessionTweaks {
     pub resend_chunk_size: u32,
     /// Use an active application that replies to each NewOrderSingle with an ExecutionReport.
     pub executor_app: bool,
+    /// Enable RejectGarbledMessage (a garbled frame draws a session Reject instead of a silent drop).
+    pub reject_garbled: bool,
 }
 
 /// A scripted acceptance-test scenario.
@@ -129,6 +131,7 @@ pub async fn start_acceptor(
     template.enable_next_expected_msg_seq_num = tweaks.enable_next_expected;
     template.enable_last_msg_seq_num_processed = tweaks.enable_last_processed;
     template.resend_request_chunk_size = tweaks.resend_chunk_size;
+    template.reject_garbled_message = tweaks.reject_garbled;
 
     // Enable dictionary validation so field-level reject scenarios produce Reject messages.
     let validator = match version {

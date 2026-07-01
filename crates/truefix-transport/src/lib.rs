@@ -559,8 +559,20 @@ where
                         logged_on,
                     )
                     .await?;
+                } else {
+                    // The frame length was determinable but the content failed to decode (bad
+                    // checksum/body-length/tag): honor RejectGarbledMessage (FR-006).
+                    dispatch(
+                        session,
+                        Event::Garbled,
+                        stream,
+                        app,
+                        id,
+                        services,
+                        logged_on,
+                    )
+                    .await?;
                 }
-                // Garbled frames are dropped at this stage; RejectGarbledMessage arrives in S3.
             }
             Ok(None) => return Ok(()),
             Err(_) => {

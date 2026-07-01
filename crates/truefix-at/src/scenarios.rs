@@ -1025,6 +1025,30 @@ fn garbled_message_dropped(v: &str) -> Scenario {
     )
 }
 
+/// Special suite — RejectGarbledMessage=Y: a garbled frame draws a session-level Reject (35=3,
+/// SessionRejectReason=0) instead of a silent drop, and the sequence counter is untouched.
+fn garbled_message_rejected(v: &str) -> Scenario {
+    let garbled = garble_checksum(&client_message(v, "0", 2));
+    let mut tr = client_message(v, "1", 2); // reuses seq 2: the garbled frame was never counted
+    tr.body.set(Field::string(112, "AFTER-GARBLE-REJECT"));
+    scenario_with(
+        "special_RejectGarbledMessage",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::SendRaw(garbled),
+            Step::Expect(ExpectMsg::of("3").field(373, "0")), // session Reject
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "AFTER-GARBLE-REJECT")),
+        ],
+        SessionTweaks {
+            reject_garbled: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// Special suite — resendRequestChunkSize: when a gap is detected, the ResendRequest is bounded to
 /// one chunk (EndSeqNo = BeginSeqNo + chunk - 1) instead of an open-ended range.
 fn resend_request_chunk_size(v: &str) -> Scenario {
@@ -1104,6 +1128,7 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(last_msg_seq_num_processed("FIX.4.4"));
     out.push(check_latency_timestamps("FIX.4.4"));
     out.push(garbled_message_dropped("FIX.4.4"));
+    out.push(garbled_message_rejected("FIX.4.4"));
     out.push(resend_request_chunk_size("FIX.4.4"));
     out
 }
