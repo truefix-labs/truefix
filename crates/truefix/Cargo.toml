@@ -13,6 +13,9 @@ truefix-core.workspace = true
 truefix-session.workspace = true
 truefix-transport.workspace = true
 truefix-config.workspace = true
+truefix-store.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }

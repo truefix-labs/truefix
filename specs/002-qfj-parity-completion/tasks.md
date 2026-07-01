@@ -31,13 +31,13 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Start an initiator and an acceptor from one `.cfg` with no code (FR-013/014/015).
 **Independent test**: Engine starts both sessions from a fixture `.cfg`, completes logon→heartbeat; a bad key fails fast with a typed `ConfigError` naming key+session (SC-001).
 
-- [ ] T007 [P] [US1] Integration test: start engine from a one-acceptor + one-initiator `.cfg`, assert logon→heartbeat in `crates/truefix/tests/config_start.rs`
-- [ ] T008 [P] [US1] Negative tests: each `ConfigError` variant (MissingRequired / InvalidValue / UnusableResource / UnknownConnectionType) with no partial start in `crates/truefix/tests/config_errors.rs`
-- [ ] T009 [US1] Implement `EngineConfig::from_settings` with DEFAULT+per-SESSION precedence in `crates/truefix-config/src/builder.rs`
-- [ ] T010 [US1] Implement typed `ConfigError { key, session, kind }` and per-key validation in `crates/truefix-config/src/error.rs` + `builder.rs`
-- [ ] T011 [US1] Resolve `StoreSpec`/`LogSpec`/`Schedule`/`TransportSpec`/`TlsSpec` from keys in `crates/truefix-config/src/builder.rs`
-- [ ] T012 [US1] Add `Engine::start(settings)` routing each session by `ConnectionType` to acceptor/initiator construction in `crates/truefix/src/lib.rs`
-- [ ] T013 [US1] Move config-mapping keys `Recognized → Implemented` in `crates/truefix-config/src/keys.rs` (FR-027)
+- [X] T007 [P] [US1] Integration test: start engine from a one-acceptor + one-initiator `.cfg`, assert logon→heartbeat in `crates/truefix/tests/config_start.rs`
+- [X] T008 [P] [US1] Negative tests: each `ConfigError` variant (MissingRequired / InvalidValue / UnusableResource / UnknownConnectionType) with no partial start in `crates/truefix/tests/config_errors.rs`
+- [X] T009 [US1] Implement `EngineConfig::from_settings` with DEFAULT+per-SESSION precedence in `crates/truefix-config/src/builder.rs`
+- [X] T010 [US1] Implement typed `ConfigError { key, session, kind }` and per-key validation in `crates/truefix-config/src/error.rs` + `builder.rs`
+- [X] T011 [US1] Resolve `StoreSpec`/`LogSpec`/`Schedule`/`TransportSpec`/`TlsSpec` from keys in `crates/truefix-config/src/builder.rs`
+- [X] T012 [US1] Add `Engine::start(settings)` routing each session by `ConnectionType` to acceptor/initiator construction in `crates/truefix/src/lib.rs`
+- [X] T013 [US1] Move config-mapping keys `Recognized → Implemented` in `crates/truefix-config/src/keys.rs` (FR-027)
 
 **Checkpoint G3**: `cargo test -p truefix --test config_start` green; negative cases typed; gate green.
 

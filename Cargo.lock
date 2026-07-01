@@ -1867,10 +1867,12 @@ name = "truefix"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "thiserror",
  "tokio",
  "truefix-config",
  "truefix-core",
  "truefix-session",
+ "truefix-store",
  "truefix-transport",
 ]
 
@@ -1891,6 +1893,9 @@ name = "truefix-config"
 version = "0.0.0"
 dependencies = [
  "thiserror",
+ "time",
+ "truefix-session",
+ "truefix-store",
 ]
 
 [[package]]

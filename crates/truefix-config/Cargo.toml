@@ -10,6 +10,9 @@ publish = false
 
 [dependencies]
 thiserror.workspace = true
+truefix-session.workspace = true
+truefix-store.workspace = true
+time.workspace = true
 
 [lints]
 workspace = true

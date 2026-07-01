@@ -88,7 +88,7 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("ResendRequestChunkSize", "session", Impl),
     k("SendRedundantResendRequests", "session", Rec),
     k("ClosedResendInterval", "session", Rec),
-    k("EnableLastMsgSeqNumProcessed", "session", Rec),
+    k("EnableLastMsgSeqNumProcessed", "session", Impl),
     k("EnableNextExpectedMsgSeqNum", "session", Impl),
     k("RequiresOrigSendingTime", "session", Impl),
     k("AllowPosDup", "session", Impl),

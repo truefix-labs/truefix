@@ -16,12 +16,14 @@
     )
 )]
 
+pub mod builder;
 pub mod keys;
 
 use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+pub use builder::{ConnectionType, ResolvedSession};
 pub use keys::{key_info, KeyInfo, Stance, APPENDIX_A_KEYS};
 
 /// An error parsing a settings document.
@@ -42,6 +44,32 @@ pub enum ConfigError {
         line: usize,
         /// The variable name.
         name: String,
+    },
+    /// A required configuration key is missing for a session (FR-015).
+    #[error("session {session}: missing required key `{key}`")]
+    MissingRequired {
+        /// The missing key.
+        key: String,
+        /// The session label (SenderCompID->TargetCompID, or an index).
+        session: String,
+    },
+    /// A recognized key has an invalid value (FR-015).
+    #[error("session {session}: invalid value for `{key}`: {reason}")]
+    InvalidValue {
+        /// The offending key.
+        key: String,
+        /// The session label.
+        session: String,
+        /// Why the value is invalid.
+        reason: String,
+    },
+    /// `ConnectionType` was neither `acceptor` nor `initiator` (FR-014).
+    #[error("session {session}: unknown ConnectionType `{value}`")]
+    UnknownConnectionType {
+        /// The session label.
+        session: String,
+        /// The offending value.
+        value: String,
     },
 }
 
