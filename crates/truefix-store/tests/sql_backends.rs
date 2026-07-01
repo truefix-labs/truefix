@@ -1,7 +1,8 @@
 //! T069 (US12) — SQL store parity across PostgreSQL/MySQL/SQLite (FR-024). SQLite runs
 //! unconditionally (file-backed, no external service); PostgreSQL/MySQL are gated on
-//! `TRUEFIX_TEST_POSTGRES_URL`/`TRUEFIX_TEST_MYSQL_URL` being set to a reachable instance, since
-//! CI/dev boxes without those services shouldn't fail the suite.
+//! `DATABASE_URL_PG`/`DATABASE_URL_MYSQL` being set to a reachable instance (CI provides both via
+//! service containers — see `.github/workflows/ci.yml`'s `sql` job), since dev boxes without those
+//! services shouldn't fail the suite.
 
 #![cfg(feature = "sql")]
 
@@ -99,8 +100,8 @@ async fn sqlite_session_isolation() {
 
 #[tokio::test]
 async fn postgres_full_contract_if_available() {
-    let Ok(url) = std::env::var("TRUEFIX_TEST_POSTGRES_URL") else {
-        eprintln!("skipping: TRUEFIX_TEST_POSTGRES_URL not set");
+    let Ok(url) = std::env::var("DATABASE_URL_PG") else {
+        eprintln!("skipping: DATABASE_URL_PG not set");
         return;
     };
     exercise_full_contract(&url, "pg1").await;
@@ -108,8 +109,8 @@ async fn postgres_full_contract_if_available() {
 
 #[tokio::test]
 async fn postgres_session_isolation_if_available() {
-    let Ok(url) = std::env::var("TRUEFIX_TEST_POSTGRES_URL") else {
-        eprintln!("skipping: TRUEFIX_TEST_POSTGRES_URL not set");
+    let Ok(url) = std::env::var("DATABASE_URL_PG") else {
+        eprintln!("skipping: DATABASE_URL_PG not set");
         return;
     };
     exercise_session_isolation(&url, "pg2").await;
@@ -117,8 +118,8 @@ async fn postgres_session_isolation_if_available() {
 
 #[tokio::test]
 async fn mysql_full_contract_if_available() {
-    let Ok(url) = std::env::var("TRUEFIX_TEST_MYSQL_URL") else {
-        eprintln!("skipping: TRUEFIX_TEST_MYSQL_URL not set");
+    let Ok(url) = std::env::var("DATABASE_URL_MYSQL") else {
+        eprintln!("skipping: DATABASE_URL_MYSQL not set");
         return;
     };
     exercise_full_contract(&url, "mysql1").await;
@@ -126,8 +127,8 @@ async fn mysql_full_contract_if_available() {
 
 #[tokio::test]
 async fn mysql_session_isolation_if_available() {
-    let Ok(url) = std::env::var("TRUEFIX_TEST_MYSQL_URL") else {
-        eprintln!("skipping: TRUEFIX_TEST_MYSQL_URL not set");
+    let Ok(url) = std::env::var("DATABASE_URL_MYSQL") else {
+        eprintln!("skipping: DATABASE_URL_MYSQL not set");
         return;
     };
     exercise_session_isolation(&url, "mysql2").await;

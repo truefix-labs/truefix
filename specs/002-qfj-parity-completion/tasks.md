@@ -218,12 +218,12 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 
 ## Phase 15: Polish & Cross-Cutting
 
-- [ ] T077 [P] Update `docs/acceptance-record.md` with the new AT scenario classes and counts
-- [ ] T078 [P] Update `docs/parity-matrix.md` stances and tick off the resolved audit TODO IDs in `docs/todo-gap-analysis.md`
-- [ ] T079 [P] Update `README.md` for config-driven start, the typed Application API, and TLS-from-config
-- [ ] T080 Finalize `MIGRATION.md` + apply the semver bump across crate `Cargo.toml` versions (Principle I; FR-028)
-- [ ] T082 [P] Add initiator-side validation parity coverage: a two-process test where the **initiator** receives malformed/group/garbled messages and produces the same FIX-correct outcomes as the acceptor (or document that the sans-IO `Session` makes role parity structural) in `crates/truefix-transport/tests/initiator_validation.rs` (Constitution VI)
-- [ ] T081 Full-gate sweep across all stages: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test -p truefix-at --test conformance`, `cargo test -p truefix-store --features sql` (SC-013)
+- [X] T077 [P] Update `docs/acceptance-record.md` with the new AT scenario classes and counts
+- [X] T078 [P] Update `docs/parity-matrix.md` stances and tick off the resolved audit TODO IDs in `docs/todo-gap-analysis.md`
+- [X] T079 [P] Update `README.md` for config-driven start, the typed Application API, and TLS-from-config
+- [X] T080 Finalize `MIGRATION.md` + apply the semver bump across crate `Cargo.toml` versions (Principle I; FR-028)
+- [X] T082 [P] Add initiator-side validation parity coverage: a two-process test where the **initiator** receives malformed/group/garbled messages and produces the same FIX-correct outcomes as the acceptor (or document that the sans-IO `Session` makes role parity structural) in `crates/truefix-transport/tests/initiator_validation.rs` (Constitution VI)
+- [X] T081 Full-gate sweep across all stages: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test -p truefix-at --test conformance`, `cargo test -p truefix-store --features sql` (SC-013)
 
 ---
 

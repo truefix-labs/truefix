@@ -29,6 +29,9 @@
 | Parity matrix | ✅ 文档化 — CHK033/CHK036 ✅ |
 | 示例 | 4 个 (executor/banzai/ordermatch/multi_acceptor) + smoke 测试 |
 | MIGRATION.md | ✅ typed callback breaking change 文档 |
+| SQL 多数据库 | ✅ PostgreSQL/MySQL/SQLite (`Pool` enum + per-backend SQL) — `sql.rs` (store+log) |
+| CachedFileStore 缓存+fsync | ✅ `BodyLog` 磁盘索引 + 有界缓存淘汰 + `FileStoreSync` |
+| 日志配置开关 | ✅ heartbeat 过滤/毫秒时间戳/可见性开关 + `SessionPrefixLog` |
 
 ---
 
@@ -200,55 +203,12 @@
 
 ## P2 — 传输层补全
 
-### TODO-07: SQL 多数据库支持
-
-**当前**: SQL Store + SQL Log 仅支持 SQLite (sqlx)。Cargo.toml 声明了 `postgres` + `mysql` feature 但 `sql.rs` 硬编码 `SqlitePool`, 无 PG/MySQL 代码路径。
-**规格**: FR-G1/H1 — "JDBC-equivalent" (research R7: "supports Postgres/MySQL/SQLite")。
-**QF/Go**: PostgreSQL/Oracle/MySQL/MSSQL/SQLite; QF/J: JDBC 任意驱动。
-
-- [ ] 扩展 `SqlStore` 支持 PostgreSQL / MySQL 连接池
-- [ ] 扩展 `SqlLog` 支持 PostgreSQL / MySQL
-- [ ] 自定义 SQL 表名 (`JdbcStoreMessagesTableName` / `JdbcStoreSessionsTableName`) — 已注册 Recognized
-- [ ] SQL 连接池配置 (`JdbcMaxConnectionLifeTime`, `JdbcMinIdleConnection`, etc.) — 已注册 Recognized
-
-**文件**: `crates/truefix-store/src/sql.rs`, `crates/truefix-log/src/sql.rs`
-
----
-
-### TODO-08: CachedFileStore 缓存优化 + FileStoreSync
-
-**当前**: `CachedFileStore` 直接委托 `FileStore` (`pub struct CachedFileStore(FileStore)`), 无独立缓存逻辑。`FileStoreSync` 未实现。
-**规格**: FR-G1 — store backends including CachedFileStore with cache + fsync toggle。
-**QF/J**: `syncWrites` (RandomAccessFile `"rwd"` mode + `getFD().sync()`) + `maxCachedMsgs` (TreeMap with LRU eviction)。
-**QF/Go**: `FileStoreSync` (default Y, `Sync()` on every write)。
-
-- [ ] `CachedFileStore` 内部维护内存缓存 (`TreeMap` seq→offset+size)
-- [ ] `max_cached_msgs` 淘汰策略 (LRU via `pollFirstEntry`)
-- [ ] `get()` 先查缓存, 未命中再查文件
-- [ ] `FileStoreSync` fsync 开关
-
-**文件**: `crates/truefix-store/src/file.rs`
-
----
+(TODO-07 SQL 多数据库支持、TODO-08 CachedFileStore 缓存优化+FileStoreSync、TODO-09 日志配置开关 已于
+002/US12 解决并从本清单移除；见上方状态总览表与 `docs/parity-matrix.md` 的 "US12" 章节。)
 
 ## P3 — 日志/Benchmark 补全
 
-### TODO-09: 日志配置开关
-
-已注册为 Recognized 但未实现行为:
-`FileLogHeartbeats`, `FileIncludeMilliseconds`, `FileIncludeTimeStampForMessages`, `ScreenLogShowEvents/HeartBeats/Incoming/Outgoing`, `ScreenIncludeMilliseconds`, `SLF4JLogPrependSessionID`, `SLF4JLogHeartbeats`。
-
-- [ ] 各 Log 实现增加对应配置字段
-- [ ] Heartbeat 过滤 (N 时不记录 35=0/1)
-- [ ] 毫秒时间戳包含开关
-- [ ] event/incoming/outgoing visibility 开关
-- [ ] session-ID prefix 开关
-
-**文件**: `crates/truefix-log/src/*.rs`
-
----
-
-### TODO-10: Session round-trip latency benchmark
+### TODO-07: Session round-trip latency benchmark
 
 **当前**: 仅 codec throughput benchmark。
 **规格**: SC-008 — "reproducible benchmarks for codec throughput and session round-trip latency"。

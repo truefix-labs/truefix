@@ -3,7 +3,7 @@
 Breaking-change and upgrade notes for TrueFix. Per Constitution Principle I, breaking changes to the
 public API are recorded here with a semantic-version bump (FR-028).
 
-## Unreleased — feature 002 (QuickFIX/J parity completion)
+## 0.1.0 (2026-07-01) — feature 002 (QuickFIX/J parity completion)
 
 ### Application callback signatures are now typed (breaking) — FR-016 / US5
 
@@ -54,4 +54,6 @@ async fn from_app(&self, msg: &Message, _id: &SessionId) -> Result<(), BusinessR
 }
 ```
 
-Status: fully implemented (stage G5 / US5). Version bump: see workspace `Cargo.toml`/crate manifests.
+Status: fully implemented (stage G5 / US5). All workspace crates share one version, centralized in
+`[workspace.package].version` and inherited via `version.workspace = true`; this breaking change
+bumps it from `0.0.0` to **`0.1.0`** (pre-1.0 SemVer: breaking changes bump the minor position).
