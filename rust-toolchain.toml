@@ -1,0 +1,6 @@
+# Pins the build toolchain. MSRV policy: TrueFix supports the version in
+# `workspace.package.rust-version` (currently 1.96). Bump deliberately and note it
+# in the workspace README + CHANGELOG when raising the floor.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

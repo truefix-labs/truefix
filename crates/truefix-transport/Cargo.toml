@@ -1,0 +1,35 @@
+[package]
+name = "truefix-transport"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FIX transport: initiator/acceptor, TLS, multi/dynamic sessions."
+publish = false
+
+[dependencies]
+truefix-core.workspace = true
+truefix-session.workspace = true
+truefix-dict.workspace = true
+truefix-store.workspace = true
+truefix-log.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+truefix-core.workspace = true
+truefix-session.workspace = true
+truefix-store.workspace = true
+truefix-log.workspace = true
+async-trait.workspace = true
+rcgen = "0.13"
+rustls.workspace = true
+
+[lints]
+workspace = true

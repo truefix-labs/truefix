@@ -1,0 +1,44 @@
+# TrueFix cargo workspace. See specs/001-fix-engine-parity/plan.md for the layered design.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.96"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/zhangjiayin/truefix"
+authors = ["Zhang Jiayin"]
+
+# Lint policy (Constitution Principle I). `unsafe_code = forbid` is global; the
+# critical-path clippy denies (unwrap/expect/panic/indexing) are applied per-crate
+# on non-test builds via `#![cfg_attr(not(test), deny(...))]` in each lib.rs.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Shared dependency versions (single source of truth). Member crates opt in with
+# `<dep>.workspace = true` as each stage needs them; unused entries are harmless.
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
+thiserror = "2"
+rust_decimal = "1"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
+tracing = "0.1"
+metrics = "0.24"
+async-trait = "0.1"
+truefix-core = { path = "crates/truefix-core" }
+truefix-dict = { path = "crates/truefix-dict" }
+truefix-session = { path = "crates/truefix-session" }
+truefix-transport = { path = "crates/truefix-transport" }
+truefix-config = { path = "crates/truefix-config" }
+truefix-store = { path = "crates/truefix-store" }
+truefix-log = { path = "crates/truefix-log" }
+
+[profile.release]
+# Production builds: keep debug info off, optimize. Benchmarks live in benches/.
+opt-level = 3

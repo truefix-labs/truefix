@@ -1,0 +1,22 @@
+[package]
+name = "truefix"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TrueFix facade: Application trait, MessageCracker, re-exports."
+publish = false
+
+[dependencies]
+truefix-core.workspace = true
+truefix-session.workspace = true
+truefix-transport.workspace = true
+truefix-config.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+async-trait.workspace = true
+
+[lints]
+workspace = true

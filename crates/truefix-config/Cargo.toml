@@ -1,0 +1,15 @@
+[package]
+name = "truefix-config"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FIX SessionSettings and .cfg configuration."
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true
