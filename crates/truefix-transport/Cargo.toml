@@ -15,6 +15,7 @@ truefix-dict.workspace = true
 truefix-store.workspace = true
 truefix-log.workspace = true
 truefix-config.workspace = true
+metrics.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
@@ -33,6 +34,7 @@ truefix-log.workspace = true
 async-trait.workspace = true
 rcgen = "0.13"
 rustls.workspace = true
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 
 [lints]
 workspace = true

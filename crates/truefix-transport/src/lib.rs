@@ -17,6 +17,7 @@
 )]
 
 mod framing;
+mod metrics_export;
 mod tls_config;
 
 pub use tls_config::{
@@ -500,6 +501,7 @@ async fn run_connection<A, S>(
                     if let Some(store) = &services.store {
                         let _ = store.reset().await;
                     }
+                    metrics_export::record_status(&id, &session.status());
                     if let Some(monitor) = &services.monitor {
                         monitor.update(&id, session.status());
                     }
@@ -557,6 +559,7 @@ where
             Ok(Some(total)) => {
                 let raw: Vec<u8> = buf.drain(..total).collect();
                 if let Ok(msg) = decode(&raw) {
+                    metrics_export::record_received(id);
                     if let Some(log) = &services.log {
                         log.on_incoming(&String::from_utf8_lossy(&raw));
                     }
@@ -650,6 +653,7 @@ where
         let _ = store.set_next_target_seq(session.next_in_seq()).await;
     }
 
+    metrics_export::record_status(id, &session.status());
     if let Some(monitor) = &services.monitor {
         monitor.update(id, session.status());
     }
@@ -700,6 +704,7 @@ where
                 if stream.write_all(&bytes).await.is_err() {
                     return Err(());
                 }
+                metrics_export::record_sent(id);
                 persist_sent(&msg, &bytes, session, services).await;
             }
             Action::Disconnect => disconnect = true,
@@ -757,6 +762,7 @@ where
     if let Some(store) = &services.store {
         let _ = store.set_next_sender_seq(session.next_out_seq()).await;
     }
+    metrics_export::record_status(id, &session.status());
     if let Some(monitor) = &services.monitor {
         monitor.update(id, session.status());
     }
@@ -990,9 +996,15 @@ where
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
     let interval = Duration::from_secs(u64::from(config.reconnect_interval).max(1));
+    let id = config.session_id();
     let task = tokio::spawn(async move {
+        let mut connected_before = false;
         while !loop_stop.load(Ordering::SeqCst) {
             if let Ok(stream) = TcpStream::connect(addr).await {
+                if connected_before {
+                    metrics_export::record_reconnect(&id);
+                }
+                connected_before = true;
                 let (control_tx, control_rx) = mpsc::channel(8);
                 run_connection(
                     stream,
@@ -1051,9 +1063,11 @@ where
 {
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
+    let id = config.session_id();
     let task = tokio::spawn(async move {
         let mut current: Option<SessionHandle> = None;
         let mut was_in_session = false;
+        let mut connected_before = false;
         while !loop_stop.load(Ordering::SeqCst) {
             let now = time::OffsetDateTime::now_utc();
             // The boundary-crossing decision (reset-on-entry / logout-on-exit) is a pure,
@@ -1079,6 +1093,10 @@ where
                     connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
                         .await
                 {
+                    if connected_before {
+                        metrics_export::record_reconnect(&id);
+                    }
+                    connected_before = true;
                     current = Some(handle);
                 }
             }

@@ -175,9 +175,9 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Export metrics via the `metrics` facade (FR-023; Principle I).
 **Independent test**: Gauges/counters reflect a logon→traffic→reconnect cycle (SC-010).
 
-- [ ] T061 [P] [US9] Metrics test via a test recorder over a logon→traffic→reconnect cycle in `crates/truefix-transport/tests/metrics.rs`
-- [ ] T062 [US9] Emit `truefix_session_state`/`next_sender_seqnum`/`next_target_seqnum` gauges and `messages_sent_total`/`messages_received_total`/`reconnects_total` counters (labelled by SessionID) in `crates/truefix-transport/src/lib.rs`
-- [ ] T063 [US9] Document the metrics surface in `docs/parity-matrix.md` (observability/Principle I)
+- [X] T061 [P] [US9] Metrics test via a test recorder over a logon→traffic→reconnect cycle in `crates/truefix-transport/tests/metrics.rs`
+- [X] T062 [US9] Emit `truefix_session_state`/`next_sender_seqnum`/`next_target_seqnum` gauges and `messages_sent_total`/`messages_received_total`/`reconnects_total` counters (labelled by SessionID) in `crates/truefix-transport/src/lib.rs`
+- [X] T063 [US9] Document the metrics surface in `docs/parity-matrix.md` (observability/Principle I)
 
 **Checkpoint G9**: metrics test green (SC-010; Principle I complete); gate green.
 
