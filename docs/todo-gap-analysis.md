@@ -23,15 +23,18 @@
 | CheckCompID | ✅ `identity_problem` 强制执行 |
 | Typed callback | ✅ `Reject`/`DoNotSend`/`BusinessReject` |
 | Group 解析 | ✅ `decode_with_groups` + `GroupSpec` |
+| SQL 多数据库 | ✅ PostgreSQL / MySQL / SQLite (store + log) |
+| 自定义 SQL 表名 | ✅ `SqlStoreConfig` / `SqlLogConfig` 表名可配 |
+| SQL 连接池配置 | ✅ `SqlPoolOptions` (max/min/timeout/idle/lifetime) |
+| CachedFileStore | ✅ 真实 LRU 缓存 + `max_cached_msgs` 淘汰 |
+| FileStoreSync | ✅ fsync 开关 |
+| 日志配置开关 | ✅ heartbeat 过滤 / ms 包含 / visibility / session-ID prefix |
 | Benchmarks | ✅ 编解码吞吐 (codec.rs) — SC-008 部分 ✅ |
 | API 文档 | ✅ `#![deny(missing_docs)]` facade — SC-005 ✅ |
 | No-panic 审计 | ✅ 文档化 — SC-005 ✅ |
 | Parity matrix | ✅ 文档化 — CHK033/CHK036 ✅ |
 | 示例 | 4 个 (executor/banzai/ordermatch/multi_acceptor) + smoke 测试 |
 | MIGRATION.md | ✅ typed callback breaking change 文档 |
-| SQL 多数据库 | ✅ PostgreSQL/MySQL/SQLite (`Pool` enum + per-backend SQL) — `sql.rs` (store+log) |
-| CachedFileStore 缓存+fsync | ✅ `BodyLog` 磁盘索引 + 有界缓存淘汰 + `FileStoreSync` |
-| 日志配置开关 | ✅ heartbeat 过滤/毫秒时间戳/可见性开关 + `SessionPrefixLog` |
 
 ---
 
@@ -123,7 +126,7 @@
 
 ### TODO-02: Session 内 MessageStore 集成
 
-**当前**: Transport 层已持久化 seq numbers (best-effort after each dispatch), `seed_sequences()` / `seed_sent_messages()` 从 store 恢复。但 `Session` 内的 resend 仍使用内存 `BTreeMap<u64, Message>`, 跨重启的 message resend 无法工作。
+**当前**: Transport 层已持久化 seq numbers + sent messages (best-effort after each dispatch), `seed_sequences()` / `seed_sent_messages()` 从 store 恢复。但 `Session` 内的 resend 仍使用内存 `BTreeMap<u64, Message>`, 跨重启的 message resend 无法直接从 store 读取。
 **规格**: FR-G2, SC-006 — "persisted state is sufficient to satisfy a ResendRequest for messages sent before a process restart"。
 
 **需要**:
@@ -165,8 +168,8 @@
 - [ ] `MaxScheduledWriteRequests`
 - [ ] `ContinueInitializationOnError`
 - [ ] `LogMessageWhenSessionNotFound`
-- [ ] `RefreshOnLogon` — 字段存在但 builder 未读取
-- [ ] `ForceResendWhenCorruptedStore` — 检测有, 强制重发行为未完整
+- [ ] `RefreshOnLogon` — 字段存在但 builder 未读取, state 未执行
+- [ ] `ForceResendWhenCorruptedStore` — 检测有 (`was_corrupted()`), 强制重发行为未完整
 
 **文件**: `crates/truefix-session/src/state.rs`, `crates/truefix-session/src/config.rs`, `crates/truefix-config/src/builder.rs`
 
@@ -201,12 +204,7 @@
 
 ---
 
-## P2 — 传输层补全
-
-(TODO-07 SQL 多数据库支持、TODO-08 CachedFileStore 缓存优化+FileStoreSync、TODO-09 日志配置开关 已于
-002/US12 解决并从本清单移除；见上方状态总览表与 `docs/parity-matrix.md` 的 "US12" 章节。)
-
-## P3 — 日志/Benchmark 补全
+## P2 — Benchmark 补全
 
 ### TODO-07: Session round-trip latency benchmark
 

@@ -23,7 +23,7 @@ unsafe_code = "forbid"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 rustls = "0.23"
-rustls-pemfile = "2"
+rustls-pki-types = { version = "1", features = ["std"] }
 thiserror = "2"
 rust_decimal = "1"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }

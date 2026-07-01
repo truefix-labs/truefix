@@ -4,11 +4,10 @@
 //! [`TlsSpec`]/[`TlsVersion`] are defined in `truefix-config` (the settings-mapping layer) and
 //! re-exported here; this module is the mechanism that consumes them.
 
-use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
@@ -18,14 +17,14 @@ pub use truefix_config::{TlsSpec, TlsVersion};
 /// An error building a TLS configuration from a [`TlsSpec`].
 #[derive(Debug, thiserror::Error)]
 pub enum TlsConfigError {
-    /// A referenced file could not be read.
+    /// A referenced PEM file could not be read or parsed.
     #[error("reading {path}: {source}")]
-    Io {
+    Pem {
         /// The file path that could not be read.
         path: String,
-        /// The underlying I/O error.
+        /// The underlying PEM/I/O error.
         #[source]
-        source: std::io::Error,
+        source: rustls::pki_types::pem::Error,
     },
     /// No certificate was found in the key-store PEM.
     #[error("no certificate found in {0}")]
@@ -44,33 +43,28 @@ pub enum TlsConfigError {
     Rustls(#[from] rustls::Error),
 }
 
-fn open(path: &Path) -> Result<BufReader<File>, TlsConfigError> {
-    File::open(path)
-        .map(BufReader::new)
-        .map_err(|source| TlsConfigError::Io {
-            path: path.display().to_string(),
-            source,
-        })
+fn pem_err(path: &Path, source: rustls::pki_types::pem::Error) -> TlsConfigError {
+    TlsConfigError::Pem {
+        path: path.display().to_string(),
+        source,
+    }
 }
 
 fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsConfigError> {
-    let mut reader = open(path)?;
-    rustls_pemfile::certs(&mut reader)
+    CertificateDer::pem_file_iter(path)
+        .map_err(|source| pem_err(path, source))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| TlsConfigError::Io {
-            path: path.display().to_string(),
-            source,
-        })
+        .map_err(|source| pem_err(path, source))
 }
 
 fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsConfigError> {
-    let mut reader = open(path)?;
-    rustls_pemfile::private_key(&mut reader)
-        .map_err(|source| TlsConfigError::Io {
-            path: path.display().to_string(),
-            source,
-        })?
-        .ok_or_else(|| TlsConfigError::NoPrivateKey(path.display().to_string()))
+    match PrivateKeyDer::from_pem_file(path) {
+        Ok(key) => Ok(key),
+        Err(rustls::pki_types::pem::Error::NoItemsFound) => {
+            Err(TlsConfigError::NoPrivateKey(path.display().to_string()))
+        }
+        Err(source) => Err(pem_err(path, source)),
+    }
 }
 
 fn load_root_store(path: &Path) -> Result<RootCertStore, TlsConfigError> {

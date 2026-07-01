@@ -50,12 +50,21 @@ MIT-compatible (no copyleft introduced); enforced in CI by the `deny` job (`deny
 
 | Dependency | Use (002) | License |
 |------------|-----------|---------|
-| `rustls-pemfile` | load TLS key/cert/CA from `.cfg` paths (US7) | MIT OR Apache-2.0 |
+| `rustls-pki-types` (`pem::PemObject`) | load TLS key/cert/CA from `.cfg` paths (US7) | MIT OR Apache-2.0 |
 | `sqlx-postgres` | SQL store/log Postgres backend (US12) | MIT OR Apache-2.0 |
 | `sqlx-mysql` | SQL store/log MySQL backend (US12) | MIT OR Apache-2.0 |
 | `metrics` | observability facade export (US9) | MIT |
 
 All within the existing Apache-2.0 OR MIT release posture; `cargo deny check` gates regressions.
+
+`rustls-pemfile` (originally used for US7's PEM loading) was replaced by `rustls-pki-types`'s
+built-in `pem::PemObject` trait after `cargo deny`'s CI job flagged it as unmaintained
+(RUSTSEC-2025-0134 — the crate's repository was archived; its own advisory recommends this exact
+migration, since recent `rustls-pemfile` versions are already a thin wrapper over the same
+`rustls-pki-types` PEM code). `rustls-pki-types` was already a transitive dependency via `rustls`;
+`truefix-transport` now depends on it directly with the `std` feature enabled, and
+`load_certs`/`load_private_key` in `tls_config.rs` call `CertificateDer::pem_file_iter`/
+`PrivateKeyDer::from_pem_file` directly instead of going through the removed crate.
 
 ## Feature 002 — US6: all-message typed codegen + MessageCracker (Principle IV complete)
 
