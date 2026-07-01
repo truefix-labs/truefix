@@ -100,8 +100,8 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Reverse routing header fields on replies/rejects (FR-011). Delivered alongside US4.
 **Independent test**: Reply/reject to a routed message reverses the routing pairs; empty tags handled.
 
-- [ ] T036 [P] [US11] AT scenarios `ReverseRoute` + `ReverseRouteWithEmptyRoutingTags` in `crates/truefix-at/src/scenarios.rs`
-- [ ] T037 [US11] Implement a reverse-route header helper (OnBehalfOf↔DeliverTo pairs; empty-tags rule) in `crates/truefix-core/src/message.rs`, applied to engine replies/rejects in `crates/truefix-session/src/state.rs`
+- [X] T036 [P] [US11] AT scenarios `ReverseRoute` + `ReverseRouteWithEmptyRoutingTags` in `crates/truefix-at/src/scenarios.rs`
+- [X] T037 [US11] Implement a reverse-route header helper (OnBehalfOf↔DeliverTo pairs; empty-tags rule) in `crates/truefix-core/src/message.rs`, applied to engine replies/rejects in `crates/truefix-session/src/state.rs`
 
 **Checkpoint**: ReverseRoute AT scenarios green; gate green.
 

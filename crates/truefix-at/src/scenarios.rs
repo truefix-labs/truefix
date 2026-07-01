@@ -107,6 +107,45 @@ fn received_test_request(v: &str) -> Scenario {
     )
 }
 
+/// ReverseRoute — a reply to a message carrying OnBehalfOf* routing fields reverses them onto
+/// DeliverTo* on the reply.
+fn reverse_route(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2);
+    tr.body.set(Field::string(112, "ROUTE-ME"));
+    tr.header.set(Field::string(115, "BROKER")); // OnBehalfOfCompID
+    scenario(
+        "ReverseRoute",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(
+                ExpectMsg::of("0")
+                    .field(112, "ROUTE-ME")
+                    .field(128, "BROKER"),
+            ), // DeliverToCompID
+        ],
+    )
+}
+
+/// ReverseRouteWithEmptyRoutingTags — a routing tag present but empty still reverses.
+fn reverse_route_empty_tags(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2);
+    tr.body.set(Field::string(112, "ROUTE-EMPTY"));
+    tr.header.set(Field::string(115, "")); // OnBehalfOfCompID, present but empty
+    scenario(
+        "ReverseRouteWithEmptyRoutingTags",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "ROUTE-EMPTY").field(128, "")),
+        ],
+    )
+}
+
 /// 13b — an unsolicited Logout is answered with a Logout and disconnect.
 fn unsolicited_logout(v: &str) -> Scenario {
     scenario(
@@ -1094,6 +1133,8 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(msgseqnum_too_high(v));
         out.push(msgseqnum_too_low(v));
         out.push(received_test_request(v));
+        out.push(reverse_route(v));
+        out.push(reverse_route_empty_tags(v));
         out.push(unsolicited_logout(v));
         out.push(logon_response_carries_reset_flag(v));
         out.push(logon_adopts_heartbeat_interval(v));

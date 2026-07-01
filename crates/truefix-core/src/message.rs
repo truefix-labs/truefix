@@ -44,4 +44,29 @@ impl Message {
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         crate::codec::decode(bytes)
     }
+
+    /// Copy `original`'s routing header fields onto `self` (a reply/reject being built),
+    /// reversed: `original`'s `OnBehalfOfCompID(115)` becomes `self`'s `DeliverToCompID(128)` and
+    /// vice versa; likewise `OnBehalfOfSubID(116)`/`DeliverToSubID(129)` and
+    /// `OnBehalfOfLocationID(144)`/`DeliverToLocationID(145)` (Appendix B `ReverseRoute`).
+    ///
+    /// A routing tag absent on `original` is left unset on `self` — no reversal is attempted and
+    /// no error is raised (`ReverseRouteWithEmptyRoutingTags`: a tag present with an empty value
+    /// still reverses, since presence — not content — governs).
+    pub fn reverse_route(&mut self, original: &Message) {
+        for (on_behalf_of, deliver_to) in [(115u32, 128u32), (116, 129), (144, 145)] {
+            if let Some(f) = original.header.get(on_behalf_of) {
+                self.header.set(crate::field::Field::new(
+                    deliver_to,
+                    f.value_bytes().to_vec(),
+                ));
+            }
+            if let Some(f) = original.header.get(deliver_to) {
+                self.header.set(crate::field::Field::new(
+                    on_behalf_of,
+                    f.value_bytes().to_vec(),
+                ));
+            }
+        }
+    }
 }

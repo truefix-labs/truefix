@@ -437,7 +437,7 @@ impl Session {
             .map_or(0, |s| s as u64);
         let ref_mt = msg.msg_type().map(str::to_owned);
         let seq = self.next_seq();
-        let reject = if error.business {
+        let mut reject = if error.business {
             admin::business_message_reject(
                 &self.config,
                 seq,
@@ -449,6 +449,7 @@ impl Session {
         } else {
             admin::reject_with_reason(&self.config, seq, ref_seq, error.reason.code(), &error.text)
         };
+        reject.reverse_route(msg);
         Some(self.send_stored(reject))
     }
 
@@ -654,7 +655,8 @@ impl Session {
             .and_then(|f| f.as_str().ok())
             .map(str::to_owned);
         let seq = self.next_seq();
-        let hb = admin::heartbeat(&self.config, seq, id.as_deref());
+        let mut hb = admin::heartbeat(&self.config, seq, id.as_deref());
+        hb.reverse_route(msg);
         vec![self.send_stored(hb)]
     }
 
