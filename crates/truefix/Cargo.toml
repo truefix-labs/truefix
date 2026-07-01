@@ -17,10 +17,12 @@ truefix-store.workspace = true
 truefix-dict.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
+rustls.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
 async-trait.workspace = true
+rcgen = "0.13"
 
 [lints]
 workspace = true

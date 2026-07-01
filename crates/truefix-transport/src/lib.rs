@@ -17,6 +17,11 @@
 )]
 
 mod framing;
+mod tls_config;
+
+pub use tls_config::{
+    build_client_config, build_server_config, TlsConfigError, TlsSpec, TlsVersion,
+};
 
 use std::collections::HashMap;
 use std::future::pending;
@@ -265,6 +270,7 @@ pub struct Acceptor<A: Application + 'static> {
     config: SessionConfig,
     app: Arc<A>,
     services: Services,
+    tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 impl<A: Application + 'static> Acceptor<A> {
@@ -286,7 +292,15 @@ impl<A: Application + 'static> Acceptor<A> {
             config,
             app,
             services,
+            tls: None,
         })
+    }
+
+    /// Serve TLS using `config` (FR-F6/FR-017).
+    #[must_use]
+    pub fn with_tls(mut self, config: Arc<rustls::ServerConfig>) -> Self {
+        self.tls = Some(config);
+        self
     }
 
     /// The bound local address (useful when binding to port 0).
@@ -296,14 +310,26 @@ impl<A: Application + 'static> Acceptor<A> {
 
     /// Spawn the accept loop. Each connection is served as a session.
     pub fn serve(self) -> JoinHandle<()> {
+        let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         tokio::spawn(async move {
             while let Ok((stream, _peer)) = self.listener.accept().await {
-                let _ = spawn_session(
-                    stream,
-                    self.config.clone(),
-                    self.app.clone(),
-                    self.services.clone(),
-                );
+                self.services.socket_options.apply(&stream);
+                let config = self.config.clone();
+                let app = self.app.clone();
+                let services = self.services.clone();
+                match &tls {
+                    Some(acceptor) => {
+                        let acceptor = acceptor.clone();
+                        tokio::spawn(async move {
+                            if let Ok(tls_stream) = acceptor.accept(stream).await {
+                                spawn_session_io(tls_stream, config, app, services);
+                            }
+                        });
+                    }
+                    None => {
+                        spawn_session_io(stream, config, app, services);
+                    }
+                }
             }
         })
     }

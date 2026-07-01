@@ -32,6 +32,36 @@ pub struct ResolvedSession {
     pub address: SocketAddr,
     /// The message store to build for this session.
     pub store: StoreConfig,
+    /// TLS material and settings, present when `SocketUseSSL=Y` (FR-017).
+    pub tls: Option<TlsSpec>,
+}
+
+/// TLS material and settings resolved from configuration (FR-017). The mechanism that consumes
+/// this (building `rustls::{Server,Client}Config`) lives in `truefix-transport`, which depends on
+/// this crate for the shared spec shape.
+#[derive(Debug, Clone)]
+pub struct TlsSpec {
+    /// PEM file containing the certificate chain and private key (combined). Maps from
+    /// `SocketKeyStore`.
+    pub key_store_path: PathBuf,
+    /// PEM file of CA certificates (trust roots) used to verify the peer. Maps from
+    /// `SocketTrustStore`.
+    pub trust_store_path: Option<PathBuf>,
+    /// Require and verify a client certificate (mTLS; server side). Maps from `NeedClientAuth`.
+    pub need_client_auth: bool,
+    /// Minimum TLS protocol version to accept/offer. Maps from `EnabledProtocols`.
+    pub min_version: Option<TlsVersion>,
+    /// SNI server name an initiator presents. Maps from `SNIHostName` (when `UseSNI=Y`).
+    pub server_name: Option<String>,
+}
+
+/// A minimum TLS protocol version (`EnabledProtocols`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsVersion {
+    /// TLS 1.2 (and above).
+    Tls12,
+    /// TLS 1.3 only.
+    Tls13,
 }
 
 impl SessionSettings {
@@ -169,13 +199,47 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
 
     let address = resolve_address(map, connection, &session)?;
     let store = resolve_store(map);
+    let tls = resolve_tls(map, &session)?;
 
     Ok(ResolvedSession {
         session: cfg,
         connection,
         address,
         store,
+        tls,
     })
+}
+
+/// Resolve TLS settings when `SocketUseSSL=Y` (FR-017): key/trust-store paths, mTLS, minimum
+/// version, and SNI.
+fn resolve_tls(map: &Map, session: &str) -> Result<Option<TlsSpec>, ConfigError> {
+    if !bool_key(map, "SocketUseSSL", false) {
+        return Ok(None);
+    }
+    let key_store_path = PathBuf::from(required(map, "SocketKeyStore", session)?);
+    let trust_store_path = map.get("SocketTrustStore").map(PathBuf::from);
+    let need_client_auth = bool_key(map, "NeedClientAuth", false);
+    let min_version = match map.get("EnabledProtocols").map(String::as_str) {
+        None => None,
+        Some(v) if v.contains("1.3") && !v.contains("1.2") => Some(TlsVersion::Tls13),
+        Some(_) => Some(TlsVersion::Tls12),
+    };
+    let server_name = if bool_key(map, "UseSNI", false) {
+        Some(
+            map.get("SNIHostName")
+                .cloned()
+                .unwrap_or_else(|| "localhost".to_owned()),
+        )
+    } else {
+        None
+    };
+    Ok(Some(TlsSpec {
+        key_store_path,
+        trust_store_path,
+        need_client_auth,
+        min_version,
+        server_name,
+    }))
 }
 
 fn resolve_address(

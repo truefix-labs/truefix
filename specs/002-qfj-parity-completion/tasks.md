@@ -146,10 +146,10 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: TLS incl. mTLS/SNI/min-version from `.cfg` (FR-017).
 **Independent test**: mTLS session from `.cfg` alone; un-credentialed client refused; low-version peer refused (SC-008).
 
-- [ ] T052 [P] [US7] Transport TLS test: mTLS from config + min-version refusal + un-credentialed refusal in `crates/truefix-transport/tests/tls.rs`
-- [ ] T053 [US7] Build `rustls::ServerConfig`/`ClientConfig` from `TlsSpec` (key/cert/CA via `rustls-pemfile`) in `crates/truefix-transport/src/lib.rs`
-- [ ] T054 [US7] Implement mTLS client-cert verifier (`NeedClientAuth`), SNI/server-name, and minimum TLS version in `crates/truefix-transport/src/lib.rs`
-- [ ] T055 [US7] Stance updates for the SSL/TLS keys in `crates/truefix-config/src/keys.rs`
+- [X] T052 [P] [US7] Transport TLS test: mTLS from config + min-version refusal + un-credentialed refusal in `crates/truefix-transport/tests/tls.rs`
+- [X] T053 [US7] Build `rustls::ServerConfig`/`ClientConfig` from `TlsSpec` (key/cert/CA via `rustls-pemfile`) in `crates/truefix-transport/src/lib.rs`
+- [X] T054 [US7] Implement mTLS client-cert verifier (`NeedClientAuth`), SNI/server-name, and minimum TLS version in `crates/truefix-transport/src/lib.rs`
+- [X] T055 [US7] Stance updates for the SSL/TLS keys in `crates/truefix-config/src/keys.rs`
 
 **Checkpoint G7-TLS**: mTLS-from-config test green (SC-008); gate green.
 

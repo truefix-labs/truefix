@@ -34,7 +34,10 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 use truefix_config::{ConnectionType, SessionSettings};
-use truefix_transport::{connect_initiator_with, Services};
+use truefix_transport::{
+    build_client_config, build_server_config, connect_initiator_tls, connect_initiator_with,
+    Services,
+};
 
 /// An error starting the engine from configuration (FR-015).
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +51,9 @@ pub enum EngineError {
     /// A network bind/connect failure.
     #[error("io: {0}")]
     Io(String),
+    /// A TLS configuration could not be built from the session's `TlsSpec` (FR-017).
+    #[error("tls: {0}")]
+    Tls(String),
 }
 
 /// A running engine: the started acceptor listeners and initiator sessions (FR-013/014).
@@ -63,7 +69,9 @@ impl Engine {
     /// Build and start every session described by `settings`, sharing `app` across them.
     ///
     /// All-or-nothing: a configuration-resolution error returns before anything is started
-    /// (FR-015). Each session gets a store built from its `FileStorePath`/store keys.
+    /// (FR-015). Each session gets a store built from its `FileStorePath`/store keys, and TLS
+    /// (including mTLS) built from its `SocketUseSSL`/`SocketKeyStore`/... keys when
+    /// `SocketUseSSL=Y` (FR-017) — no code-level TLS construction required.
     pub async fn start<A: Application + 'static>(
         settings: &SessionSettings,
         app: Arc<A>,
@@ -81,16 +89,42 @@ impl Engine {
             };
             match rs.connection {
                 ConnectionType::Acceptor => {
-                    let acc = Acceptor::bind_with(rs.address, rs.session, app.clone(), services)
-                        .await
-                        .map_err(|e| EngineError::Io(e.to_string()))?;
+                    let mut acc =
+                        Acceptor::bind_with(rs.address, rs.session, app.clone(), services)
+                            .await
+                            .map_err(|e| EngineError::Io(e.to_string()))?;
+                    if let Some(tls) = &rs.tls {
+                        let server_cfg = build_server_config(tls)
+                            .map_err(|e| EngineError::Tls(e.to_string()))?;
+                        acc = acc.with_tls(server_cfg);
+                    }
                     acceptors.push(acc.serve());
                 }
                 ConnectionType::Initiator => {
-                    let handle =
-                        connect_initiator_with(rs.address, rs.session, app.clone(), services)
+                    let handle = match &rs.tls {
+                        Some(tls) => {
+                            let client_cfg = build_client_config(tls)
+                                .map_err(|e| EngineError::Tls(e.to_string()))?;
+                            let host = tls.server_name.clone().unwrap_or_default();
+                            let server_name = rustls::pki_types::ServerName::try_from(host)
+                                .map_err(|e| EngineError::Tls(e.to_string()))?;
+                            connect_initiator_tls(
+                                rs.address,
+                                rs.session,
+                                app.clone(),
+                                services,
+                                client_cfg,
+                                server_name,
+                            )
                             .await
-                            .map_err(|e| EngineError::Io(e.to_string()))?;
+                            .map_err(|e| EngineError::Io(e.to_string()))?
+                        }
+                        None => {
+                            connect_initiator_with(rs.address, rs.session, app.clone(), services)
+                                .await
+                                .map_err(|e| EngineError::Io(e.to_string()))?
+                        }
+                    };
                     initiators.push(handle);
                 }
             }
