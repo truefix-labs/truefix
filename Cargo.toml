@@ -4,6 +4,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
 license = "Apache-2.0 OR MIT"
@@ -22,12 +23,12 @@ unsafe_code = "forbid"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 rustls = "0.23"
-rustls-pemfile = "2"
+rustls-pki-types = { version = "1", features = ["std"] }
 thiserror = "2"
 rust_decimal = "1"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
 tracing = "0.1"
 metrics = "0.24"
 async-trait = "0.1"

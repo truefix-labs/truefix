@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use truefix_core::Message;
+use truefix_core::{Message, Reject};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::{connect_initiator, Acceptor};
 
@@ -30,7 +30,7 @@ impl Application for TestApp {
     async fn on_logout(&self, _s: &SessionId) {
         self.c.logged_out.store(true, Ordering::SeqCst);
     }
-    async fn from_admin(&self, msg: &Message, _s: &SessionId) -> Result<(), String> {
+    async fn from_admin(&self, msg: &Message, _s: &SessionId) -> Result<(), Reject> {
         if msg.msg_type() == Some("0") {
             self.c.heartbeats.fetch_add(1, Ordering::SeqCst);
         }

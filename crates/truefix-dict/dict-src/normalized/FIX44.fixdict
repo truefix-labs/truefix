@@ -18,7 +18,7 @@ field 52 SendingTime UTCTIMESTAMP
 field 43 PossDupFlag BOOLEAN
 field 122 OrigSendingTime UTCTIMESTAMP
 field 10 CheckSum STRING
-field 98 EncryptMethod INT 0 1 2 3 4 5 6
+field 98 EncryptMethod INT 0=None 1=PgpDes 2=PgpDesMd5 3=Pkcs 4=PkcsDes 5=PkcsDesMd5 6=PemDesMd5
 field 108 HeartBtInt INT
 field 141 ResetSeqNumFlag BOOLEAN
 field 112 TestReqID STRING
@@ -29,16 +29,29 @@ field 123 GapFillFlag BOOLEAN
 field 58 Text STRING
 field 45 RefSeqNum SEQNUM
 field 11 ClOrdID STRING
-field 21 HandlInst CHAR 1 2 3
+field 21 HandlInst CHAR 1=AutomatedNoIntervention 2=AutomatedInterventionOk 3=Manual
 field 55 Symbol STRING
-field 54 Side CHAR 1 2 5 6
+field 54 Side CHAR 1=Buy 2=Sell 5=SellShort 6=SellShortExempt
 field 60 TransactTime UTCTIMESTAMP
 field 38 OrderQty QTY
-field 40 OrdType CHAR 1 2 3 4
+field 40 OrdType CHAR 1=Market 2=Limit 3=Stop 4=StopLimit
 field 44 Price PRICE
+# Parties component (NoPartyIDs) with nested NoPartySubIDs — FIX 4.4 repeating groups.
+field 453 NoPartyIDs NUMINGROUP
+field 448 PartyID STRING
+field 447 PartyIDSource CHAR
+field 452 PartyRole INT
+field 802 NoPartySubIDs NUMINGROUP
+field 523 PartySubID STRING
+field 803 PartySubIDType INT
 
 header 8 9 35 34 49 56 52 43 122
 trailer 10
+
+# Repeating-group definitions: group <NoTag> <Name> <delimiter> <member,member,...>
+# (a member that is itself a NoXxx count tag denotes a nested group).
+group 453 NoPartyIDs 448 448,447,452,802
+group 802 NoPartySubIDs 523 523,803
 
 message 0 Heartbeat opt:112
 message 1 TestRequest req:112
@@ -47,4 +60,4 @@ message 4 SequenceReset req:36 opt:123
 message 5 Logout opt:58
 message A Logon req:98,108 opt:141
 message 3 Reject req:45 opt:58
-message D NewOrderSingle req:11,21,55,54,60,40 opt:38,44
+message D NewOrderSingle req:11,21,55,54,60,40 opt:38,44,453

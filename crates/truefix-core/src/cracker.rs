@@ -1,15 +1,20 @@
 //! Typed message dispatch contract.
+//!
+//! The concrete, generated dispatch mechanism lives in `truefix-dict` (feature 002/US6,
+//! FR-020/022): each targeted version generates a `<Version>MessageHandler` trait (one method per
+//! message type, default no-op) and a `crack_<version>(message, &mut handler) -> bool` function
+//! that routes an inbound [`Message`] to the matching method by `(BeginString, MsgType)` — e.g.
+//! `truefix_dict::fix44::crack_fix44`. This trait is a version-agnostic marker for integrators who
+//! want a single type across versions; implement it by delegating to the generated `crack_*`
+//! function(s) for the versions you support.
 
 use crate::message::Message;
 
-/// Dispatches an inbound message to a per-message-type handler.
+/// A version-agnostic marker for a type that dispatches inbound messages to typed handlers.
 ///
-/// Full typed dispatch over the generated messages arrives with the dictionary codegen
-/// (Stage S4); this is the core contract skeleton.
+/// Implementors typically delegate to one or more generated `crack_<version>` functions from
+/// `truefix-dict` (see the module docs above).
 pub trait MessageCracker {
-    /// Error a handler may return (e.g. a business reject).
-    type Error;
-
-    /// Dispatch `message` to the handler for its message type.
-    fn crack(&mut self, message: &Message) -> Result<(), Self::Error>;
+    /// Attempt to dispatch `message` to a typed handler. Returns whether a handler matched.
+    fn crack(&mut self, message: &Message) -> bool;
 }

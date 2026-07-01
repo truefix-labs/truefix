@@ -105,3 +105,36 @@ pub enum DecodeError {
         offset: usize,
     },
 }
+
+/// A session-level rejection returned from an admin/logon callback — the engine emits a Reject
+/// (35=3). Typed, not stringly (Constitution Principle I; FR-016). `reason` is the numeric
+/// SessionRejectReason (tag 373).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("reject (reason {reason}, ref tag {ref_tag:?}): {text:?}")]
+pub struct Reject {
+    /// SessionRejectReason (tag 373) numeric code.
+    pub reason: u32,
+    /// Optional referenced tag (RefTagID, 371).
+    pub ref_tag: Option<u32>,
+    /// Optional human-readable text (tag 58).
+    pub text: Option<String>,
+}
+
+/// Returned from an outbound callback to suppress a message: the engine does not send it and does
+/// not store it as sent (it consumes no outbound sequence number). FR-016.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("do not send")]
+pub struct DoNotSend;
+
+/// A business-level rejection returned from an application callback — the engine emits a
+/// BusinessMessageReject (35=j). `reason` is the numeric BusinessRejectReason (tag 380). FR-016.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("business reject (reason {reason}, ref tag {ref_tag:?}): {text:?}")]
+pub struct BusinessReject {
+    /// BusinessRejectReason (tag 380) numeric code.
+    pub reason: u32,
+    /// Optional referenced tag (RefTagID, 371).
+    pub ref_tag: Option<u32>,
+    /// Optional human-readable text (tag 58).
+    pub text: Option<String>,
+}

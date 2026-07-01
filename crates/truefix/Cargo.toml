@@ -1,6 +1,6 @@
 [package]
 name = "truefix"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,10 +13,17 @@ truefix-core.workspace = true
 truefix-session.workspace = true
 truefix-transport.workspace = true
 truefix-config.workspace = true
+truefix-store.workspace = true
+truefix-log.workspace = true
+truefix-dict.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+rustls.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
 async-trait.workspace = true
+rcgen = "0.13"
 
 [lints]
 workspace = true

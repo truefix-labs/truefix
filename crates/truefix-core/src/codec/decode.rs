@@ -6,6 +6,8 @@
 
 use crate::error::DecodeError;
 use crate::field::Field;
+use crate::field_map::FieldMap;
+use crate::group::{Group, GroupSpec};
 use crate::message::Message;
 use crate::tags::{
     data_field_for_length, is_header, is_trailer, BEGIN_STRING, BODY_LENGTH, CHECK_SUM, SOH,
@@ -14,8 +16,92 @@ use crate::tags::{
 /// A tokenized field: tag, raw value bytes, and the byte offset where the field began.
 type Token = (u32, Vec<u8>, usize);
 
-/// Decode `input` into a [`Message`].
+/// Decode `input` into a [`Message`] with flat fields (no dictionary-driven group structure).
 pub fn decode(input: &[u8]) -> Result<Message, DecodeError> {
+    let fields = tokenize_validated(input)?;
+    let mut msg = Message::new();
+    for (tag, value, _) in fields {
+        let field = Field::new(tag, value);
+        if is_trailer(tag) {
+            msg.trailer.add_field(field);
+        } else if is_header(tag) {
+            msg.header.add_field(field);
+        } else {
+            msg.body.add_field(field);
+        }
+    }
+    Ok(msg)
+}
+
+/// Decode `input` into a [`Message`] with repeating groups structured per `spec` (FR-004). Header
+/// and trailer fields stay flat; body group-count tags consume their delimiter-led entries
+/// (nested groups recurse). Structure is best-effort/greedy — count/order validation is a separate
+/// dictionary concern (see `truefix-dict`).
+pub fn decode_with_groups(input: &[u8], spec: &dyn GroupSpec) -> Result<Message, DecodeError> {
+    let fields = tokenize_validated(input)?;
+    let mut msg = Message::new();
+    let mut body: Vec<Token> = Vec::new();
+    for (tag, value, off) in fields {
+        if is_trailer(tag) {
+            msg.trailer.add_field(Field::new(tag, value));
+        } else if is_header(tag) {
+            msg.header.add_field(Field::new(tag, value));
+        } else {
+            body.push((tag, value, off));
+        }
+    }
+    let mut pos = 0usize;
+    while let Some(tok) = body.get(pos) {
+        let tag = tok.0;
+        if let Some((delimiter, members)) = spec.group_of(tag) {
+            let group = build_group(&body, &mut pos, spec, tag, delimiter, members);
+            msg.body.add_group(group);
+        } else {
+            msg.body.add_field(Field::new(tag, tok.1.clone()));
+            pos += 1;
+        }
+    }
+    Ok(msg)
+}
+
+/// Consume a repeating group starting at the count token, returning the structured [`Group`].
+fn build_group(
+    tokens: &[Token],
+    pos: &mut usize,
+    spec: &dyn GroupSpec,
+    count_tag: u32,
+    delimiter: u32,
+    members: &[u32],
+) -> Group {
+    *pos += 1; // consume the NoXxx count field
+    let mut group = Group::new(count_tag);
+    while let Some(tok) = tokens.get(*pos) {
+        if tok.0 != delimiter {
+            break; // no more entries
+        }
+        let mut entry = FieldMap::new();
+        entry.add_field(Field::new(delimiter, tok.1.clone()));
+        *pos += 1;
+        while let Some(t) = tokens.get(*pos) {
+            let tag = t.0;
+            if tag == delimiter || !members.contains(&tag) {
+                break;
+            }
+            if let Some((d2, m2)) = spec.group_of(tag) {
+                let sub = build_group(tokens, pos, spec, tag, d2, m2);
+                entry.add_group(sub);
+            } else {
+                entry.add_field(Field::new(tag, t.1.clone()));
+                *pos += 1;
+            }
+        }
+        group.add_entry(entry);
+    }
+    group
+}
+
+/// Tokenize `input` and verify BeginString/BodyLength/CheckSum.
+fn tokenize_validated(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
     if input.is_empty() {
         return Err(DecodeError::Empty);
     }
@@ -60,18 +146,7 @@ pub fn decode(input: &[u8]) -> Result<Message, DecodeError> {
         });
     }
 
-    let mut msg = Message::new();
-    for (tag, value, _) in fields {
-        let field = Field::new(tag, value);
-        if is_trailer(tag) {
-            msg.trailer.add_field(field);
-        } else if is_header(tag) {
-            msg.header.add_field(field);
-        } else {
-            msg.body.add_field(field);
-        }
-    }
-    Ok(msg)
+    Ok(fields)
 }
 
 /// Split `input` into `tag=value<SOH>` tokens, honoring length-prefixed binary data fields.

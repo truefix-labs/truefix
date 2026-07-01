@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::hash::fnv1a;
-use crate::model::{DataDictionary, FieldDef, FieldType, MessageDef};
+use crate::model::{DataDictionary, FieldDef, FieldType, GroupDef, MessageDef};
 
 /// An error parsing a normalized dictionary.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -39,6 +39,7 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
     let mut messages: BTreeMap<String, MessageDef> = BTreeMap::new();
     let mut header: BTreeSet<u32> = BTreeSet::new();
     let mut trailer: BTreeSet<u32> = BTreeSet::new();
+    let mut groups: BTreeMap<u32, GroupDef> = BTreeMap::new();
 
     for (idx, raw) in input.lines().enumerate() {
         let line_no = idx + 1;
@@ -71,7 +72,11 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                         line: line_no,
                         token: type_token.to_owned(),
                     })?;
-                let values: Vec<String> = tokens.map(str::to_owned).collect();
+                // Enum tokens may carry an optional `=Label` suffix for codegen's benefit (e.g.
+                // `1=Buy`); runtime validation only compares the raw wire value, so it is stripped.
+                let values: Vec<String> = tokens
+                    .map(|t| t.split('=').next().unwrap_or(t).to_owned())
+                    .collect();
                 fields.insert(
                     tag,
                     FieldDef {
@@ -118,6 +123,28 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                         name: name.to_owned(),
                         required,
                         optional,
+                        member_tags: BTreeSet::new(),
+                    },
+                );
+            }
+            "group" => {
+                let count_tag = parse_tag(tokens.next(), line_no)?;
+                let _name = tokens.next().ok_or(ParseError::Malformed {
+                    line: line_no,
+                    reason: "group requires a name",
+                })?;
+                let delimiter = parse_tag(tokens.next(), line_no)?;
+                let members_token = tokens.next().ok_or(ParseError::Malformed {
+                    line: line_no,
+                    reason: "group requires a member list",
+                })?;
+                let members = parse_tag_list(members_token, line_no)?;
+                groups.insert(
+                    count_tag,
+                    GroupDef {
+                        count_tag,
+                        delimiter,
+                        members,
                     },
                 );
             }
@@ -131,6 +158,23 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
     }
 
     let version = version.ok_or(ParseError::MissingVersion)?;
+
+    // Expand each message's repeating-group members (transitively) so the validator accepts group
+    // member fields as belonging to the message type.
+    for mdef in messages.values_mut() {
+        let mut member_tags = BTreeSet::new();
+        let seed: Vec<u32> = mdef
+            .required
+            .iter()
+            .chain(mdef.optional.iter())
+            .copied()
+            .collect();
+        for tag in seed {
+            collect_group_members(&groups, tag, &mut member_tags);
+        }
+        mdef.member_tags = member_tags;
+    }
+
     Ok(DataDictionary {
         version,
         fields,
@@ -138,8 +182,24 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
         messages,
         header,
         trailer,
+        groups,
         hash: fnv1a(input.as_bytes()),
     })
+}
+
+/// Add `count_tag`'s group members (and nested groups' members, transitively) to `out`.
+fn collect_group_members(
+    groups: &BTreeMap<u32, GroupDef>,
+    count_tag: u32,
+    out: &mut BTreeSet<u32>,
+) {
+    if let Some(group) = groups.get(&count_tag) {
+        for &m in &group.members {
+            if out.insert(m) && groups.contains_key(&m) {
+                collect_group_members(groups, m, out);
+            }
+        }
+    }
 }
 
 fn strip_comment(line: &str) -> &str {

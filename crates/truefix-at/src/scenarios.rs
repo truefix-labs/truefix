@@ -107,6 +107,45 @@ fn received_test_request(v: &str) -> Scenario {
     )
 }
 
+/// ReverseRoute — a reply to a message carrying OnBehalfOf* routing fields reverses them onto
+/// DeliverTo* on the reply.
+fn reverse_route(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2);
+    tr.body.set(Field::string(112, "ROUTE-ME"));
+    tr.header.set(Field::string(115, "BROKER")); // OnBehalfOfCompID
+    scenario(
+        "ReverseRoute",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(
+                ExpectMsg::of("0")
+                    .field(112, "ROUTE-ME")
+                    .field(128, "BROKER"),
+            ), // DeliverToCompID
+        ],
+    )
+}
+
+/// ReverseRouteWithEmptyRoutingTags — a routing tag present but empty still reverses.
+fn reverse_route_empty_tags(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2);
+    tr.body.set(Field::string(112, "ROUTE-EMPTY"));
+    tr.header.set(Field::string(115, "")); // OnBehalfOfCompID, present but empty
+    scenario(
+        "ReverseRouteWithEmptyRoutingTags",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "ROUTE-EMPTY").field(128, "")),
+        ],
+    )
+}
+
 /// 13b — an unsolicited Logout is answered with a Logout and disconnect.
 fn unsolicited_logout(v: &str) -> Scenario {
     scenario(
@@ -624,6 +663,92 @@ fn valid_new_order_accepted(v: &str) -> Scenario {
     )
 }
 
+/// A FIX.4.4 NewOrderSingle with the given repeating-group fields appended in wire order.
+fn nos_with_group(seq: i64, group: &[(u32, &str)]) -> Message {
+    let mut m = new_order_single(seq);
+    for (t, v) in group {
+        m.body.set(Field::string(*t, v));
+    }
+    m
+}
+
+/// 14i — a NoXxx count that does not match the number of group entries draws a session Reject.
+fn group_count_mismatch(v: &str) -> Scenario {
+    let order = nos_with_group(2, &[(453, "2"), (448, "A"), (447, "1"), (452, "1")]);
+    scenario(
+        "14i_RepeatingGroupCountNotEqual",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "16")), // IncorrectNumInGroupCount
+        ],
+    )
+}
+
+/// 14j — out-of-order repeating-group members draw a session Reject.
+fn group_out_of_order(v: &str) -> Scenario {
+    // Entry: delimiter 448, then 452 (PartyRole), then 447 (PartyIDSource) — out of order.
+    let order = nos_with_group(2, &[(453, "1"), (448, "A"), (452, "1"), (447, "1")]);
+    scenario(
+        "14j_OutOfOrderRepeatingGroupMembers",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "15")), // RepeatingGroupFieldsOutOfOrder (15)
+        ],
+    )
+}
+
+/// QFJ934 — a nested group whose entry omits its delimiter draws a session Reject.
+fn nested_group_missing_delimiter(v: &str) -> Scenario {
+    // NoPartySubIDs entry starts with 803 instead of the delimiter 523.
+    let order = nos_with_group(
+        2,
+        &[
+            (453, "1"),
+            (448, "A"),
+            (447, "1"),
+            (452, "1"),
+            (802, "1"),
+            (803, "1"),
+            (523, "S"),
+        ],
+    );
+    scenario(
+        "QFJ934_MissingDelimiterNestedRepeatingGroup",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "15")),
+        ],
+    )
+}
+
+/// 21 — a repeating-group count of zero is accepted as an empty group.
+fn group_zero_count(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 3);
+    tr.body.set(Field::string(112, "ZERO-GRP-OK"));
+    let order = nos_with_group(2, &[(453, "0")]);
+    scenario(
+        "21_RepeatingGroupSpecifierWithValueOfZero",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Send(tr),
+            // A Heartbeat (not a Reject) proves the zero-count group was accepted.
+            Step::Expect(ExpectMsg::of("0").field(112, "ZERO-GRP-OK")),
+        ],
+    )
+}
+
 /// app1 — an active acceptor fills each NewOrderSingle with an ExecutionReport (35=8).
 fn app_order_executed(v: &str) -> Scenario {
     scenario_with(
@@ -820,6 +945,22 @@ fn incorrect_data_format(v: &str) -> Scenario {
     )
 }
 
+/// 14h — a tag appearing more than once outside a repeating group draws a session-level Reject.
+fn repeated_tag(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.add_field(Field::string(11, "ORDER-1-DUP")); // ClOrdID(11) repeated
+    scenario(
+        "14h_RepeatedTag",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "13")), // Reject: TagAppearsMoreThanOnce
+        ],
+    )
+}
+
 /// 2r — an unregistered (unknown) MsgType draws a Business Message Reject.
 fn unregistered_msg_type(v: &str) -> Scenario {
     scenario(
@@ -939,6 +1080,30 @@ fn garbled_message_dropped(v: &str) -> Scenario {
     )
 }
 
+/// Special suite — RejectGarbledMessage=Y: a garbled frame draws a session-level Reject (35=3,
+/// SessionRejectReason=0) instead of a silent drop, and the sequence counter is untouched.
+fn garbled_message_rejected(v: &str) -> Scenario {
+    let garbled = garble_checksum(&client_message(v, "0", 2));
+    let mut tr = client_message(v, "1", 2); // reuses seq 2: the garbled frame was never counted
+    tr.body.set(Field::string(112, "AFTER-GARBLE-REJECT"));
+    scenario_with(
+        "special_RejectGarbledMessage",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::SendRaw(garbled),
+            Step::Expect(ExpectMsg::of("3").field(373, "0")), // session Reject
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "AFTER-GARBLE-REJECT")),
+        ],
+        SessionTweaks {
+            reject_garbled: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// Special suite — resendRequestChunkSize: when a gap is detected, the ResendRequest is bounded to
 /// one chunk (EndSeqNo = BeginSeqNo + chunk - 1) instead of an open-ended range.
 fn resend_request_chunk_size(v: &str) -> Scenario {
@@ -968,6 +1133,8 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(msgseqnum_too_high(v));
         out.push(msgseqnum_too_low(v));
         out.push(received_test_request(v));
+        out.push(reverse_route(v));
+        out.push(reverse_route_empty_tags(v));
         out.push(unsolicited_logout(v));
         out.push(logon_response_carries_reset_flag(v));
         out.push(logon_adopts_heartbeat_interval(v));
@@ -997,6 +1164,10 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(incorrect_data_format_42());
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(valid_new_order_accepted("FIX.4.4"));
+    out.push(group_count_mismatch("FIX.4.4"));
+    out.push(group_out_of_order("FIX.4.4"));
+    out.push(nested_group_missing_delimiter("FIX.4.4"));
+    out.push(group_zero_count("FIX.4.4"));
     out.push(app_order_executed("FIX.4.4"));
     out.push(app_orders_sequenced("FIX.4.4"));
     out.push(app_message_resent_as_poss_dup("FIX.4.4"));
@@ -1008,12 +1179,14 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(tag_not_defined_for_msg_type("FIX.4.4"));
     out.push(tag_specified_without_value("FIX.4.4"));
     out.push(incorrect_data_format("FIX.4.4"));
+    out.push(repeated_tag("FIX.4.4"));
     out.push(unregistered_msg_type("FIX.4.4"));
     // Special-category suites (T086) requiring per-acceptor session-feature toggles.
     out.push(next_expected_msg_seq_num("FIX.4.4"));
     out.push(last_msg_seq_num_processed("FIX.4.4"));
     out.push(check_latency_timestamps("FIX.4.4"));
     out.push(garbled_message_dropped("FIX.4.4"));
+    out.push(garbled_message_rejected("FIX.4.4"));
     out.push(resend_request_chunk_size("FIX.4.4"));
     out
 }

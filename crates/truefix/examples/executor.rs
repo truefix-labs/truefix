@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use truefix_core::{Field, Message};
+use truefix_core::{BusinessReject, Field, Message};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::{AcceptorBuilder, Monitor, Services};
 
@@ -16,7 +16,7 @@ impl Application for Executor {
     async fn on_logon(&self, id: &SessionId) {
         println!("executor: logon {id}");
     }
-    async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), String> {
+    async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), BusinessReject> {
         if message.msg_type() == Some("D") {
             self.monitor.send_app(id, execution_report(message)).await;
         }

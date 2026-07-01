@@ -6,9 +6,10 @@ use crate::config::SessionConfig;
 use crate::tags::{
     BEGIN_SEQ_NO, BUSINESS_REJECT_REASON, ENCRYPT_METHOD, END_SEQ_NO, GAP_FILL_FLAG, HEART_BT_INT,
     NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM, ORIG_SENDING_TIME, POSS_DUP_FLAG, REF_MSG_TYPE,
-    REF_SEQ_NUM, RESET_SEQ_NUM_FLAG, SENDING_TIME, SESSION_REJECT_REASON, TEST_REQ_ID, TEXT,
+    REF_SEQ_NUM, REF_TAG_ID, RESET_SEQ_NUM_FLAG, SENDING_TIME, SESSION_REJECT_REASON, TEST_REQ_ID,
+    TEXT,
 };
-use crate::time_util::now_utc_timestamp;
+use crate::time_util::{now_utc_timestamp, now_utc_timestamp_prec};
 
 /// Build a message with the standard header (8/35/49/56/34/52).
 fn base(config: &SessionConfig, msg_type: &str, seq: u64) -> Message {
@@ -18,7 +19,10 @@ fn base(config: &SessionConfig, msg_type: &str, seq: u64) -> Message {
     m.header.set(Field::string(49, &config.sender_comp_id));
     m.header.set(Field::string(56, &config.target_comp_id));
     m.header.set(Field::int(34, seq as i64));
-    m.header.set(Field::string(52, &now_utc_timestamp()));
+    m.header.set(Field::string(
+        52,
+        &now_utc_timestamp_prec(config.timestamp_precision),
+    ));
     m
 }
 
@@ -97,28 +101,34 @@ pub(crate) fn reject(config: &SessionConfig, seq: u64, ref_seq: u64, text: &str)
     m
 }
 
-/// Session-level Reject (35=3) with a SessionRejectReason (373).
+/// Session-level Reject (35=3) with a SessionRejectReason (373) and optional RefTagID (371).
 pub(crate) fn reject_with_reason(
     config: &SessionConfig,
     seq: u64,
     ref_seq: u64,
+    ref_tag: Option<u32>,
     reason_code: u32,
     text: &str,
 ) -> Message {
     let mut m = base(config, "3", seq);
     m.body.set(Field::int(REF_SEQ_NUM, ref_seq as i64));
+    if let Some(t) = ref_tag {
+        m.body.set(Field::int(REF_TAG_ID, i64::from(t)));
+    }
     m.body
         .set(Field::int(SESSION_REJECT_REASON, i64::from(reason_code)));
     m.body.set(Field::string(TEXT, text));
     m
 }
 
-/// Business Message Reject (35=j) with RefMsgType (372) and BusinessRejectReason (380).
+/// Business Message Reject (35=j) with RefMsgType (372), BusinessRejectReason (380), and optional
+/// RefTagID (371).
 pub(crate) fn business_message_reject(
     config: &SessionConfig,
     seq: u64,
     ref_seq: u64,
     ref_msg_type: Option<&str>,
+    ref_tag: Option<u32>,
     reason_code: u32,
     text: &str,
 ) -> Message {
@@ -126,6 +136,9 @@ pub(crate) fn business_message_reject(
     m.body.set(Field::int(REF_SEQ_NUM, ref_seq as i64));
     if let Some(mt) = ref_msg_type {
         m.body.set(Field::string(REF_MSG_TYPE, mt));
+    }
+    if let Some(t) = ref_tag {
+        m.body.set(Field::int(REF_TAG_ID, i64::from(t)));
     }
     m.body
         .set(Field::int(BUSINESS_REJECT_REASON, i64::from(reason_code)));

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use truefix_core::{Field, Message};
+use truefix_core::{BusinessReject, Field, Message};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::{connect_initiator, AcceptorBuilder, Monitor, Services};
 
@@ -27,7 +27,7 @@ struct ExecutorApp {
 
 #[async_trait::async_trait]
 impl Application for ExecutorApp {
-    async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), String> {
+    async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), BusinessReject> {
         if message.msg_type() == Some("D") {
             let mut exec = Message::new();
             exec.header.set(Field::string(35, "8"));
@@ -48,7 +48,7 @@ impl Application for ClientApp {
     async fn on_logon(&self, _id: &SessionId) {
         self.logged_on.store(true, Ordering::SeqCst);
     }
-    async fn from_app(&self, message: &Message, _id: &SessionId) -> Result<(), String> {
+    async fn from_app(&self, message: &Message, _id: &SessionId) -> Result<(), BusinessReject> {
         if message.msg_type() == Some("8") {
             self.got_exec.store(true, Ordering::SeqCst);
         }

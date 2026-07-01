@@ -13,6 +13,7 @@ pub(crate) const NEXT_EXPECTED_MSG_SEQ_NUM: u32 = 789;
 pub(crate) const TEST_REQ_ID: u32 = 112;
 pub(crate) const TEXT: u32 = 58;
 pub(crate) const REF_SEQ_NUM: u32 = 45;
+pub(crate) const REF_TAG_ID: u32 = 371;
 pub(crate) const REF_MSG_TYPE: u32 = 372;
 pub(crate) const SESSION_REJECT_REASON: u32 = 373;
 pub(crate) const BUSINESS_REJECT_REASON: u32 = 380;

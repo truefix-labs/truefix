@@ -7,6 +7,13 @@
 
 use crate::field_map::FieldMap;
 
+/// Supplies repeating-group structure to the dictionary-driven decoder without `truefix-core`
+/// depending on `truefix-dict` (the dictionary implements this trait). See [`crate::decode_with_groups`].
+pub trait GroupSpec {
+    /// If `count_tag` is a repeating-group count tag, return its `(delimiter, member_tags)`.
+    fn group_of(&self, count_tag: u32) -> Option<(u32, &[u32])>;
+}
+
 /// A repeating group: a count tag plus its ordered entries.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Group {

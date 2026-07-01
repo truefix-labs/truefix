@@ -17,6 +17,12 @@
 )]
 
 mod framing;
+mod metrics_export;
+mod tls_config;
+
+pub use tls_config::{
+    build_client_config, build_server_config, TlsConfigError, TlsSpec, TlsVersion,
+};
 
 use std::collections::HashMap;
 use std::future::pending;
@@ -41,24 +47,86 @@ use truefix_store::MessageStore;
 
 use framing::frame_length;
 
-/// TCP socket options applied to each connection.
+/// TCP socket options applied to each connection (US10; FR-019).
 #[derive(Debug, Clone, Copy)]
 pub struct SocketOptions {
-    /// Disable Nagle's algorithm (TCP_NODELAY).
+    /// Disable Nagle's algorithm (`SocketTcpNoDelay`).
     pub tcp_no_delay: bool,
+    /// Enable TCP keepalive (`SocketKeepAlive`).
+    pub keep_alive: bool,
+    /// `SO_REUSEADDR` on the acceptor's listening socket (`SocketReuseAddress`); has no effect on
+    /// an already-connected initiator stream, only on a freshly-bound listener.
+    pub reuse_address: bool,
+    /// `SO_LINGER` timeout (`SocketLinger`); `None` leaves the OS default in place.
+    pub linger: Option<Duration>,
+    /// `SO_OOBINLINE` (`SocketOobInline`).
+    pub oob_inline: bool,
+    /// `SO_RCVBUF` size in bytes (`SocketReceiveBufferSize`); `None` leaves the OS default.
+    pub recv_buffer_size: Option<usize>,
+    /// `SO_SNDBUF` size in bytes (`SocketSendBufferSize`); `None` leaves the OS default.
+    pub send_buffer_size: Option<usize>,
+    /// IP_TOS / traffic class (`SocketTrafficClass`); `None` leaves the OS default.
+    pub traffic_class: Option<u32>,
 }
 
 impl Default for SocketOptions {
     fn default() -> Self {
-        Self { tcp_no_delay: true }
+        Self {
+            tcp_no_delay: true,
+            keep_alive: false,
+            reuse_address: false,
+            linger: None,
+            oob_inline: false,
+            recv_buffer_size: None,
+            send_buffer_size: None,
+            traffic_class: None,
+        }
     }
 }
 
 impl SocketOptions {
-    /// Apply the options to a connected stream (best-effort).
+    /// Apply the connection-level options to a connected/accepted stream (best-effort: each
+    /// option that fails to apply — e.g. unsupported on the platform — is silently skipped rather
+    /// than aborting the connection).
     pub fn apply(&self, stream: &TcpStream) {
         let _ = stream.set_nodelay(self.tcp_no_delay);
+        let sock = socket2::SockRef::from(stream);
+        let _ = sock.set_keepalive(self.keep_alive);
+        if let Some(linger) = self.linger {
+            let _ = sock.set_linger(Some(linger));
+        }
+        let _ = sock.set_out_of_band_inline(self.oob_inline);
+        if let Some(size) = self.recv_buffer_size {
+            let _ = sock.set_recv_buffer_size(size);
+        }
+        if let Some(size) = self.send_buffer_size {
+            let _ = sock.set_send_buffer_size(size);
+        }
+        if let Some(tos) = self.traffic_class {
+            let _ = sock.set_tos(tos);
+        }
+        // `reuse_address` applies to a listener at bind time (see `bind_listener_with_options`),
+        // not to an already-connected stream.
     }
+}
+
+/// Bind a `TcpListener`, optionally setting `SO_REUSEADDR` before binding (`SocketReuseAddress`).
+/// Plain `TcpListener::bind` cannot express this — the option must be set on the raw socket
+/// before the bind syscall.
+fn bind_listener_with_options(addr: SocketAddr, reuse_address: bool) -> io::Result<TcpListener> {
+    let domain = if addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    if reuse_address {
+        socket.set_reuse_address(true)?;
+    }
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    TcpListener::from_std(socket.into())
 }
 
 /// Optional per-session services: a persistent message store, a log, and socket options.
@@ -265,6 +333,7 @@ pub struct Acceptor<A: Application + 'static> {
     config: SessionConfig,
     app: Arc<A>,
     services: Services,
+    tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 impl<A: Application + 'static> Acceptor<A> {
@@ -280,13 +349,21 @@ impl<A: Application + 'static> Acceptor<A> {
         app: Arc<A>,
         services: Services,
     ) -> io::Result<Self> {
-        let listener = TcpListener::bind(addr).await?;
+        let listener = bind_listener_with_options(addr, services.socket_options.reuse_address)?;
         Ok(Self {
             listener,
             config,
             app,
             services,
+            tls: None,
         })
+    }
+
+    /// Serve TLS using `config` (FR-F6/FR-017).
+    #[must_use]
+    pub fn with_tls(mut self, config: Arc<rustls::ServerConfig>) -> Self {
+        self.tls = Some(config);
+        self
     }
 
     /// The bound local address (useful when binding to port 0).
@@ -296,14 +373,26 @@ impl<A: Application + 'static> Acceptor<A> {
 
     /// Spawn the accept loop. Each connection is served as a session.
     pub fn serve(self) -> JoinHandle<()> {
+        let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         tokio::spawn(async move {
             while let Ok((stream, _peer)) = self.listener.accept().await {
-                let _ = spawn_session(
-                    stream,
-                    self.config.clone(),
-                    self.app.clone(),
-                    self.services.clone(),
-                );
+                self.services.socket_options.apply(&stream);
+                let config = self.config.clone();
+                let app = self.app.clone();
+                let services = self.services.clone();
+                match &tls {
+                    Some(acceptor) => {
+                        let acceptor = acceptor.clone();
+                        tokio::spawn(async move {
+                            if let Ok(tls_stream) = acceptor.accept(stream).await {
+                                spawn_session_io(tls_stream, config, app, services);
+                            }
+                        });
+                    }
+                    None => {
+                        spawn_session_io(stream, config, app, services);
+                    }
+                }
             }
         })
     }
@@ -379,6 +468,16 @@ async fn run_connection<A, S>(
         let out = store.next_sender_seq().await.unwrap_or(1);
         let inn = store.next_target_seq().await.unwrap_or(1);
         session.seed_sequences(out, inn);
+        // Re-hydrate previously-sent message bodies so a post-restart ResendRequest can replay them
+        // (FR-001/002). The store is the source of truth; the session's in-memory map is rebuilt.
+        if out > 1 {
+            if let Ok(stored) = store.get(1, out - 1).await {
+                let msgs = stored
+                    .into_iter()
+                    .filter_map(|(seq, bytes)| decode(&bytes).ok().map(|m| (seq, m)));
+                session.seed_sent_messages(msgs);
+            }
+        }
     }
 
     if let Some(monitor) = &services.monitor {
@@ -464,6 +563,7 @@ async fn run_connection<A, S>(
                     if let Some(store) = &services.store {
                         let _ = store.reset().await;
                     }
+                    metrics_export::record_status(&id, &session.status());
                     if let Some(monitor) = &services.monitor {
                         monitor.update(&id, session.status());
                     }
@@ -521,23 +621,31 @@ where
             Ok(Some(total)) => {
                 let raw: Vec<u8> = buf.drain(..total).collect();
                 if let Ok(msg) = decode(&raw) {
+                    metrics_export::record_received(id);
                     if let Some(log) = &services.log {
                         log.on_incoming(&String::from_utf8_lossy(&raw));
                     }
                     // Authentication / admin acceptance: an admin message the application rejects
-                    // (e.g. a Logon with bad credentials) tears the session down without a response.
+                    // (e.g. a Logon with bad credentials) sends a Logout with the reject's text (if
+                    // any) and tears the session down (FR-016).
                     if is_admin(&msg) {
-                        if app.from_admin(&msg, id).await.is_err() {
+                        if let Err(reject) = app.from_admin(&msg, id).await {
                             if let Some(log) = &services.log {
                                 log.on_event(&format!(
-                                    "{id}: admin message rejected by application"
+                                    "{id}: admin message rejected by application: {reject}"
                                 ));
                             }
+                            let actions = session.reject_logon(&reject);
+                            let _ =
+                                perform_actions(actions, session, stream, app, id, services).await;
                             return Err(());
                         }
-                    } else {
-                        // Business rejects are produced by the dictionary hook; deliver regardless.
-                        let _ = app.from_app(&msg, id).await;
+                    } else if let Err(breject) = app.from_app(&msg, id).await {
+                        // Dictionary-driven business rejects are handled separately; this is the
+                        // application-supplied one (FR-016). Sequence processing still proceeds.
+                        let action = session.business_reject(&msg, &breject);
+                        let _ =
+                            perform_actions(vec![action], session, stream, app, id, services).await;
                     }
                     dispatch(
                         session,
@@ -549,8 +657,20 @@ where
                         logged_on,
                     )
                     .await?;
+                } else {
+                    // The frame length was determinable but the content failed to decode (bad
+                    // checksum/body-length/tag): honor RejectGarbledMessage (FR-006).
+                    dispatch(
+                        session,
+                        Event::Garbled,
+                        stream,
+                        app,
+                        id,
+                        services,
+                        logged_on,
+                    )
+                    .await?;
                 }
-                // Garbled frames are dropped at this stage; RejectGarbledMessage arrives in S3.
             }
             Ok(None) => return Ok(()),
             Err(_) => {
@@ -587,27 +707,7 @@ where
         }
     }
 
-    let mut disconnect = false;
-    for action in actions {
-        match action {
-            Action::Send(mut msg) => {
-                if is_admin(&msg) {
-                    app.to_admin(&mut msg, id).await;
-                } else {
-                    app.to_app(&mut msg, id).await;
-                }
-                let bytes = msg.encode();
-                if let Some(log) = &services.log {
-                    log.on_outgoing(&String::from_utf8_lossy(&bytes));
-                }
-                if stream.write_all(&bytes).await.is_err() {
-                    return Err(());
-                }
-            }
-            Action::Disconnect => disconnect = true,
-        }
-    }
-    let _ = stream.flush().await;
+    let disconnect = perform_actions(actions, session, stream, app, id, services).await?;
 
     // Persist sequence numbers for restart continuity (best-effort).
     if let Some(store) = &services.store {
@@ -615,6 +715,7 @@ where
         let _ = store.set_next_target_seq(session.next_in_seq()).await;
     }
 
+    metrics_export::record_status(id, &session.status());
     if let Some(monitor) = &services.monitor {
         monitor.update(id, session.status());
     }
@@ -626,11 +727,83 @@ where
     }
 }
 
+/// Perform a batch of engine [`Action`]s: invoke the `to_admin`/`to_app` hooks (honoring an
+/// outbound `DoNotSend` by discarding the message from the resend store instead of writing it),
+/// log, encode, write, and persist each send. Returns whether a disconnect was requested.
+async fn perform_actions<A, S>(
+    actions: Vec<Action>,
+    session: &mut Session,
+    stream: &mut S,
+    app: &Arc<A>,
+    id: &SessionId,
+    services: &Services,
+) -> Result<bool, ()>
+where
+    A: Application + 'static,
+    S: AsyncWrite + Unpin,
+{
+    let mut disconnect = false;
+    for action in actions {
+        match action {
+            Action::Send(mut msg) => {
+                if is_admin(&msg) {
+                    app.to_admin(&mut msg, id).await;
+                } else if app.to_app(&mut msg, id).await.is_err() {
+                    if let Some(seq) = msg
+                        .header
+                        .get(34)
+                        .and_then(|f| f.as_int().ok())
+                        .filter(|&s| s > 0)
+                    {
+                        session.discard_sent(seq as u64);
+                    }
+                    continue;
+                }
+                let bytes = msg.encode();
+                if let Some(log) = &services.log {
+                    log.on_outgoing(&String::from_utf8_lossy(&bytes));
+                }
+                if stream.write_all(&bytes).await.is_err() {
+                    return Err(());
+                }
+                metrics_export::record_sent(id);
+                persist_sent(&msg, &bytes, session, services).await;
+            }
+            Action::Disconnect => disconnect = true,
+        }
+    }
+    let _ = stream.flush().await;
+    Ok(disconnect)
+}
+
 fn is_admin(msg: &Message) -> bool {
     matches!(
         msg.msg_type(),
         Some("0" | "1" | "2" | "3" | "4" | "5" | "A")
     )
+}
+
+/// Persist an original outbound transmission to the store for restart-survivable resend (FR-001/002).
+/// Skips resends (PossDupFlag=Y keep the original's seq and must not overwrite it) and honours
+/// `PersistMessages` (FR-003).
+async fn persist_sent(msg: &Message, bytes: &[u8], session: &Session, services: &Services) {
+    if !session.persist_messages() {
+        return;
+    }
+    let Some(store) = &services.store else {
+        return;
+    };
+    if msg.header.get(43).and_then(|f| f.as_str().ok()) == Some("Y") {
+        return; // resend / possible-duplicate — do not re-persist
+    }
+    if let Some(seq) = msg
+        .header
+        .get(34)
+        .and_then(|f| f.as_int().ok())
+        .filter(|&s| s > 0)
+    {
+        let _ = store.save(seq as u64, bytes).await;
+    }
 }
 
 /// Send an application message initiated by the application (via the control channel).
@@ -646,22 +819,12 @@ where
     A: Application + 'static,
     S: AsyncWrite + Unpin,
 {
-    for action in session.send_app(message) {
-        if let Action::Send(mut msg) = action {
-            app.to_app(&mut msg, id).await;
-            let bytes = msg.encode();
-            if let Some(log) = &services.log {
-                log.on_outgoing(&String::from_utf8_lossy(&bytes));
-            }
-            if stream.write_all(&bytes).await.is_err() {
-                return Err(());
-            }
-        }
-    }
-    let _ = stream.flush().await;
+    let actions = session.send_app(message);
+    perform_actions(actions, session, stream, app, id, services).await?;
     if let Some(store) = &services.store {
         let _ = store.set_next_sender_seq(session.next_out_seq()).await;
     }
+    metrics_export::record_status(id, &session.status());
     if let Some(monitor) = &services.monitor {
         monitor.update(id, session.status());
     }
@@ -892,12 +1055,41 @@ pub fn connect_initiator_reconnecting<A>(
 where
     A: Application + 'static,
 {
+    connect_initiator_reconnecting_multi(vec![addr], config, app, services)
+}
+
+/// Connect out as an initiator against an ordered set of candidate endpoints
+/// (`SocketConnectHost<N>`/`SocketConnectPort<N>`; FR-019), rotating to the next endpoint on each
+/// (re)connect attempt and automatically reconnecting after `config.reconnect_interval` seconds
+/// whenever the connection drops, until stopped. Endpoints are tried round-robin; if all are
+/// unreachable the loop keeps retrying (starting again from the next endpoint) rather than
+/// busy-looping or giving up.
+pub fn connect_initiator_reconnecting_multi<A>(
+    addrs: Vec<SocketAddr>,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> ReconnectHandle
+where
+    A: Application + 'static,
+{
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
     let interval = Duration::from_secs(u64::from(config.reconnect_interval).max(1));
+    let id = config.session_id();
     let task = tokio::spawn(async move {
+        let mut connected_before = false;
+        let mut next_endpoint = 0usize;
         while !loop_stop.load(Ordering::SeqCst) {
+            let Some(&addr) = addrs.get(next_endpoint % addrs.len().max(1)) else {
+                break; // addrs is empty; nothing to connect to
+            };
+            next_endpoint = next_endpoint.wrapping_add(1);
             if let Ok(stream) = TcpStream::connect(addr).await {
+                if connected_before {
+                    metrics_export::record_reconnect(&id);
+                }
+                connected_before = true;
                 let (control_tx, control_rx) = mpsc::channel(8);
                 run_connection(
                     stream,
@@ -956,34 +1148,43 @@ where
 {
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
+    let id = config.session_id();
     let task = tokio::spawn(async move {
         let mut current: Option<SessionHandle> = None;
         let mut was_in_session = false;
+        let mut connected_before = false;
         while !loop_stop.load(Ordering::SeqCst) {
-            let in_session = schedule.is_in_session(time::OffsetDateTime::now_utc());
-            match (in_session, current.is_some()) {
-                (true, false) => {
-                    if !was_in_session {
-                        // Entering a session window: reset persisted state.
-                        if let Some(store) = &services.store {
-                            let _ = store.reset().await;
-                        }
-                    }
-                    if let Ok(handle) =
-                        connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
-                            .await
-                    {
-                        current = Some(handle);
+            let now = time::OffsetDateTime::now_utc();
+            // The boundary-crossing decision (reset-on-entry / logout-on-exit) is a pure,
+            // tested function in truefix-session (FR-018/FR-E3).
+            match truefix_session::decide_schedule_action(&schedule, was_in_session, now) {
+                truefix_session::ScheduleAction::Enter => {
+                    if let Some(store) = &services.store {
+                        let _ = store.reset().await;
                     }
                 }
-                (false, true) => {
+                truefix_session::ScheduleAction::Exit => {
                     if let Some(handle) = current.take() {
                         handle.logout().await;
                     }
                 }
-                _ => {}
+                truefix_session::ScheduleAction::None => {}
             }
-            was_in_session = in_session;
+            was_in_session = schedule.non_stop || schedule.is_in_session(now);
+            // Independently of the boundary decision, keep retrying a connection while in
+            // session and disconnected (e.g. after a transient network drop).
+            if was_in_session && current.is_none() {
+                if let Ok(handle) =
+                    connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
+                        .await
+                {
+                    if connected_before {
+                        metrics_export::record_reconnect(&id);
+                    }
+                    connected_before = true;
+                    current = Some(handle);
+                }
+            }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         if let Some(handle) = current.take() {

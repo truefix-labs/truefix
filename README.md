@@ -5,11 +5,19 @@
 > release gate.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
-![Status](https://img.shields.io/badge/status-pre--implementation%20(design%20complete)-orange.svg)
+![Status](https://img.shields.io/badge/status-implemented-brightgreen.svg)
 ![Rust](https://img.shields.io/badge/rust-edition%202021-informational.svg)
 
-**Status**: 🚧 Pre-implementation. The specification, plan, and task breakdown are complete and committed
-as the project baseline; engine code has not started. See [`specs/001-fix-engine-parity/`](specs/001-fix-engine-parity/).
+**Status**: QuickFIX/J parity is implemented across two specs:
+[`specs/001-fix-engine-parity/`](specs/001-fix-engine-parity/) (foundation: codec, session state
+machine, recovery/resend, data dictionary, storage/logging, multi/dynamic sessions, all FIX
+versions + codegen, TLS/auth/monitoring, the AT suite) and
+[`specs/002-qfj-parity-completion/`](specs/002-qfj-parity-completion/) (remaining gaps: session-owned
+persistent resend, dictionary-driven group validation, `.cfg`-driven one-shot engine start, inbound
+integrity/reject-layers/reverse-route, typed callback outcomes, all-message typed codegen +
+`MessageCracker`, TLS/mTLS-from-config, weekly schedule windows, metrics export, multi-backend SQL
+storage/logging). See [`MIGRATION.md`](MIGRATION.md) if upgrading past the typed-callback breaking
+change.
 
 ## Why TrueFix
 
@@ -17,18 +25,76 @@ Existing Rust FIX libraries are either buy-side only or pre-1.0 and not producti
 to be the first Rust FIX engine that is:
 
 - **Production-ready** — stable, documented public API; no `panic`/`unwrap`/`expect` on critical paths;
-  typed, recoverable errors; structured observability (session state, sequence numbers, connection health).
+  typed, recoverable errors; structured observability (session state, sequence numbers, connection health,
+  `metrics`-facade export).
 - **Acceptor-first** — the sell-side/acceptor is a first-class citizen, on equal footing with the
   initiator (multi-session, dynamic sessions).
-- **Conformance-gated** — protocol correctness is verified by a ported FIX **Acceptance Test (AT)** suite,
-  which is the hard release gate.
+- **Conformance-gated** — protocol correctness is verified by a ported FIX **Acceptance Test (AT)** suite
+  (56 scenario classes / 81 scenario runs across FIX.4.2/4.4), which is the hard release gate.
 
-The north-star goal is **full feature parity with QuickFIX/J**, delivered in one pass.
+## Quick start
 
-## Supported FIX versions (target)
+Start an entire engine — acceptor and/or initiator sessions, TLS, socket options, store, schedule —
+from a `.cfg` file alone; only the `Application` callbacks are code:
+
+```rust
+use std::sync::Arc;
+use truefix::config::SessionSettings;
+use truefix::{Application, Engine, SessionId};
+
+struct MyApp;
+
+#[async_trait::async_trait]
+impl Application for MyApp {
+    async fn on_logon(&self, id: &SessionId) {
+        println!("logged on: {id}");
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let cfg = std::fs::read_to_string("session.cfg").unwrap();
+    let settings = SessionSettings::parse(&cfg).unwrap();
+    let engine = Engine::start(&settings, Arc::new(MyApp)).await.unwrap();
+    tokio::signal::ctrl_c().await.ok();
+    engine.shutdown();
+}
+```
+
+A `.cfg` with `SocketUseSSL=Y`/`SocketKeyStore=...` builds mTLS from PEM files (no Java keystores);
+`SocketConnectHost1`/`SocketConnectPort1` (etc.) add initiator failover endpoints; `FileLogPath` builds
+a working session log — no code beyond `Application` required for any of it (FR-013/014/017/019/026).
+
+The `Application` trait's callbacks return typed outcomes rather than a bare `Result<(), String>`
+(see [`MIGRATION.md`](MIGRATION.md) for the breaking-change rationale and upgrade path):
+
+```rust
+use truefix::Message;
+use truefix_core::{BusinessReject, DoNotSend, Reject};
+
+#[async_trait::async_trait]
+impl Application for MyApp {
+    async fn from_admin(&self, _msg: &Message, _id: &SessionId) -> Result<(), Reject> {
+        Ok(()) // or Err(Reject { reason, ref_tag, text }) to refuse logon
+    }
+    async fn to_app(&self, _msg: &mut Message, _id: &SessionId) -> Result<(), DoNotSend> {
+        Ok(()) // or Err(DoNotSend) to suppress the send without consuming a sequence number
+    }
+    async fn from_app(&self, _msg: &Message, _id: &SessionId) -> Result<(), BusinessReject> {
+        Ok(()) // or Err(BusinessReject { .. }) to emit a 35=j Business Message Reject
+    }
+}
+```
+
+See `crates/truefix/examples/` (`executor`, `banzai`, `ordermatch`, `multi_acceptor`) for complete,
+runnable programs.
+
+## Supported FIX versions
 
 FIX 4.0 / 4.1 / 4.2 / 4.3 / 4.4 / 5.0 / 5.0SP1 / 5.0SP2 and **FIXT 1.1** (with separate transport and
-application dictionaries; `DefaultApplVerID` resolution).
+application dictionaries; `DefaultApplVerID` resolution), via a dual-track dictionary that generates
+typed message structs/field enums/repeating-group structs at build time from the same normalized
+source the runtime `DataDictionary` validates against.
 
 ## Architecture
 
@@ -36,28 +102,30 @@ Async-first engine on **tokio** (TLS via **rustls**), organized as a layered car
 
 | Crate | Responsibility |
 |-------|----------------|
-| `truefix-core` | Field / FieldMap / Group / Message, field types, SOH codec, BodyLength/CheckSum, typed errors |
-| `truefix-dict` | Data dictionary: **build-time codegen of typed messages + runtime `DataDictionary` validation** (dual-track, one source) |
-| `truefix-session` | Session state machine, sequence management, admin messages, scheduling, resend/gap-fill, `NextExpectedMsgSeqNum`, chunked resend |
-| `truefix-store` | `MessageStore` trait + Memory / File / CachedFile / SQL (sqlx) / Noop |
-| `truefix-log` | `Log` trait + Screen / File / Tracing / Composite (message vs event streams) |
-| `truefix-transport` | Initiator + Acceptor, multi/dynamic sessions, reconnect, socket options, rustls TLS |
-| `truefix-config` | `SessionSettings`, `.cfg` parsing with `${name}` interpolation, programmatic config |
-| `truefix` | Facade: re-exports + `Application` trait + `MessageCracker` |
+| `truefix-core` | Field / FieldMap / Group / Message, field types, SOH codec, BodyLength/CheckSum, typed errors, `MessageCracker` contract |
+| `truefix-dict` | Data dictionary: **build-time codegen of typed messages/field-enums/groups + a `crack_<version>` dispatcher**, plus runtime `DataDictionary` validation (dual-track, one source) |
+| `truefix-session` | Session state machine, sequence management, admin messages, weekly scheduling + reset semantics, resend/gap-fill, `NextExpectedMsgSeqNum`, chunked resend, typed callback outcomes, reverse-route |
+| `truefix-store` | `MessageStore` trait + Memory / File (disk-only reads) / CachedFile (bounded in-memory cache + fsync toggle) / SQL (PostgreSQL/MySQL/SQLite via sqlx) / Noop |
+| `truefix-log` | `Log` trait + Screen / File / Tracing / SQL (PostgreSQL/MySQL/SQLite) / Composite, output switches (heartbeat filter, timestamps, visibility), `SessionPrefixLog` decorator |
+| `truefix-transport` | Initiator + Acceptor, multi/dynamic sessions, reconnect + multi-endpoint failover, full socket-option set, rustls TLS/mTLS, `metrics`-facade export |
+| `truefix-config` | `SessionSettings`, `.cfg` parsing with `${name}` interpolation, `resolve()` into a runnable `Engine`-ready configuration, Appendix A key-stance registry |
+| `truefix` | Facade: re-exports + `Application` trait + `MessageCracker` + `Engine::start` (one-shot `.cfg`-driven start) |
 | `truefix-at` | Ported Acceptance Test suite (release gate) |
-| `examples/` | `executor`, `banzai`, `multi_acceptor`, `ordermatch` |
+| `examples/` (`crates/truefix/examples/`) | `executor`, `banzai`, `multi_acceptor`, `ordermatch` |
 
 ### Dual-track data dictionary
 
 Both tracks derive from **one normalized dictionary** (built from the FIX Trading Community's
-Orchestra/Repository specs): build-time codegen gives compile-time-typed messages, while the runtime
+Orchestra/Repository specs): build-time codegen gives compile-time-typed messages (structs, field-value
+enums, typed repeating-group entries, and a `crack_<version>` dispatcher), while the runtime
 `DataDictionary` gives version-agnostic validation, custom dictionaries, and user-defined fields — they
-cannot diverge because they share a single source.
+cannot diverge because they share a single source (proven by an FNV-1a hash test).
 
 ## Roadmap
 
-Delivered in one pass to full parity, but internally **dependency-staged** with a verifiable checkpoint
-per stage (see [`plan.md`](specs/001-fix-engine-parity/plan.md)):
+Delivered **internally dependency-staged** with a verifiable checkpoint per stage.
+
+001 (foundation; see [`plan.md`](specs/001-fix-engine-parity/plan.md)):
 
 ```
 S0 Workspace & CI ─▶ S1 Core codec ─▶ S2 Minimal session ─▶ S3 Recovery/resend ─▶ S4 Data dictionary
@@ -65,13 +133,25 @@ S0 Workspace & CI ─▶ S1 Core codec ─▶ S2 Minimal session ─▶ S3 Recov
    ─▶ S8 TLS/auth/monitoring ─▶ S9 Acceptance Test suite (release gate)
 ```
 
+002 (parity completion; see [`plan.md`](specs/002-qfj-parity-completion/plan.md)):
+
+```
+G1 Persistent resend ─▶ G2 Group parsing/validation ─▶ G3 Config-driven start ─▶ G4 Inbound integrity
+   ─▶ G5 Typed callbacks ─▶ G6 All-version codegen ─▶ G7 TLS/socket/failover ─▶ G8 Schedule reset
+   ─▶ G9 Metrics export ─▶ G10 Storage/logging completeness (release gate: AT suite stays green throughout)
+```
+
 ## Testing & conformance
 
 - Table-driven unit tests for the codec and session state machine.
-- Two-process integration tests (real initiator ↔ acceptor) for handshake, heartbeat, resend, etc.
-- The **AT suite** (`truefix-at`) ports the QuickFIX/QuickFIX-J acceptance scenarios as black-box
-  behavior contracts; **all targeted FIX versions must pass to release**.
-- CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny`, and the AT matrix.
+- Two-process integration tests (real initiator ↔ acceptor) for handshake, heartbeat, resend, TLS/mTLS,
+  failover, restart-survivable persistence, and metrics export.
+- The **AT suite** (`truefix-at`) ports QuickFIX/QuickFIX-J acceptance scenarios as black-box behavior
+  contracts — **56 scenario classes / 81 scenario runs** across FIX.4.2/4.4 — and is the hard release
+  gate (`cargo test -p truefix-at --test conformance`).
+- CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`, `cargo deny`, the AT
+  suite, and a dedicated `sql` job exercising PostgreSQL/MySQL/SQLite store+log backends against real
+  service containers (see [`docs/acceptance-record.md`](docs/acceptance-record.md) for the full mapping).
 
 ## Building & MSRV
 
@@ -80,6 +160,8 @@ cargo build --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p truefix-store -p truefix-log --features sql   # PostgreSQL/MySQL gated on availability
+cargo test -p truefix-at --test conformance                  # AT suite (release gate)
 cargo deny check        # license/advisory gate (requires cargo-deny)
 ```
 

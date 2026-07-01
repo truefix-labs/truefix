@@ -19,7 +19,7 @@ use crate::tags::{
     GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM, POSS_DUP_FLAG,
     RESET_SEQ_NUM_FLAG,
 };
-use crate::time_util::now_utc_timestamp;
+use crate::time_util::now_utc_timestamp_prec;
 
 /// Session lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +45,10 @@ pub enum Event {
     Tick,
     /// The application requested a graceful logout.
     StartLogout,
+    /// A frame failed to decode (bad checksum/body-length/tag). Honors `RejectGarbledMessage`
+    /// (FR-006): emits a session Reject when enabled, otherwise produces no action (silent drop,
+    /// sequence number not advanced).
+    Garbled,
 }
 
 /// A point-in-time snapshot of a session, for monitoring (FR-L1).
@@ -153,6 +157,69 @@ impl Session {
         }
     }
 
+    /// Re-hydrate previously-sent messages from a persistent store so a ResendRequest can replay
+    /// them after a process restart (FR-001/002). Call before [`Event::Connected`]; no effect once a
+    /// logon has been sent or when message persistence is disabled.
+    pub fn seed_sent_messages(&mut self, messages: impl IntoIterator<Item = (u64, Message)>) {
+        if self.logon_sent || !self.config.persist_messages {
+            return;
+        }
+        for (seq, msg) in messages {
+            self.store.insert(seq, msg);
+        }
+    }
+
+    /// Whether sent messages are persisted for replay (PersistMessages; FR-003).
+    pub fn persist_messages(&self) -> bool {
+        self.config.persist_messages
+    }
+
+    /// Discard a previously-stored sent message (e.g. suppressed by an outbound `to_app` callback
+    /// returning `DoNotSend`), so a future ResendRequest gap-fills that sequence number instead of
+    /// replaying content that was never actually transmitted (FR-016).
+    pub fn discard_sent(&mut self, seq: u64) {
+        self.store.remove(&seq);
+    }
+
+    /// Refuse the session in response to an admin/logon callback rejection
+    /// (`Application::from_admin` returning `Err(Reject)`): send a Logout carrying the rejection
+    /// text (if any) and disconnect (FR-016).
+    pub fn reject_logon(&mut self, reject: &truefix_core::Reject) -> Vec<Action> {
+        let seq = self.next_seq();
+        let lo = admin::logout(&self.config, seq, reject.text.as_deref());
+        self.state = SessionState::Disconnected;
+        vec![self.send_stored(lo), Action::Disconnect]
+    }
+
+    /// Emit a Business Message Reject (35=j) in response to `original`, using an
+    /// application-supplied reason/ref-tag/text (`Application::from_app` returning
+    /// `Err(BusinessReject)`; FR-016/FR-008).
+    pub fn business_reject(
+        &mut self,
+        original: &Message,
+        reject: &truefix_core::BusinessReject,
+    ) -> Action {
+        let ref_seq = original
+            .header
+            .get(MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&s| s > 0)
+            .map_or(0, |s| s as u64);
+        let ref_mt = original.msg_type().map(str::to_owned);
+        let seq = self.next_seq();
+        let mut msg = admin::business_message_reject(
+            &self.config,
+            seq,
+            ref_seq,
+            ref_mt.as_deref(),
+            reject.ref_tag,
+            reject.reason,
+            reject.text.as_deref().unwrap_or(""),
+        );
+        msg.reverse_route(original);
+        self.send_stored(msg)
+    }
+
     /// A monitoring snapshot of the session (FR-L1).
     pub fn status(&self) -> SessionStatus {
         SessionStatus {
@@ -176,7 +243,20 @@ impl Session {
             Event::Received(msg) => self.on_received(msg),
             Event::Tick => self.on_tick(),
             Event::StartLogout => self.on_start_logout(),
+            Event::Garbled => self.on_garbled(),
         }
+    }
+
+    /// A frame failed to decode. Per `RejectGarbledMessage` (FR-006), either emit a session
+    /// Reject (35=3, SessionRejectReason=0) or silently drop (no sequence number is available to
+    /// advance, so a drop is always sequence-neutral).
+    fn on_garbled(&mut self) -> Vec<Action> {
+        if !self.config.reject_garbled_message || self.state != SessionState::LoggedOn {
+            return Vec::new();
+        }
+        let seq = self.next_seq();
+        let rej = admin::reject_with_reason(&self.config, seq, 0, None, 0, "garbled message");
+        vec![self.send_stored(rej)]
     }
 
     /// Send an application message: stamps the header (seq, comp IDs, SendingTime), stores it for
@@ -189,7 +269,10 @@ impl Session {
         msg.header
             .set(Field::string(56, &self.config.target_comp_id));
         msg.header.set(Field::int(MSG_SEQ_NUM, seq as i64));
-        msg.header.set(Field::string(52, &now_utc_timestamp()));
+        msg.header.set(Field::string(
+            52,
+            &now_utc_timestamp_prec(self.config.timestamp_precision),
+        ));
         vec![self.send_stored(msg)]
     }
 
@@ -212,13 +295,15 @@ impl Session {
             let last = self.next_in_seq.saturating_sub(1);
             msg.header.set(Field::int(369, last as i64));
         }
-        if let Some(seq) = msg
-            .header
-            .get(MSG_SEQ_NUM)
-            .and_then(|f| f.as_int().ok())
-            .filter(|&s| s > 0)
-        {
-            self.store.insert(seq as u64, msg.clone());
+        if self.config.persist_messages {
+            if let Some(seq) = msg
+                .header
+                .get(MSG_SEQ_NUM)
+                .and_then(|f| f.as_int().ok())
+                .filter(|&s| s > 0)
+            {
+                self.store.insert(seq as u64, msg.clone());
+            }
         }
         Action::Send(msg)
     }
@@ -237,6 +322,30 @@ impl Session {
             self.next_out_seq = 1;
             self.store.clear();
         }
+    }
+
+    /// Detect a BeginString or CompID mismatch (CheckCompID). Returns a Logout reason on failure.
+    fn identity_problem(&self, msg: &Message) -> Option<&'static str> {
+        if let Some(bs) = msg.header.get(8).and_then(|f| f.as_str().ok()) {
+            if bs != self.config.begin_string {
+                return Some("Incorrect BeginString");
+            }
+        }
+        if self.config.check_comp_id {
+            // Inbound SenderCompID(49) is the peer's sender = our target; TargetCompID(56) = ours.
+            // Only a present-but-mismatched value is a CompID problem (absence is a separate concern).
+            if let Some(sender) = msg.header.get(49).and_then(|f| f.as_str().ok()) {
+                if sender != self.config.target_comp_id {
+                    return Some("CompID problem");
+                }
+            }
+            if let Some(target) = msg.header.get(56).and_then(|f| f.as_str().ok()) {
+                if target != self.config.sender_comp_id {
+                    return Some("CompID problem");
+                }
+            }
+        }
+        None
     }
 
     fn latency_ok(&self, msg: &Message) -> bool {
@@ -284,6 +393,14 @@ impl Session {
         if !self.latency_ok(&msg) {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, Some("SendingTime accuracy problem"));
+            self.state = SessionState::Disconnected;
+            return vec![self.send_stored(lo), Action::Disconnect];
+        }
+
+        // BeginString / CheckCompID: a mismatched identity aborts the session (FR-007).
+        if let Some(reason) = self.identity_problem(&msg) {
+            let seq = self.next_seq();
+            let lo = admin::logout(&self.config, seq, Some(reason));
             self.state = SessionState::Disconnected;
             return vec![self.send_stored(lo), Action::Disconnect];
         }
@@ -366,18 +483,27 @@ impl Session {
             .map_or(0, |s| s as u64);
         let ref_mt = msg.msg_type().map(str::to_owned);
         let seq = self.next_seq();
-        let reject = if error.business {
+        let mut reject = if error.business {
             admin::business_message_reject(
                 &self.config,
                 seq,
                 ref_seq,
                 ref_mt.as_deref(),
+                error.ref_tag,
                 error.reason.code(),
                 &error.text,
             )
         } else {
-            admin::reject_with_reason(&self.config, seq, ref_seq, error.reason.code(), &error.text)
+            admin::reject_with_reason(
+                &self.config,
+                seq,
+                ref_seq,
+                error.ref_tag,
+                error.reason.code(),
+                &error.text,
+            )
         };
+        reject.reverse_route(msg);
         Some(self.send_stored(reject))
     }
 
@@ -583,7 +709,8 @@ impl Session {
             .and_then(|f| f.as_str().ok())
             .map(str::to_owned);
         let seq = self.next_seq();
-        let hb = admin::heartbeat(&self.config, seq, id.as_deref());
+        let mut hb = admin::heartbeat(&self.config, seq, id.as_deref());
+        hb.reverse_route(msg);
         vec![self.send_stored(hb)]
     }
 
@@ -634,11 +761,15 @@ impl Session {
                 return vec![Action::Disconnect];
             }
             SessionState::LoggedOn => {
-                if self.ticks_since_recv >= 2 * hb + 2 {
+                if self.ticks_since_recv >= hb * self.config.heartbeat_timeout_multiplier.max(1) + 2
+                {
                     self.enter_disconnected();
                     return vec![Action::Disconnect];
                 }
-                if self.ticks_since_recv > hb && !self.test_request_outstanding {
+                let test_request_delay = f64::from(hb) * self.config.test_request_delay_multiplier;
+                if (self.ticks_since_recv as f64) > test_request_delay
+                    && !self.test_request_outstanding
+                {
                     let seq = self.next_seq();
                     let tr = admin::test_request(&self.config, seq, "TEST");
                     self.test_request_outstanding = true;

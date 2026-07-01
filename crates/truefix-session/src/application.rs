@@ -1,6 +1,10 @@
 //! The integrator callback surface.
+//!
+//! **Breaking change (feature 002 / FR-016)**: the fault-returning callbacks now return typed
+//! outcomes (`Reject`/`DoNotSend`/`BusinessReject`) instead of `Result<(), String>`. See
+//! `MIGRATION.md`.
 
-use truefix_core::Message;
+use truefix_core::{BusinessReject, DoNotSend, Message, Reject};
 
 use crate::session_id::SessionId;
 
@@ -24,21 +28,31 @@ pub trait Application: Send + Sync {
     /// Called before an outbound admin message is sent (allows mutation, e.g. credentials).
     async fn to_admin(&self, _message: &mut Message, _session: &SessionId) {}
 
-    /// Called for an inbound admin message. Returning `Err` rejects the message
-    /// (e.g. failed authentication on Logon).
+    /// Called for an inbound admin message. Returning `Err(Reject)` refuses the session: on a
+    /// Logon, the engine sends a Logout carrying the reject's text (if any) and disconnects
+    /// (e.g. failed authentication) (FR-016).
     // `from_admin` is the established FIX callback name; it intentionally takes `&self`.
     #[allow(clippy::wrong_self_convention)]
-    async fn from_admin(&self, _message: &Message, _session: &SessionId) -> Result<(), String> {
+    async fn from_admin(&self, _message: &Message, _session: &SessionId) -> Result<(), Reject> {
         Ok(())
     }
 
-    /// Called before an outbound application message is sent.
-    async fn to_app(&self, _message: &mut Message, _session: &SessionId) {}
+    /// Called before an outbound application message is sent. Returning `Err(DoNotSend)`
+    /// suppresses the message: it is not written to the wire and not persisted as sent (FR-016).
+    async fn to_app(&self, _message: &mut Message, _session: &SessionId) -> Result<(), DoNotSend> {
+        Ok(())
+    }
 
-    /// Called for an inbound application message.
+    /// Called for an inbound application message. Returning `Err(BusinessReject)` makes the
+    /// engine emit a Business Message Reject (35=j) carrying the given reason and reference tag
+    /// (FR-016).
     // `from_app` is the established FIX callback name; it intentionally takes `&self`.
     #[allow(clippy::wrong_self_convention)]
-    async fn from_app(&self, _message: &Message, _session: &SessionId) -> Result<(), String> {
+    async fn from_app(
+        &self,
+        _message: &Message,
+        _session: &SessionId,
+    ) -> Result<(), BusinessReject> {
         Ok(())
     }
 }

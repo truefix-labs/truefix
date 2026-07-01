@@ -1,6 +1,6 @@
 [package]
 name = "truefix-transport"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -14,9 +14,14 @@ truefix-session.workspace = true
 truefix-dict.workspace = true
 truefix-store.workspace = true
 truefix-log.workspace = true
+truefix-config.workspace = true
+metrics.workspace = true
+socket2 = "0.5"
 tokio.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
+rustls-pki-types.workspace = true
+thiserror.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 time.workspace = true
@@ -30,6 +35,7 @@ truefix-log.workspace = true
 async-trait.workspace = true
 rcgen = "0.13"
 rustls.workspace = true
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 
 [lints]
 workspace = true
