@@ -37,6 +37,8 @@ impl DataDictionary {
             )
         })?;
 
+        let mut seen_once: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+
         for field in message
             .header
             .fields()
@@ -44,6 +46,19 @@ impl DataDictionary {
             .chain(message.trailer.fields())
         {
             let tag = field.tag();
+
+            // Tags that are members of a repeating group legitimately repeat once per entry; only
+            // flag a repeat for tags that are not part of any group in this message.
+            if opts.check_repeated_tags
+                && !mdef.member_tags.contains(&tag)
+                && !seen_once.insert(tag)
+            {
+                return Err(ValidationError::session(
+                    RejectReason::TagAppearsMoreThanOnce,
+                    Some(tag),
+                    "tag appears more than once",
+                ));
+            }
 
             if opts.validate_fields_have_values && field.value_bytes().is_empty() {
                 return Err(ValidationError::session(

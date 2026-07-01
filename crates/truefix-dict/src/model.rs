@@ -318,6 +318,8 @@ pub struct ValidationOptions {
     pub first_field_in_group_is_delimiter: bool,
     /// Reject out-of-order fields within a group entry (ValidateUnorderedGroupFields).
     pub validate_unordered_group_fields: bool,
+    /// Reject a tag that appears more than once outside a repeating group.
+    pub check_repeated_tags: bool,
 }
 
 impl Default for ValidationOptions {
@@ -331,6 +333,7 @@ impl Default for ValidationOptions {
             check_groups: true,
             first_field_in_group_is_delimiter: true,
             validate_unordered_group_fields: true,
+            check_repeated_tags: true,
         }
     }
 }

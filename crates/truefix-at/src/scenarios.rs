@@ -906,6 +906,22 @@ fn incorrect_data_format(v: &str) -> Scenario {
     )
 }
 
+/// 14h — a tag appearing more than once outside a repeating group draws a session-level Reject.
+fn repeated_tag(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.add_field(Field::string(11, "ORDER-1-DUP")); // ClOrdID(11) repeated
+    scenario(
+        "14h_RepeatedTag",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "13")), // Reject: TagAppearsMoreThanOnce
+        ],
+    )
+}
+
 /// 2r — an unregistered (unknown) MsgType draws a Business Message Reject.
 fn unregistered_msg_type(v: &str) -> Scenario {
     scenario(
@@ -1122,6 +1138,7 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(tag_not_defined_for_msg_type("FIX.4.4"));
     out.push(tag_specified_without_value("FIX.4.4"));
     out.push(incorrect_data_format("FIX.4.4"));
+    out.push(repeated_tag("FIX.4.4"));
     out.push(unregistered_msg_type("FIX.4.4"));
     // Special-category suites (T086) requiring per-acceptor session-feature toggles.
     out.push(next_expected_msg_seq_num("FIX.4.4"));
