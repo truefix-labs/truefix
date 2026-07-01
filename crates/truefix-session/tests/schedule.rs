@@ -1,6 +1,7 @@
 //! T064 — session scheduling (daily window, weekdays, NonStop).
+//! T056 (US8) — weekly StartDay/EndDay windows across day boundaries (FR-018/FR-E1).
 
-use time::macros::datetime;
+use time::macros::{datetime, time};
 use time::{Time, Weekday};
 use truefix_session::Schedule;
 
@@ -63,4 +64,20 @@ fn weekday_filter_excludes_weekend() {
     ]);
     assert!(!s.is_in_session(datetime!(2024-01-06 12:00:00 UTC))); // Saturday
     assert!(s.is_in_session(datetime!(2024-01-08 12:00:00 UTC))); // Monday
+}
+
+#[test]
+fn weekly_window_within_same_week_across_integration_boundary() {
+    // Open Monday 09:00, close Friday 17:00 (T056/US8).
+    let s = Schedule::weekly(Weekday::Monday, time!(9:00), Weekday::Friday, time!(17:00));
+    assert!(s.is_in_session(datetime!(2026-06-30 10:00 UTC))); // Tuesday, inside
+    assert!(!s.is_in_session(datetime!(2026-07-04 10:00 UTC))); // Saturday, outside
+}
+
+#[test]
+fn weekly_window_wrapping_the_week_boundary_across_integration() {
+    // Open Friday 18:00, close Monday 08:00 — genuinely wraps in the Sunday-indexed week.
+    let s = Schedule::weekly(Weekday::Friday, time!(18:00), Weekday::Monday, time!(8:00));
+    assert!(s.is_in_session(datetime!(2026-06-27 10:00 UTC))); // Saturday, inside
+    assert!(!s.is_in_session(datetime!(2026-07-01 12:00 UTC))); // Wednesday, outside
 }

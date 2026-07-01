@@ -1,8 +1,9 @@
 //! Session scheduling: when a session should be active.
 //!
-//! Supports 24×7 (NonStopSession), daily windows (StartTime/EndTime), a weekday filter, and a
-//! fixed UTC offset (TimeZone, simplified to a whole-second offset). Named time zones and full
-//! weekly StartDay/EndDay windows can extend this later.
+//! Supports 24×7 (NonStopSession), daily windows (StartTime/EndTime), a weekday filter, a weekly
+//! window (StartDay/EndDay, spanning potentially several days — e.g. "open Sunday 18:00, close
+//! Friday 17:00"), and a fixed UTC offset (TimeZone, simplified to a whole-second offset). Named
+//! time zones can extend this later.
 
 use time::{OffsetDateTime, Time, UtcOffset, Weekday};
 
@@ -19,6 +20,12 @@ pub struct Schedule {
     pub weekdays: Option<Vec<Weekday>>,
     /// Local time-zone offset from UTC, in whole seconds.
     pub utc_offset_seconds: i32,
+    /// Weekly window start day (StartDay), paired with `start_time`. When set together with
+    /// `end_day`, the window spans from this day/time to `end_day`/`end_time`, potentially
+    /// crossing several days (e.g. Sunday evening to Friday evening).
+    pub start_day: Option<Weekday>,
+    /// Weekly window end day (EndDay), paired with `end_time`.
+    pub end_day: Option<Weekday>,
 }
 
 impl Schedule {
@@ -35,6 +42,18 @@ impl Schedule {
         Self {
             start_time: Some(start),
             end_time: Some(end),
+            ..Self::default()
+        }
+    }
+
+    /// A weekly window from `start_day`/`start_time` to `end_day`/`end_time` (StartDay/EndDay),
+    /// potentially spanning several days (e.g. Sunday 18:00 to Friday 17:00).
+    pub fn weekly(start_day: Weekday, start_time: Time, end_day: Weekday, end_time: Time) -> Self {
+        Self {
+            start_time: Some(start_time),
+            end_time: Some(end_time),
+            start_day: Some(start_day),
+            end_day: Some(end_day),
             ..Self::default()
         }
     }
@@ -59,6 +78,14 @@ impl Schedule {
         let offset =
             UtcOffset::from_whole_seconds(self.utc_offset_seconds).unwrap_or(UtcOffset::UTC);
         let local = now_utc.to_offset(offset);
+
+        if let (Some(start_day), Some(end_day)) = (self.start_day, self.end_day) {
+            let (Some(start_time), Some(end_time)) = (self.start_time, self.end_time) else {
+                return true;
+            };
+            return in_weekly_window(local, start_day, start_time, end_day, end_time);
+        }
+
         if let Some(days) = &self.weekdays {
             if !days.contains(&local.weekday()) {
                 return false;
@@ -77,5 +104,63 @@ fn in_window(t: Time, start: Time, end: Time) -> bool {
     } else {
         // window wraps past midnight
         t >= start || t < end
+    }
+}
+
+/// Minutes since Sunday 00:00 (0..10_080), for weekly-window arithmetic.
+fn minutes_since_week_start(weekday: Weekday, t: Time) -> i64 {
+    let day_index = weekday.number_days_from_sunday() as i64; // 0=Sunday .. 6=Saturday
+    day_index * 24 * 60 + i64::from(t.hour()) * 60 + i64::from(t.minute())
+}
+
+/// Whether `local` falls within the weekly window `[start_day/start_time, end_day/end_time)`,
+/// which may wrap across the week boundary (e.g. start=Friday, end=Sunday means the window
+/// spans Fri→Sat→Sun, and also wraps if `local` is early Monday relative to a window that started
+/// the *previous* week — handled by the circular (mod one week) comparison below).
+fn in_weekly_window(
+    local: OffsetDateTime,
+    start_day: Weekday,
+    start_time: Time,
+    end_day: Weekday,
+    end_time: Time,
+) -> bool {
+    let now = minutes_since_week_start(local.weekday(), local.time());
+    let start = minutes_since_week_start(start_day, start_time);
+    let end = minutes_since_week_start(end_day, end_time);
+
+    if start <= end {
+        now >= start && now < end
+    } else {
+        // The window wraps across the week boundary (e.g. starts Friday, ends Sunday).
+        now >= start || now < end
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::{datetime, time};
+
+    #[test]
+    fn weekly_window_within_same_week() {
+        // Open Monday 09:00, close Friday 17:00.
+        let s = Schedule::weekly(Weekday::Monday, time!(9:00), Weekday::Friday, time!(17:00));
+        assert!(s.is_in_session(datetime!(2026-06-30 10:00 UTC))); // Tuesday, mid-window
+        assert!(!s.is_in_session(datetime!(2026-07-04 10:00 UTC))); // Saturday, outside
+        assert!(!s.is_in_session(datetime!(2026-06-29 08:00 UTC))); // Monday, before open
+    }
+
+    #[test]
+    fn weekly_window_wraps_the_week_boundary() {
+        // A window from Friday 18:00 to Monday 08:00: since Friday(day 5) sorts *after*
+        // Monday(day 1) in the Sunday-indexed week, this genuinely wraps past the week
+        // boundary in the underlying minutes-since-Sunday arithmetic.
+        let s = Schedule::weekly(Weekday::Friday, time!(18:00), Weekday::Monday, time!(8:00));
+        assert!(s.is_in_session(datetime!(2026-06-26 19:00 UTC))); // Friday evening, just after open
+        assert!(s.is_in_session(datetime!(2026-06-27 10:00 UTC))); // Saturday, inside
+        assert!(s.is_in_session(datetime!(2026-06-28 20:00 UTC))); // Sunday evening, inside
+        assert!(!s.is_in_session(datetime!(2026-06-26 17:00 UTC))); // Friday, before open
+        assert!(!s.is_in_session(datetime!(2026-06-29 10:00 UTC))); // Monday, after close
+        assert!(!s.is_in_session(datetime!(2026-07-01 12:00 UTC))); // Wednesday, outside
     }
 }

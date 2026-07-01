@@ -160,11 +160,11 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Session-layer scheduled reset + weekly StartDay/EndDay (FR-018).
 **Independent test**: Boundary crossing performs disconnect→reset→clear-store→reconnect; weekly windows correct; non-stop unaffected (SC-009).
 
-- [ ] T056 [P] [US8] Weekly `is_in_session` tests across day boundaries in `crates/truefix-session/tests/schedule.rs`
-- [ ] T057 [P] [US8] Schedule-reset integration (disconnect→reset→clear-store→reconnect; non-stop skip) in `crates/truefix-session/tests/schedule_reset.rs`
-- [ ] T058 [US8] Add `StartDay`/`EndDay` weekly windows to `crates/truefix-session/src/schedule.rs`
-- [ ] T059 [US8] Implement `schedule_reset` boundary semantics in `crates/truefix-session/src/schedule_reset.rs` (new), wired in `crates/truefix-transport/src/lib.rs`
-- [ ] T060 [US8] Stance updates for `StartDay`/`EndDay`/schedule keys in `crates/truefix-config/src/keys.rs`
+- [X] T056 [P] [US8] Weekly `is_in_session` tests across day boundaries in `crates/truefix-session/tests/schedule.rs`
+- [X] T057 [P] [US8] Schedule-reset integration (disconnect→reset→clear-store→reconnect; non-stop skip) in `crates/truefix-session/tests/schedule_reset.rs`
+- [X] T058 [US8] Add `StartDay`/`EndDay` weekly windows to `crates/truefix-session/src/schedule.rs`
+- [X] T059 [US8] Implement `schedule_reset` boundary semantics in `crates/truefix-session/src/schedule_reset.rs` (new), wired in `crates/truefix-transport/src/lib.rs`
+- [X] T060 [US8] Stance updates for `StartDay`/`EndDay`/schedule keys in `crates/truefix-config/src/keys.rs`
 
 **Checkpoint G8**: schedule-reset + weekly tests green (SC-009); gate green.
 

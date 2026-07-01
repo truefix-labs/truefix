@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 
+use time::Weekday;
 use truefix_session::{Role, Schedule, SessionConfig, TimeStampPrecision};
 use truefix_store::StoreConfig;
 
@@ -193,9 +194,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     )?;
     cfg.timestamp_precision =
         precision_key(map, "TimeStampPrecision", &session, cfg.timestamp_precision)?;
-    if bool_key(map, "NonStopSession", false) {
-        cfg.schedule = Some(Schedule::non_stop());
-    }
+    cfg.schedule = resolve_schedule(map, &session)?;
 
     let address = resolve_address(map, connection, &session)?;
     let store = resolve_store(map);
@@ -286,4 +285,120 @@ fn resolve_store(map: &Map) -> StoreConfig {
         },
         None => StoreConfig::Memory,
     }
+}
+
+/// Resolve `NonStopSession`/`StartTime`/`EndTime`/`Weekdays`/`TimeZone`/`StartDay`/`EndDay` into a
+/// [`Schedule`] (FR-018/FR-E1). `None` means no schedule restriction (always active), matching the
+/// engine's pre-existing default when no schedule keys are given.
+fn resolve_schedule(map: &Map, session: &str) -> Result<Option<Schedule>, ConfigError> {
+    if bool_key(map, "NonStopSession", false) {
+        return Ok(Some(Schedule::non_stop()));
+    }
+    let start_time = map
+        .get("StartTime")
+        .map(|v| parse_time(v, "StartTime", session))
+        .transpose()?;
+    let end_time = map
+        .get("EndTime")
+        .map(|v| parse_time(v, "EndTime", session))
+        .transpose()?;
+    let start_day = map
+        .get("StartDay")
+        .map(|v| parse_weekday(v, "StartDay", session))
+        .transpose()?;
+    let end_day = map
+        .get("EndDay")
+        .map(|v| parse_weekday(v, "EndDay", session))
+        .transpose()?;
+
+    let schedule = match (start_day, end_day, start_time, end_time) {
+        (Some(sd), Some(ed), Some(st), Some(et)) => Schedule::weekly(sd, st, ed, et),
+        (None, None, Some(st), Some(et)) => Schedule::daily(st, et),
+        (None, None, None, None) => return Ok(None),
+        _ => {
+            return Err(ConfigError::InvalidValue {
+                key: "StartTime/EndTime/StartDay/EndDay".to_owned(),
+                session: session.to_owned(),
+                reason: "StartDay/EndDay require both, alongside StartTime/EndTime".to_owned(),
+            })
+        }
+    };
+
+    let schedule = match map.get("Weekdays") {
+        Some(list) => {
+            let days = list
+                .split(',')
+                .map(|d| parse_weekday(d.trim(), "Weekdays", session))
+                .collect::<Result<Vec<_>, _>>()?;
+            schedule.with_weekdays(days)
+        }
+        None => schedule,
+    };
+    let schedule = match map.get("TimeZone") {
+        Some(tz) => schedule.with_utc_offset_seconds(parse_utc_offset(tz, session)?),
+        None => schedule,
+    };
+    Ok(Some(schedule))
+}
+
+/// Parse `HH:MM:SS` (or `HH:MM`) as a local time-of-day.
+fn parse_time(v: &str, key: &str, session: &str) -> Result<time::Time, ConfigError> {
+    let bad = || ConfigError::InvalidValue {
+        key: key.to_owned(),
+        session: session.to_owned(),
+        reason: format!("expected HH:MM:SS, got {v:?}"),
+    };
+    let mut parts = v.splitn(3, ':');
+    let hour: u8 = parts.next().and_then(|s| s.parse().ok()).ok_or_else(bad)?;
+    let minute: u8 = parts.next().and_then(|s| s.parse().ok()).ok_or_else(bad)?;
+    let second: u8 = match parts.next() {
+        Some(s) => s.parse().map_err(|_| bad())?,
+        None => 0,
+    };
+    time::Time::from_hms(hour, minute, second).map_err(|_| bad())
+}
+
+/// Parse a weekday name (`Monday`/`Mon`, case-insensitive).
+fn parse_weekday(v: &str, key: &str, session: &str) -> Result<Weekday, ConfigError> {
+    let lower = v.trim().to_ascii_lowercase();
+    let day = match lower.as_str() {
+        "monday" | "mon" => Weekday::Monday,
+        "tuesday" | "tue" => Weekday::Tuesday,
+        "wednesday" | "wed" => Weekday::Wednesday,
+        "thursday" | "thu" => Weekday::Thursday,
+        "friday" | "fri" => Weekday::Friday,
+        "saturday" | "sat" => Weekday::Saturday,
+        "sunday" | "sun" => Weekday::Sunday,
+        _ => {
+            return Err(ConfigError::InvalidValue {
+                key: key.to_owned(),
+                session: session.to_owned(),
+                reason: format!("expected a weekday name, got {v:?}"),
+            })
+        }
+    };
+    Ok(day)
+}
+
+/// Parse a `TimeZone` value as a signed numeric UTC offset (`+HH:MM`/`-HH:MM`). Named zones (e.g.
+/// `America/New_York`) are not resolvable without a time-zone database and are rejected with a
+/// typed error rather than silently defaulting to UTC.
+fn parse_utc_offset(v: &str, session: &str) -> Result<i32, ConfigError> {
+    let bad = || ConfigError::InvalidValue {
+        key: "TimeZone".to_owned(),
+        session: session.to_owned(),
+        reason: format!("expected a numeric offset like +05:00/-03:00, got {v:?}"),
+    };
+    let (sign, rest) = match v.as_bytes().first() {
+        Some(b'+') => (1i32, v.get(1..).unwrap_or("")),
+        Some(b'-') => (-1i32, v.get(1..).unwrap_or("")),
+        _ => return Err(bad()),
+    };
+    let mut parts = rest.splitn(2, ':');
+    let hours: i32 = parts.next().and_then(|s| s.parse().ok()).ok_or_else(bad)?;
+    let minutes: i32 = match parts.next() {
+        Some(s) => s.parse().map_err(|_| bad())?,
+        None => 0,
+    };
+    Ok(sign * (hours * 3600 + minutes * 60))
 }

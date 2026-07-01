@@ -101,8 +101,8 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     // Scheduling
     k("StartTime", "scheduling", Impl),
     k("EndTime", "scheduling", Impl),
-    k("StartDay", "scheduling", Rec),
-    k("EndDay", "scheduling", Rec),
+    k("StartDay", "scheduling", Impl),
+    k("EndDay", "scheduling", Impl),
     k("Weekdays", "scheduling", Impl),
     k("TimeZone", "scheduling", Impl),
     k("NonStopSession", "scheduling", Impl),

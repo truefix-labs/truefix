@@ -1055,30 +1055,33 @@ where
         let mut current: Option<SessionHandle> = None;
         let mut was_in_session = false;
         while !loop_stop.load(Ordering::SeqCst) {
-            let in_session = schedule.is_in_session(time::OffsetDateTime::now_utc());
-            match (in_session, current.is_some()) {
-                (true, false) => {
-                    if !was_in_session {
-                        // Entering a session window: reset persisted state.
-                        if let Some(store) = &services.store {
-                            let _ = store.reset().await;
-                        }
-                    }
-                    if let Ok(handle) =
-                        connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
-                            .await
-                    {
-                        current = Some(handle);
+            let now = time::OffsetDateTime::now_utc();
+            // The boundary-crossing decision (reset-on-entry / logout-on-exit) is a pure,
+            // tested function in truefix-session (FR-018/FR-E3).
+            match truefix_session::decide_schedule_action(&schedule, was_in_session, now) {
+                truefix_session::ScheduleAction::Enter => {
+                    if let Some(store) = &services.store {
+                        let _ = store.reset().await;
                     }
                 }
-                (false, true) => {
+                truefix_session::ScheduleAction::Exit => {
                     if let Some(handle) = current.take() {
                         handle.logout().await;
                     }
                 }
-                _ => {}
+                truefix_session::ScheduleAction::None => {}
             }
-            was_in_session = in_session;
+            was_in_session = schedule.non_stop || schedule.is_in_session(now);
+            // Independently of the boundary decision, keep retrying a connection while in
+            // session and disconnected (e.g. after a transient network drop).
+            if was_in_session && current.is_none() {
+                if let Ok(handle) =
+                    connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
+                        .await
+                {
+                    current = Some(handle);
+                }
+            }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         if let Some(handle) = current.take() {
