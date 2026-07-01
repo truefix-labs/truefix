@@ -108,7 +108,11 @@ pub async fn start_acceptor(
     #[async_trait::async_trait]
     impl Application for AtApp {
         async fn on_logon(&self, _s: &SessionId) {}
-        async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), String> {
+        async fn from_app(
+            &self,
+            message: &Message,
+            id: &SessionId,
+        ) -> Result<(), truefix_core::BusinessReject> {
             if let Some(monitor) = &self.monitor {
                 if message.msg_type() == Some("D") {
                     // A sentinel ClOrdID lets a scenario trigger an acceptor-initiated logout.

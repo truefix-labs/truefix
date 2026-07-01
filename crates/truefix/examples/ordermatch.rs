@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use truefix_core::{Field, Message};
+use truefix_core::{BusinessReject, Field, Message};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::{AcceptorBuilder, Monitor, Services};
 
@@ -27,7 +27,7 @@ struct OrderMatch {
 
 #[async_trait::async_trait]
 impl Application for OrderMatch {
-    async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), String> {
+    async fn from_app(&self, message: &Message, id: &SessionId) -> Result<(), BusinessReject> {
         if message.msg_type() != Some("D") {
             return Ok(());
         }
@@ -36,7 +36,11 @@ impl Application for OrderMatch {
         let cl_ord_id = field(message, 11);
 
         let opposite = {
-            let mut book = self.book.lock().map_err(|_| "book poisoned".to_owned())?;
+            let mut book = self.book.lock().map_err(|_| BusinessReject {
+                reason: 99,
+                ref_tag: None,
+                text: Some("book poisoned".to_owned()),
+            })?;
             let entry = book.entry(symbol.clone()).or_default();
             let (buys, sells) = entry;
             let incoming = RestingOrder {

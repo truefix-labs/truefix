@@ -174,6 +174,52 @@ impl Session {
         self.config.persist_messages
     }
 
+    /// Discard a previously-stored sent message (e.g. suppressed by an outbound `to_app` callback
+    /// returning `DoNotSend`), so a future ResendRequest gap-fills that sequence number instead of
+    /// replaying content that was never actually transmitted (FR-016).
+    pub fn discard_sent(&mut self, seq: u64) {
+        self.store.remove(&seq);
+    }
+
+    /// Refuse the session in response to an admin/logon callback rejection
+    /// (`Application::from_admin` returning `Err(Reject)`): send a Logout carrying the rejection
+    /// text (if any) and disconnect (FR-016).
+    pub fn reject_logon(&mut self, reject: &truefix_core::Reject) -> Vec<Action> {
+        let seq = self.next_seq();
+        let lo = admin::logout(&self.config, seq, reject.text.as_deref());
+        self.state = SessionState::Disconnected;
+        vec![self.send_stored(lo), Action::Disconnect]
+    }
+
+    /// Emit a Business Message Reject (35=j) in response to `original`, using an
+    /// application-supplied reason/ref-tag/text (`Application::from_app` returning
+    /// `Err(BusinessReject)`; FR-016/FR-008).
+    pub fn business_reject(
+        &mut self,
+        original: &Message,
+        reject: &truefix_core::BusinessReject,
+    ) -> Action {
+        let ref_seq = original
+            .header
+            .get(MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&s| s > 0)
+            .map_or(0, |s| s as u64);
+        let ref_mt = original.msg_type().map(str::to_owned);
+        let seq = self.next_seq();
+        let mut msg = admin::business_message_reject(
+            &self.config,
+            seq,
+            ref_seq,
+            ref_mt.as_deref(),
+            reject.ref_tag,
+            reject.reason,
+            reject.text.as_deref().unwrap_or(""),
+        );
+        msg.reverse_route(original);
+        self.send_stored(msg)
+    }
+
     /// A monitoring snapshot of the session (FR-L1).
     pub fn status(&self) -> SessionStatus {
         SessionStatus {
@@ -209,7 +255,7 @@ impl Session {
             return Vec::new();
         }
         let seq = self.next_seq();
-        let rej = admin::reject_with_reason(&self.config, seq, 0, 0, "garbled message");
+        let rej = admin::reject_with_reason(&self.config, seq, 0, None, 0, "garbled message");
         vec![self.send_stored(rej)]
     }
 
@@ -443,11 +489,19 @@ impl Session {
                 seq,
                 ref_seq,
                 ref_mt.as_deref(),
+                error.ref_tag,
                 error.reason.code(),
                 &error.text,
             )
         } else {
-            admin::reject_with_reason(&self.config, seq, ref_seq, error.reason.code(), &error.text)
+            admin::reject_with_reason(
+                &self.config,
+                seq,
+                ref_seq,
+                error.ref_tag,
+                error.reason.code(),
+                &error.text,
+            )
         };
         reject.reverse_route(msg);
         Some(self.send_stored(reject))

@@ -535,19 +535,26 @@ where
                         log.on_incoming(&String::from_utf8_lossy(&raw));
                     }
                     // Authentication / admin acceptance: an admin message the application rejects
-                    // (e.g. a Logon with bad credentials) tears the session down without a response.
+                    // (e.g. a Logon with bad credentials) sends a Logout with the reject's text (if
+                    // any) and tears the session down (FR-016).
                     if is_admin(&msg) {
-                        if app.from_admin(&msg, id).await.is_err() {
+                        if let Err(reject) = app.from_admin(&msg, id).await {
                             if let Some(log) = &services.log {
                                 log.on_event(&format!(
-                                    "{id}: admin message rejected by application"
+                                    "{id}: admin message rejected by application: {reject}"
                                 ));
                             }
+                            let actions = session.reject_logon(&reject);
+                            let _ =
+                                perform_actions(actions, session, stream, app, id, services).await;
                             return Err(());
                         }
-                    } else {
-                        // Business rejects are produced by the dictionary hook; deliver regardless.
-                        let _ = app.from_app(&msg, id).await;
+                    } else if let Err(breject) = app.from_app(&msg, id).await {
+                        // Dictionary-driven business rejects are handled separately; this is the
+                        // application-supplied one (FR-016). Sequence processing still proceeds.
+                        let action = session.business_reject(&msg, &breject);
+                        let _ =
+                            perform_actions(vec![action], session, stream, app, id, services).await;
                     }
                     dispatch(
                         session,
@@ -609,28 +616,7 @@ where
         }
     }
 
-    let mut disconnect = false;
-    for action in actions {
-        match action {
-            Action::Send(mut msg) => {
-                if is_admin(&msg) {
-                    app.to_admin(&mut msg, id).await;
-                } else {
-                    app.to_app(&mut msg, id).await;
-                }
-                let bytes = msg.encode();
-                if let Some(log) = &services.log {
-                    log.on_outgoing(&String::from_utf8_lossy(&bytes));
-                }
-                if stream.write_all(&bytes).await.is_err() {
-                    return Err(());
-                }
-                persist_sent(&msg, &bytes, session, services).await;
-            }
-            Action::Disconnect => disconnect = true,
-        }
-    }
-    let _ = stream.flush().await;
+    let disconnect = perform_actions(actions, session, stream, app, id, services).await?;
 
     // Persist sequence numbers for restart continuity (best-effort).
     if let Some(store) = &services.store {
@@ -647,6 +633,54 @@ where
     } else {
         Ok(())
     }
+}
+
+/// Perform a batch of engine [`Action`]s: invoke the `to_admin`/`to_app` hooks (honoring an
+/// outbound `DoNotSend` by discarding the message from the resend store instead of writing it),
+/// log, encode, write, and persist each send. Returns whether a disconnect was requested.
+async fn perform_actions<A, S>(
+    actions: Vec<Action>,
+    session: &mut Session,
+    stream: &mut S,
+    app: &Arc<A>,
+    id: &SessionId,
+    services: &Services,
+) -> Result<bool, ()>
+where
+    A: Application + 'static,
+    S: AsyncWrite + Unpin,
+{
+    let mut disconnect = false;
+    for action in actions {
+        match action {
+            Action::Send(mut msg) => {
+                if is_admin(&msg) {
+                    app.to_admin(&mut msg, id).await;
+                } else if app.to_app(&mut msg, id).await.is_err() {
+                    if let Some(seq) = msg
+                        .header
+                        .get(34)
+                        .and_then(|f| f.as_int().ok())
+                        .filter(|&s| s > 0)
+                    {
+                        session.discard_sent(seq as u64);
+                    }
+                    continue;
+                }
+                let bytes = msg.encode();
+                if let Some(log) = &services.log {
+                    log.on_outgoing(&String::from_utf8_lossy(&bytes));
+                }
+                if stream.write_all(&bytes).await.is_err() {
+                    return Err(());
+                }
+                persist_sent(&msg, &bytes, session, services).await;
+            }
+            Action::Disconnect => disconnect = true,
+        }
+    }
+    let _ = stream.flush().await;
+    Ok(disconnect)
 }
 
 fn is_admin(msg: &Message) -> bool {
@@ -692,20 +726,8 @@ where
     A: Application + 'static,
     S: AsyncWrite + Unpin,
 {
-    for action in session.send_app(message) {
-        if let Action::Send(mut msg) = action {
-            app.to_app(&mut msg, id).await;
-            let bytes = msg.encode();
-            if let Some(log) = &services.log {
-                log.on_outgoing(&String::from_utf8_lossy(&bytes));
-            }
-            if stream.write_all(&bytes).await.is_err() {
-                return Err(());
-            }
-            persist_sent(&msg, &bytes, session, services).await;
-        }
-    }
-    let _ = stream.flush().await;
+    let actions = session.send_app(message);
+    perform_actions(actions, session, stream, app, id, services).await?;
     if let Some(store) = &services.store {
         let _ = store.set_next_sender_seq(session.next_out_seq()).await;
     }

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use truefix_core::{Field, Message};
+use truefix_core::{BusinessReject, Field, Message};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::connect_initiator;
 
@@ -16,7 +16,7 @@ impl Application for Client {
     async fn on_logon(&self, id: &SessionId) {
         println!("banzai: logon {id}");
     }
-    async fn from_app(&self, message: &Message, _id: &SessionId) -> Result<(), String> {
+    async fn from_app(&self, message: &Message, _id: &SessionId) -> Result<(), BusinessReject> {
         if message.msg_type() == Some("8") {
             println!("banzai: received ExecutionReport");
         }

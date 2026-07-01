@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use truefix_core::{Field, Message};
+use truefix_core::{Field, Message, Reject};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::{connect_initiator, AcceptorBuilder};
 
@@ -35,11 +35,15 @@ struct AuthApp {
 
 #[async_trait::async_trait]
 impl Application for AuthApp {
-    async fn from_admin(&self, message: &Message, _s: &SessionId) -> Result<(), String> {
+    async fn from_admin(&self, message: &Message, _s: &SessionId) -> Result<(), Reject> {
         if message.msg_type() == Some("A") {
             let password = message.body.get(554).and_then(|f| f.as_str().ok());
             if password != Some(self.expected.as_str()) {
-                return Err("authentication failed".to_owned());
+                return Err(Reject {
+                    reason: 0,
+                    ref_tag: None,
+                    text: Some("authentication failed".to_owned()),
+                });
             }
         }
         Ok(())

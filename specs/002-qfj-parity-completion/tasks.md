@@ -112,11 +112,11 @@ every checkpoint (SC-013). No reference source/data copied (Principle III).
 **Goal**: Typed Reject/DoNotSend/BusinessReject callback results — breaking change (FR-016).
 **Independent test**: Callbacks cause refused logon / suppressed send / emitted 35=j with reason+ref tag (SC-006).
 
-- [ ] T038 [P] [US5] AT/session tests for each typed outcome's effect in `crates/truefix-at/src/scenarios.rs`
-- [ ] T039 [US5] Fill `Reject`/`DoNotSend`/`BusinessReject` types (reason code + optional ref tag) in `crates/truefix-core/src/error.rs`
-- [ ] T040 [US5] Change `Application` callback signatures and plumb engine effects (refuse logon / suppress + don't store send / emit 35=j) in `crates/truefix-session/src/application.rs` + `crates/truefix-session/src/state.rs` + `crates/truefix/src/application.rs`
-- [ ] T041 [US5] Update examples to the typed callbacks in `crates/truefix/examples/{executor,banzai,ordermatch,multi_acceptor}.rs`
-- [ ] T042 [US5] Write the callback migration section in `MIGRATION.md` + record the semver bump (Principle I; addresses checklist CHK012)
+- [X] T038 [P] [US5] AT/session tests for each typed outcome's effect in `crates/truefix-at/src/scenarios.rs`
+- [X] T039 [US5] Fill `Reject`/`DoNotSend`/`BusinessReject` types (reason code + optional ref tag) in `crates/truefix-core/src/error.rs`
+- [X] T040 [US5] Change `Application` callback signatures and plumb engine effects (refuse logon / suppress + don't store send / emit 35=j) in `crates/truefix-session/src/application.rs` + `crates/truefix-session/src/state.rs` + `crates/truefix/src/application.rs`
+- [X] T041 [US5] Update examples to the typed callbacks in `crates/truefix/examples/{executor,banzai,ordermatch,multi_acceptor}.rs`
+- [X] T042 [US5] Write the callback migration section in `MIGRATION.md` + record the semver bump (Principle I; addresses checklist CHK012)
 
 **Checkpoint G5**: typed-callback effects verified; migration documented; gate green.
 
