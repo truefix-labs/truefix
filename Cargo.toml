@@ -28,7 +28,7 @@ thiserror = "2"
 rust_decimal = "1"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
 tracing = "0.1"
 metrics = "0.24"
 async-trait = "0.1"

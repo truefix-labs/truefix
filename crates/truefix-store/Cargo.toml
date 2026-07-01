@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 thiserror.workspace = true
 async-trait.workspace = true
-sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "mysql"] }
+sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "mysql-rsa"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

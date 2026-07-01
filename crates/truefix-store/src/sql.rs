@@ -150,73 +150,73 @@ impl SqlStore {
         let messages = &self.messages_table;
         match &self.pool {
             Pool::Sqlite(pool) => {
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {sessions} (\
                      session_id TEXT NOT NULL PRIMARY KEY, sender INTEGER NOT NULL, target INTEGER NOT NULL)"
-                ))
+                )))
                 .execute(pool)
                 .await
                 .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {messages} (\
                      session_id TEXT NOT NULL, seq INTEGER NOT NULL, data BLOB NOT NULL, \
                      PRIMARY KEY (session_id, seq))"
-                ))
+                )))
                 .execute(pool)
                 .await
                 .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "INSERT OR IGNORE INTO {sessions} (session_id, sender, target) VALUES (?, 1, 1)"
-                ))
+                )))
                 .bind(&self.session_id)
                 .execute(pool)
                 .await
                 .map_err(backend)?;
             }
             Pool::Postgres(pool) => {
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {sessions} (\
                      session_id TEXT PRIMARY KEY, sender BIGINT NOT NULL, target BIGINT NOT NULL)"
-                ))
+                )))
                 .execute(pool)
                 .await
                 .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {messages} (\
                      session_id TEXT NOT NULL, seq BIGINT NOT NULL, data BYTEA NOT NULL, \
                      PRIMARY KEY (session_id, seq))"
-                ))
+                )))
                 .execute(pool)
                 .await
                 .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "INSERT INTO {sessions} (session_id, sender, target) VALUES ($1, 1, 1) \
                      ON CONFLICT (session_id) DO NOTHING"
-                ))
+                )))
                 .bind(&self.session_id)
                 .execute(pool)
                 .await
                 .map_err(backend)?;
             }
             Pool::MySql(pool) => {
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {sessions} (\
                      session_id VARCHAR(255) PRIMARY KEY, sender BIGINT NOT NULL, target BIGINT NOT NULL)"
-                ))
+                )))
                 .execute(pool)
                 .await
                 .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {messages} (\
                      session_id VARCHAR(255) NOT NULL, seq BIGINT NOT NULL, data BLOB NOT NULL, \
                      PRIMARY KEY (session_id, seq))"
-                ))
+                )))
                 .execute(pool)
                 .await
                 .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "INSERT IGNORE INTO {sessions} (session_id, sender, target) VALUES (?, 1, 1)"
-                ))
+                )))
                 .bind(&self.session_id)
                 .execute(pool)
                 .await
@@ -231,7 +231,7 @@ impl SqlStore {
         let value: i64 = match &self.pool {
             Pool::Sqlite(pool) => {
                 let sql = format!("SELECT {column} FROM {sessions} WHERE session_id = ?");
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .fetch_one(pool)
                     .await
@@ -241,7 +241,7 @@ impl SqlStore {
             }
             Pool::Postgres(pool) => {
                 let sql = format!("SELECT {column} FROM {sessions} WHERE session_id = $1");
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .fetch_one(pool)
                     .await
@@ -251,7 +251,7 @@ impl SqlStore {
             }
             Pool::MySql(pool) => {
                 let sql = format!("SELECT {column} FROM {sessions} WHERE session_id = ?");
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .fetch_one(pool)
                     .await
@@ -269,7 +269,7 @@ impl SqlStore {
         match &self.pool {
             Pool::Sqlite(pool) => {
                 let sql = format!("UPDATE {sessions} SET {column} = ? WHERE session_id = ?");
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(seq)
                     .bind(&self.session_id)
                     .execute(pool)
@@ -278,7 +278,7 @@ impl SqlStore {
             }
             Pool::Postgres(pool) => {
                 let sql = format!("UPDATE {sessions} SET {column} = $1 WHERE session_id = $2");
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(seq)
                     .bind(&self.session_id)
                     .execute(pool)
@@ -287,7 +287,7 @@ impl SqlStore {
             }
             Pool::MySql(pool) => {
                 let sql = format!("UPDATE {sessions} SET {column} = ? WHERE session_id = ?");
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(seq)
                     .bind(&self.session_id)
                     .execute(pool)
@@ -348,7 +348,7 @@ impl MessageStore for SqlStore {
                 let sql = format!(
                     "INSERT OR REPLACE INTO {messages} (session_id, seq, data) VALUES (?, ?, ?)"
                 );
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .bind(seq_i)
                     .bind(message)
@@ -361,7 +361,7 @@ impl MessageStore for SqlStore {
                     "INSERT INTO {messages} (session_id, seq, data) VALUES ($1, $2, $3) \
                      ON CONFLICT (session_id, seq) DO UPDATE SET data = EXCLUDED.data"
                 );
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .bind(seq_i)
                     .bind(message)
@@ -374,7 +374,7 @@ impl MessageStore for SqlStore {
                     "INSERT INTO {messages} (session_id, seq, data) VALUES (?, ?, ?) \
                      ON DUPLICATE KEY UPDATE data = VALUES(data)"
                 );
-                sqlx::query(&sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .bind(seq_i)
                     .bind(message)
@@ -396,7 +396,7 @@ impl MessageStore for SqlStore {
                 let sql = format!(
                     "SELECT seq, data FROM {messages} WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq"
                 );
-                let rows = sqlx::query(&sql)
+                let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .bind(begin_i)
                     .bind(end_i)
@@ -415,7 +415,7 @@ impl MessageStore for SqlStore {
                 let sql = format!(
                     "SELECT seq, data FROM {messages} WHERE session_id = $1 AND seq BETWEEN $2 AND $3 ORDER BY seq"
                 );
-                let rows = sqlx::query(&sql)
+                let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .bind(begin_i)
                     .bind(end_i)
@@ -434,7 +434,7 @@ impl MessageStore for SqlStore {
                 let sql = format!(
                     "SELECT seq, data FROM {messages} WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq"
                 );
-                let rows = sqlx::query(&sql)
+                let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(&self.session_id)
                     .bind(begin_i)
                     .bind(end_i)
@@ -456,42 +456,48 @@ impl MessageStore for SqlStore {
         let messages = &self.messages_table;
         match &self.pool {
             Pool::Sqlite(pool) => {
-                sqlx::query(&format!("DELETE FROM {messages} WHERE session_id = ?"))
-                    .bind(&self.session_id)
-                    .execute(pool)
-                    .await
-                    .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DELETE FROM {messages} WHERE session_id = ?"
+                )))
+                .bind(&self.session_id)
+                .execute(pool)
+                .await
+                .map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "UPDATE {sessions} SET sender = 1, target = 1 WHERE session_id = ?"
-                ))
+                )))
                 .bind(&self.session_id)
                 .execute(pool)
                 .await
                 .map_err(backend)?;
             }
             Pool::Postgres(pool) => {
-                sqlx::query(&format!("DELETE FROM {messages} WHERE session_id = $1"))
-                    .bind(&self.session_id)
-                    .execute(pool)
-                    .await
-                    .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DELETE FROM {messages} WHERE session_id = $1"
+                )))
+                .bind(&self.session_id)
+                .execute(pool)
+                .await
+                .map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "UPDATE {sessions} SET sender = 1, target = 1 WHERE session_id = $1"
-                ))
+                )))
                 .bind(&self.session_id)
                 .execute(pool)
                 .await
                 .map_err(backend)?;
             }
             Pool::MySql(pool) => {
-                sqlx::query(&format!("DELETE FROM {messages} WHERE session_id = ?"))
-                    .bind(&self.session_id)
-                    .execute(pool)
-                    .await
-                    .map_err(backend)?;
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DELETE FROM {messages} WHERE session_id = ?"
+                )))
+                .bind(&self.session_id)
+                .execute(pool)
+                .await
+                .map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     "UPDATE {sessions} SET sender = 1, target = 1 WHERE session_id = ?"
-                ))
+                )))
                 .bind(&self.session_id)
                 .execute(pool)
                 .await

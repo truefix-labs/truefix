@@ -12,7 +12,7 @@ publish = false
 thiserror.workspace = true
 tracing.workspace = true
 time.workspace = true
-sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "mysql"] }
+sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "mysql-rsa"] }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -66,6 +66,19 @@ migration, since recent `rustls-pemfile` versions are already a thin wrapper ove
 `load_certs`/`load_private_key` in `tls_config.rs` call `CertificateDer::pem_file_iter`/
 `PrivateKeyDer::from_pem_file` directly instead of going through the removed crate.
 
+`sqlx` was bumped `0.8` → `0.9` (also fixing the `getrandom` duplicate-version warning's severity
+mismatch and confirming no new copyleft licenses entered the graph). In 0.9, `sqlx-mysql` made the
+`rsa` dependency an opt-in `mysql-rsa` feature rather than a mandatory one; enabling it still pulls
+a version affected by RUSTSEC-2023-0071 (Marvin Attack: RSA private-key timing sidechannel, no
+patched version exists). This is deliberately **kept enabled and the advisory ignored** in
+`deny.toml` rather than dropped: MySQL 8's default `caching_sha2_password` auth plugin requires
+this exact RSA public-key exchange on a fresh, non-TLS connection — exercised for real by CI's own
+`sql` job (a live `mysql:8` service container) — and the advisory's actual risk (leaking a
+*private* key via decryption timing) doesn't apply to our usage, which only performs public-key
+*encryption* client-side and never holds or uses an RSA private key. Dropping the feature to chase
+a clean `cargo deny` run would trade a non-applicable advisory for a real, working-functionality
+regression.
+
 ## Feature 002 — US6: all-message typed codegen + MessageCracker (Principle IV complete)
 
 `build.rs` now generates, per bundled dictionary version (`fix40`..`fix50sp2`, `fixt11`), from the

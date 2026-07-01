@@ -29,6 +29,12 @@ jobs:
   deny:
     name: cargo-deny (licenses/advisories)
     runs-on: ubuntu-latest
+    # cargo-deny-action runs its own bundled toolchain inside a container (musl-targeted); our
+    # rust-toolchain.toml pins an exact channel for our own dev/CI builds, which the container
+    # doesn't have installed for its (non-gnu) host target. RUSTUP_TOOLCHAIN overrides the
+    # toolchain-file lookup so the action's own bundled toolchain is used instead.
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2

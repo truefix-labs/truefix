@@ -23,6 +23,19 @@ wildcards = "allow"
 
 [advisories]
 yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071 (Marvin Attack: RSA private-key timing sidechannel), no patched version
+    # exists yet. Transitive via sqlx-mysql's optional `rsa` feature, used only for MySQL 8's
+    # `caching_sha2_password` full-authentication handshake (client encrypts the password with the
+    # server's RSA *public* key). The advisory's actual risk is leaking a *private* key through
+    # decryption timing; our client-side code only performs public-key encryption and never holds
+    # or uses an RSA private key, so the vulnerable code path isn't reachable here. Dropping the
+    # dependency instead (disabling sqlx's `mysql-rsa` feature) breaks real, currently-exercised
+    # MySQL connectivity: MySQL 8's default auth plugin requires this exchange on a fresh
+    # connection without TLS, which is exactly what our own CI `sql` job's mysql:8 service
+    # container test does.
+    "RUSTSEC-2023-0071",
+]
 
 [sources]
 unknown-registry = "deny"

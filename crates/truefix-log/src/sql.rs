@@ -156,27 +156,27 @@ async fn connect_pool(url: &str, pool_cfg: &SqlLogPoolOptions) -> Result<Pool, L
 async fn ensure_table(pool: &Pool, table: &str) -> Result<(), LogError> {
     match pool {
         Pool::Sqlite(p) => {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "CREATE TABLE IF NOT EXISTS {table} (\
                  id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL)"
-            ))
+            )))
             .execute(p)
             .await
             .map_err(io_err)?;
         }
         Pool::Postgres(p) => {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "CREATE TABLE IF NOT EXISTS {table} (id BIGSERIAL PRIMARY KEY, text TEXT NOT NULL)"
-            ))
+            )))
             .execute(p)
             .await
             .map_err(io_err)?;
         }
         Pool::MySql(p) => {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "CREATE TABLE IF NOT EXISTS {table} (\
                  id BIGINT AUTO_INCREMENT PRIMARY KEY, text TEXT NOT NULL)"
-            ))
+            )))
             .execute(p)
             .await
             .map_err(io_err)?;
@@ -191,22 +191,28 @@ async fn insert_text(pool: &Pool, table: &str, text: &str) {
     // concrete `QueryResult` type, so each arm discards its own result rather than unifying.
     match pool {
         Pool::Sqlite(p) => {
-            let _ = sqlx::query(&format!("INSERT INTO {table} (text) VALUES (?)"))
-                .bind(text)
-                .execute(p)
-                .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO {table} (text) VALUES (?)"
+            )))
+            .bind(text)
+            .execute(p)
+            .await;
         }
         Pool::Postgres(p) => {
-            let _ = sqlx::query(&format!("INSERT INTO {table} (text) VALUES ($1)"))
-                .bind(text)
-                .execute(p)
-                .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO {table} (text) VALUES ($1)"
+            )))
+            .bind(text)
+            .execute(p)
+            .await;
         }
         Pool::MySql(p) => {
-            let _ = sqlx::query(&format!("INSERT INTO {table} (text) VALUES (?)"))
-                .bind(text)
-                .execute(p)
-                .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO {table} (text) VALUES (?)"
+            )))
+            .bind(text)
+            .execute(p)
+            .await;
         }
     }
 }
