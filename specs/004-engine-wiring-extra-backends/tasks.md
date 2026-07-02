@@ -405,8 +405,17 @@ state; verify retrieval/reset behave equivalently to the SQL-backed conformance 
   **complete**, mirroring `redb_log.rs`'s two-test shape (persistence + heartbeat-filtering) rather
   than `mssql_log.rs`'s single-test shape, since heartbeat filtering wasn't covered by any prior Mongo
   test. Verifies via a second, independent `mongodb::Client` connection and `count_documents`, mirroring
-  `mssql_log.rs`'s "reconnect and verify" pattern. Compiles clean; skips cleanly with no local MongoDB
-  available (same environment constraint as T029); real assertions run in CI's `mongo` job.
+  `mssql_log.rs`'s "reconnect and verify" pattern. Compiled clean and skipped cleanly with no local
+  MongoDB available (same environment constraint as T029) — but since that meant this test's real
+  (non-skip) path had never actually executed before landing on the PR, CI's `mongo` job caught a real
+  flake on first run against an actual `mongo:7` container: both tests failed with `left: 0, right: 1`
+  in ~0.3s total (the fixed `sleep(300ms)` before checking counts wasn't reliably enough time for the
+  background writer's *first* write against a freshly-started container — cold WiredTiger/index-creation
+  latency, not a `MongoLog` correctness bug; the identical commit's `pull_request`-triggered CI run
+  passed, confirming it was timing-flaky rather than deterministic). Fixed by replacing the fixed sleep
+  with a `count_with_retry` poll (up to 5s, 50ms interval) before each assertion — the same lesson
+  already applied in `redb_log.rs`'s `open_with_retry` for a different root cause (file-lock release
+  race), applied again here for connection/write cold-start latency.
 
 **Checkpoint**: All six user stories independently functional; `mongodb` compiles and tests pass with
 `--features mongodb` (real assertions when `DATABASE_URL_MONGO`/CI's `mongo` job is available, clean
