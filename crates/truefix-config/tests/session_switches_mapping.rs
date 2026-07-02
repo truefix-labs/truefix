@@ -72,3 +72,29 @@ fn malformed_logon_tag_is_a_typed_error() {
         truefix_config::ConfigError::InvalidValue { .. }
     ));
 }
+
+/// T078 (US14, FR-019): `InChanCapacity` absent means unbounded/unchanged behavior (`None`),
+/// matching the pre-US14 default `SessionConfig::new` already had for `in_chan_capacity`.
+#[test]
+fn in_chan_capacity_defaults_to_none() {
+    let c = resolved(&base(""));
+    assert_eq!(c.in_chan_capacity, None);
+}
+
+#[test]
+fn in_chan_capacity_maps_from_settings() {
+    let c = resolved(&base("InChanCapacity=64\n"));
+    assert_eq!(c.in_chan_capacity, Some(64));
+}
+
+#[test]
+fn malformed_in_chan_capacity_is_a_typed_error() {
+    let err = SessionSettings::parse(&base("InChanCapacity=not-a-number\n"))
+        .unwrap()
+        .resolve()
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        truefix_config::ConfigError::InvalidValue { .. }
+    ));
+}

@@ -114,6 +114,10 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
         Rec,
     ),
     k("LogMessageWhenSessionNotFound", "acceptor", Impl),
+    // Backpressure (US14, FR-019): bounds the application-message inbound channel; admin/session
+    // messages always travel on a separate, unbounded channel so they're never starved by a full
+    // application channel. Absent (the default) preserves pre-US14 single-channel behavior exactly.
+    k("InChanCapacity", "session", Impl),
     // Scheduling
     k("StartTime", "scheduling", Impl),
     k("EndTime", "scheduling", Impl),
@@ -255,7 +259,17 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     ),
     k("SLF4JLogPrependSessionID", "facade-log", Rec),
     k("SLF4JLogHeartbeats", "facade-log", Rec),
-    // SQL (JDBC-equivalent) store/log — available behind the `sql` feature
+    // SQL (JDBC-equivalent) store/log — PostgreSQL/MySQL/SQLite behind the `sql` feature
+    // (`SqlStore`/`SqlLog`, via `sqlx`) and MSSQL behind the separate `mssql` feature
+    // (`MssqlStore`/`MssqlLog`, via `tiberius` — sqlx has no official MSSQL driver). Both remain
+    // `Recognized` rather than `Implemented`: QuickFIX/J dispatches backend choice from a single
+    // `JdbcURL` connection string via its JDBC driver registry, but TrueFix has no such
+    // single-entry-point dispatch — each backend is a distinct native driver (`sqlx` vs.
+    // `tiberius`) reached only via its own `StoreConfig`/`LogConfig` variant through the direct
+    // Rust API, not yet parsed from these `.cfg` keys (same boundary the `sql` feature already
+    // had before this feature added `mssql`). Oracle (per this spec's Clarifications) is
+    // deferred rather than implemented — see `docs/parity-matrix.md`'s "Feature 003 — US14"
+    // section for the license rationale.
     k("JdbcDriver", "sql", Rec),
     k("JdbcURL", "sql", Rec),
     k("JdbcUser", "sql", Rec),

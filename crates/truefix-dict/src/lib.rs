@@ -21,6 +21,7 @@
     )
 )]
 
+pub mod codegen;
 pub mod fixt;
 mod hash;
 pub mod model;
@@ -29,6 +30,7 @@ pub mod orchestra;
 pub mod parser;
 mod validate;
 
+pub use codegen::CodegenError;
 pub use fixt::FixtDictionaries;
 pub use model::{
     ComponentDef, DataDictionary, DictMergeConflict, FieldDef, FieldType, GroupDef, MessageDef,

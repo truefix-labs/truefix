@@ -8,15 +8,22 @@
 ![Status](https://img.shields.io/badge/status-implemented-brightgreen.svg)
 ![Rust](https://img.shields.io/badge/rust-edition%202021-informational.svg)
 
-**Status**: QuickFIX/J parity is implemented across two specs:
+**Status**: QuickFIX/J parity is implemented across three specs:
 [`specs/001-fix-engine-parity/`](specs/001-fix-engine-parity/) (foundation: codec, session state
 machine, recovery/resend, data dictionary, storage/logging, multi/dynamic sessions, all FIX
-versions + codegen, TLS/auth/monitoring, the AT suite) and
-[`specs/002-qfj-parity-completion/`](specs/002-qfj-parity-completion/) (remaining gaps: session-owned
-persistent resend, dictionary-driven group validation, `.cfg`-driven one-shot engine start, inbound
+versions + codegen, TLS/auth/monitoring, the AT suite),
+[`specs/002-qfj-parity-completion/`](specs/002-qfj-parity-completion/) (session-owned persistent
+resend, dictionary-driven group validation, `.cfg`-driven one-shot engine start, inbound
 integrity/reject-layers/reverse-route, typed callback outcomes, all-message typed codegen +
 `MessageCracker`, TLS/mTLS-from-config, weekly schedule windows, metrics export, multi-backend SQL
-storage/logging). See [`MIGRATION.md`](MIGRATION.md) if upgrading past the typed-callback breaking
+storage/logging), and
+[`specs/003-qfj-full-parity-closure/`](specs/003-qfj-full-parity-closure/) (durable resend
+completion, field-order/extra validation toggles, the remaining session config switches, a
+dictionary `component` model + runtime dictionary loading, additional field types, FIX Latest via
+FIX Orchestra, extended application hooks, the full 353/353-scenario AT suite across all 9 FIX
+versions, a session benchmark, network hardening (PROXY protocol, forward proxy, inline PEM, cipher
+suites, synchronous writes), the `truefix-dict` CLI, bounded inbound backpressure, and an MSSQL
+store/log backend). See [`MIGRATION.md`](MIGRATION.md) if upgrading past the typed-callback breaking
 change.
 
 ## Why TrueFix
@@ -30,7 +37,7 @@ to be the first Rust FIX engine that is:
 - **Acceptor-first** — the sell-side/acceptor is a first-class citizen, on equal footing with the
   initiator (multi-session, dynamic sessions).
 - **Conformance-gated** — protocol correctness is verified by a ported FIX **Acceptance Test (AT)** suite
-  (56 scenario classes / 81 scenario runs across FIX.4.2/4.4), which is the hard release gate.
+  (353/353 scenario runs across all 9 targeted FIX versions), which is the hard release gate.
 
 ## Quick start
 
@@ -63,7 +70,9 @@ async fn main() {
 
 A `.cfg` with `SocketUseSSL=Y`/`SocketKeyStore=...` builds mTLS from PEM files (no Java keystores);
 `SocketConnectHost1`/`SocketConnectPort1` (etc.) add initiator failover endpoints; `FileLogPath` builds
-a working session log — no code beyond `Application` required for any of it (FR-013/014/017/019/026).
+a working session log; `InChanCapacity=<n>` bounds the inbound application-message channel (admin/
+session traffic always travels on its own unbounded channel, so it's never starved by a full
+application channel) — no code beyond `Application` required for any of it (FR-013/014/017/019/026).
 
 The `Application` trait's callbacks return typed outcomes rather than a bare `Result<(), String>`
 (see [`MIGRATION.md`](MIGRATION.md) for the breaking-change rationale and upgrade path):
@@ -98,6 +107,25 @@ normalized source the runtime `DataDictionary` validates against. FIX Latest is 
 Orchestra XML via a build-tooling-only conversion tool (`--features dict-tooling`), feeding the same
 normalized-dictionary pipeline every other version uses.
 
+## `truefix-dict` CLI
+
+A standalone binary wrapping the same parse/codegen logic `build.rs` uses internally — no parallel
+implementation. Requires `--features dict-tooling`:
+
+```sh
+cargo run -p truefix-dict --features dict-tooling --bin truefix-dict -- <subcommand> ...
+
+# Convert a FIX Orchestra XML source into the normalized `.fixdict` grammar.
+truefix-dict generate-dict --source orchestra.xml --out normalized.fixdict
+
+# Generate the same typed Rust code build.rs would (structs, field enums, group entries,
+# a MessageCracker-style crack_<name> dispatcher) from a `.fixdict`, standalone.
+truefix-dict generate-code --dict normalized.fixdict --out generated.rs [--name FIX44]
+
+# Parse-check a dictionary and print its field/message counts and dual-track content hash.
+truefix-dict validate --dict normalized.fixdict
+```
+
 ## Architecture
 
 Async-first engine on **tokio** (TLS via **rustls**), organized as a layered cargo workspace:
@@ -107,9 +135,9 @@ Async-first engine on **tokio** (TLS via **rustls**), organized as a layered car
 | `truefix-core` | Field / FieldMap / Group / Message, field types, SOH codec, BodyLength/CheckSum, typed errors, `MessageCracker` contract |
 | `truefix-dict` | Data dictionary: **build-time codegen of typed messages/field-enums/groups + a `crack_<version>` dispatcher**, plus runtime `DataDictionary` validation (dual-track, one source) |
 | `truefix-session` | Session state machine, sequence management, admin messages, weekly scheduling + reset semantics, resend/gap-fill, `NextExpectedMsgSeqNum`, chunked resend, typed callback outcomes, reverse-route |
-| `truefix-store` | `MessageStore` trait + Memory / File (disk-only reads) / CachedFile (bounded in-memory cache + fsync toggle) / SQL (PostgreSQL/MySQL/SQLite via sqlx) / Noop |
-| `truefix-log` | `Log` trait + Screen / File / Tracing / SQL (PostgreSQL/MySQL/SQLite) / Composite, output switches (heartbeat filter, timestamps, visibility), `SessionPrefixLog` decorator |
-| `truefix-transport` | Initiator + Acceptor, multi/dynamic sessions, reconnect + multi-endpoint failover, full socket-option set, rustls TLS/mTLS (file or inline PEM bytes, configurable cipher suites), PROXY protocol v1/v2 (trusted-upstream-gated) + forward proxy (SOCKS4/SOCKS5+auth/HTTP CONNECT) for initiators, synchronous-write timeouts, `metrics`-facade export |
+| `truefix-store` | `MessageStore` trait + Memory / File (disk-only reads) / CachedFile (bounded in-memory cache + fsync toggle) / SQL (PostgreSQL/MySQL/SQLite via sqlx, `--features sql`) / MSSQL (via tiberius, `--features mssql`) / Noop |
+| `truefix-log` | `Log` trait + Screen / File / Tracing / SQL (PostgreSQL/MySQL/SQLite, `--features sql`) / MSSQL (`--features mssql`) / Composite, output switches (heartbeat filter, timestamps, visibility), `SessionPrefixLog` decorator |
+| `truefix-transport` | Initiator + Acceptor, multi/dynamic sessions, reconnect + multi-endpoint failover, full socket-option set, rustls TLS/mTLS (file or inline PEM bytes, configurable cipher suites), PROXY protocol v1/v2 (trusted-upstream-gated) + forward proxy (SOCKS4/SOCKS5+auth/HTTP CONNECT) for initiators, synchronous-write timeouts, bounded inbound application-message backpressure (`InChanCapacity`, admin traffic never starved), `metrics`-facade export |
 | `truefix-config` | `SessionSettings`, `.cfg` parsing with `${name}` interpolation, `resolve()` into a runnable `Engine`-ready configuration, Appendix A key-stance registry |
 | `truefix` | Facade: re-exports + `Application` trait + `MessageCracker` + `Engine::start` (one-shot `.cfg`-driven start) |
 | `truefix-at` | Ported Acceptance Test suite (release gate) |
@@ -143,6 +171,16 @@ G1 Persistent resend ─▶ G2 Group parsing/validation ─▶ G3 Config-driven 
    ─▶ G9 Metrics export ─▶ G10 Storage/logging completeness (release gate: AT suite stays green throughout)
 ```
 
+003 (full parity closure; see [`plan.md`](specs/003-qfj-full-parity-closure/plan.md)):
+
+```
+G2 Durable resend completion ─▶ G1a AT coverage broadening ─▶ G3 Field-order/extra validation toggles
+   ─▶ G4 Remaining session switches ─▶ G5 Dictionary components ─▶ G6 Runtime dictionary loading
+   ─▶ G7 Field type completeness ─▶ G8 FIX Latest (Orchestra) ─▶ G9 Extended application hooks
+   ─▶ G1b AT full closure (353/353 across 9 versions, release gate) ─▶ G10 Session benchmark
+   ─▶ G11 Network hardening ─▶ G12 `truefix-dict` CLI ─▶ G13/G14 Backpressure + MSSQL SQL backend
+```
+
 ## Testing & conformance
 
 - Table-driven unit tests for the codec and session state machine.
@@ -154,8 +192,9 @@ G1 Persistent resend ─▶ G2 Group parsing/validation ─▶ G3 Config-driven 
   `timestamps`, `resynch`) and a CI-enforced coverage-regression floor — and is the hard release gate
   (`cargo test -p truefix-at --test conformance`).
 - CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`, `cargo deny`, the AT
-  suite, a dedicated `sql` job exercising PostgreSQL/MySQL/SQLite store+log backends against real
-  service containers, and a `dict-tooling` job exercising the FIX Orchestra conversion tool (see
+  suite, a dedicated `sql` job exercising PostgreSQL/MySQL/SQLite store+log backends and an `mssql` job
+  exercising the MSSQL store+log backend, each against real service containers, and a `dict-tooling` job
+  exercising the FIX Orchestra conversion tool (see
   [`docs/acceptance-record.md`](docs/acceptance-record.md) for the full mapping).
 - **Benchmarks** (`cargo bench -p truefix-core`, `cargo bench -p truefix-session`) are
   observation/regression tools, not CI-blocking gates — no numeric latency SLO is enforced; they exist
@@ -169,7 +208,8 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test -p truefix-store -p truefix-log --features sql   # PostgreSQL/MySQL gated on availability
-cargo test -p truefix-dict --features dict-tooling            # Orchestra conversion tool
+cargo test -p truefix-store -p truefix-log --features mssql # MSSQL gated on availability
+cargo test -p truefix-dict --features dict-tooling         # Orchestra conversion tool + CLI
 cargo test -p truefix-at --test conformance                  # AT suite (release gate)
 cargo bench -p truefix-core                                   # codec throughput (non-gating)
 cargo bench -p truefix-session                                # session round-trip latency (non-gating)

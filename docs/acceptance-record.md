@@ -38,11 +38,14 @@ the automated tests that verify them. All run under `cargo test --workspace` unl
 
 ## Current gate status
 
-- Workspace tests: **green** (~298 passing, default features — grown substantially across feature 003;
+- Workspace tests: **green** (329 passing, default features — grown substantially across feature 003;
   see the "003" section below for what drove the growth).
 - SQL feature tests: **green** (`cargo test -p truefix-store -p truefix-log --features sql`; SQLite
   cases run unconditionally, PostgreSQL/MySQL cases run when `DATABASE_URL_PG`/`DATABASE_URL_MYSQL`
   are set — CI's `sql` job provides both via service containers, see `.github/workflows/ci.yml`).
+- MSSQL feature tests: **green** (`cargo test -p truefix-store -p truefix-log --features mssql`;
+  cases skip when `DATABASE_URL_MSSQL` is unset, run for real against CI's new `mssql` job service
+  container, see `.github/workflows/ci.yml`).
 - `dict-tooling` feature tests: **green** (`cargo test -p truefix-dict --features dict-tooling`; the
   Orchestra XML → normalized-`.fixdict` conversion tool, off by default — CI's `dict-tooling` job).
 - `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`: **clean** (with and
@@ -191,6 +194,38 @@ before consuming the inbound Logon); see `truefix-session` `state_machine.rs`.
   contract's draft three-key sketch to match this codebase's pre-existing combined-keystore design
   (one `SocketKeyStoreBytes` key, not three). See `docs/parity-matrix.md`'s "Feature 003 — US12"
   section.
+- **`truefix-dict` CLI (US13, FR-018)**: `generate-dict`/`generate-code`/`validate` subcommands
+  wrapping the exact same parse/codegen logic `build.rs` uses (no parallel implementation —
+  Principle IV), via a new shared `crates/truefix-dict/src/codegen.rs` module. Found and fixed a
+  real correctness gap surfaced by making this logic user-facing: `build.rs`'s codegen internals
+  used to `panic!` directly on malformed input, fine for a build script but not for a CLI a user
+  feeds arbitrary files to (Principle I) — converted to a proper `CodegenError`/`Result` API;
+  `build.rs`'s own `main()` still panics on error (correct for a build script), only now at its own
+  top level. See `docs/parity-matrix.md`'s "Feature 003 — US13" section.
+- **Inbound backpressure + MSSQL/Oracle SQL backends (US14, FR-019/020)**: `SessionConfig.
+  in_chan_capacity: Option<usize>` (`InChanCapacity`) bounds an application-message channel that's
+  fully split from an always-unbounded admin/session channel, so a saturated application channel
+  never starves Heartbeat/TestRequest/ResendRequest processing; `None` (default) preserves exact
+  pre-US14 single-channel ordering. `MssqlStore`/`MssqlLog` add MSSQL via `tiberius` (a separate
+  driver from the existing sqlx-backed `SqlStore`/`SqlLog`, since sqlx has no official MSSQL
+  support), behind a new independent `mssql` feature. Oracle is confirmed deferred, not implemented,
+  per the spec's own pre-approved downgrade path — `oracle`'s Instant Client dependency is
+  closed-source under Oracle's OTN terms, incompatible with this project's clean Apache-2.0 OR MIT
+  release stance (Principle III). See `docs/parity-matrix.md`'s "Feature 003 — US14" section and its
+  updated "Dependency & Provenance Audit (T002)" table for the full Oracle rationale.
+- **Config-key stance sweep (T079, FR-021)**: every key this feature moved from
+  Recognized/Unsupported to Implemented — the ~12 remaining session switches (US4), field-order +
+  extra validation toggles (US3/US8), the network-hardening key set (US12), and `InChanCapacity`
+  (US14) — now reads `Impl` in `crates/truefix-config/src/keys.rs`, verified by
+  `key_coverage.rs::every_key_has_a_known_stance`. `docs/parity-matrix.md`'s "Stance Tracking
+  Scaffold (T004)" table (all rows now `done`) is the authoritative per-stage record. A few keys
+  intentionally remain non-`Impl` with a documented reason rather than a false claim of completeness:
+  `ClosedResendInterval`/`RejectMessageOnUnhandledException`/`MaxScheduledWriteRequests` stay
+  `Unsupported` (no analogous mechanism exists in this architecture — see each key's inline reason
+  in `keys.rs`), and `ContinueInitializationOnError` stays `Recognized` (the field round-trips
+  through `SessionConfig` but has no effect — its real home would be multi-session bring-up logic in
+  `truefix::Engine::start`, not a per-connection `Session` behavior, and building that out wasn't
+  part of any 003 user story).
 
 ## Outstanding before a v1 release claim
 

@@ -29,7 +29,7 @@ special-category suites; a scripted process-restart test replays a pre-restart R
 
 ```bash
 cargo test -p truefix-dict -- validate
-cargo test -p truefix-session -- config_switches
+cargo test -p truefix-session --test config_switches
 ```
 Expected: field-order violations rejected only when `validate_fields_out_of_order=true`; each of the 12
 session switches and 4 extra validation toggles has a passing dedicated test.
@@ -39,17 +39,19 @@ session switches and 4 extra validation toggles has a passing dedicated test.
 ```bash
 cargo test -p truefix-dict -- component
 cargo test -p truefix-dict -- extend
-cargo test -p truefix-core -- field_types
-cargo test -p truefix-at -- fixlatest
+cargo test -p truefix-core --test field_types
+cargo test -p truefix-dict --test versions -- fixlatest
 ```
 Expected: component-using messages validate identically to hand-inlined equivalents; a runtime-loaded
 extension dictionary validates custom fields; Data/UtcDateOnly/UtcTimeOnly round-trip exactly; a
-FIX-Latest-configured session completes logon-to-heartbeat.
+FIX-Latest dictionary wires components/groups/new field types together correctly (full
+logon-to-heartbeat coverage across FIX.Latest is part of the AT suite run in the US1/US2 block above —
+`FIX.Latest` is one of `SUITE_VERSIONS`, not a separately gated scenario).
 
 ## US10 — Extended application hooks
 
 ```bash
-cargo test -p truefix-session -- application_hooks
+cargo test -p truefix-session --test application_hooks
 ```
 Expected: a logon predicate refusing a CompID with a chosen `SessionStatus` produces that value on the
 outbound Logout/Reject; `on_before_reset` fires before every reset.
@@ -64,27 +66,26 @@ Expected: a reported latency distribution; no pass/fail — for manual regressio
 ## US12 — Network hardening
 
 ```bash
-cargo test -p truefix-transport -- proxy_protocol
-cargo test -p truefix-transport -- socks
-cargo test -p truefix-transport -- http_connect
-cargo test -p truefix-transport -- tls_inline_pem
-cargo test -p truefix-transport -- cipher_suites
+cargo test -p truefix-transport --test proxy_protocol
+cargo test -p truefix-transport --test proxy_client
+cargo test -p truefix-transport --test tls_hardening
+cargo test -p truefix-transport --test sync_writes
 ```
 Expected: PROXY headers honored only from a configured trusted upstream; SOCKS4/SOCKS5(+auth)/
 HTTP-CONNECT initiator connections succeed through a local test proxy; TLS establishes from inline PEM
-bytes; a restricted cipher-suite list is enforced.
+bytes and a restricted cipher-suite list is enforced; a stalled peer times out a synchronous write.
 
 ## US13 — Dictionary CLI
 
 ```bash
-cargo run -p truefix-dict --bin truefix-dict -- validate --dict crates/truefix-dict/dict-src/normalized/FIX44.fixdict
+cargo run -p truefix-dict --features dict-tooling --bin truefix-dict -- validate --dict crates/truefix-dict/dict-src/normalized/FIX44.fixdict
 ```
 Expected: prints "OK" plus the dual-track hash for a known-good dictionary file.
 
 ## US14 — Backpressure & additional SQL backends
 
 ```bash
-cargo test -p truefix-transport -- backpressure
+cargo test -p truefix-transport --test backpressure
 cargo test -p truefix-store --features mssql -- mssql
 ```
 Expected: a saturated bounded application channel blocks the reader without dropping messages, while

@@ -206,7 +206,7 @@ checked against crates.io metadata and the FIX Trading Community's published ter
 | `tokio-socks` | 0.5.3 | MIT | Compatible |
 | `tiberius` | 0.12.3 | MIT/Apache-2.0 | Compatible |
 | `ppp` | 2.3.0 | Apache-2.0 | Compatible |
-| `oracle` (rust-oracle) | 0.6.3 | UPL-1.0/Apache-2.0 | Crate itself is permissively licensed; it dynamically links the **closed-source, separately-licensed** Oracle Instant Client at runtime (operator-supplied, not bundled/redistributed by TrueFix) — same model as ODBC/JDBC drivers. Final go/no-go deferred to when US14 (SQL backends) is actually implemented, per the spec's explicit allowance to downgrade Oracle to a documented-interface-only stub if this doesn't hold up under deeper legal review at that time. |
+| `oracle` (rust-oracle) | 0.6.3 | UPL-1.0/Apache-2.0 | **Final verdict (US14): deferred, not implemented.** The crate itself is permissively licensed, but at build/runtime it requires linking Oracle Instant Client — closed-source, distributed only under Oracle's own OTN License Agreement (click-through, non-redistributable, disallows use for building a competing product without a separate commercial agreement). That's a materially different obligation from the ODBC/JDBC-driver comparison this row originally floated: ODBC/JDBC are open, vendor-neutral *protocols* with many independently-licensed driver implementations, whereas Oracle Instant Client is the *only* practical way to speak Oracle's wire protocol and is itself proprietary. Requiring every operator who enables an off-by-default `oracle` feature to separately accept Oracle's OTN terms is an obligation this workspace's Principle III clean Apache-2.0 OR MIT release stance shouldn't impose implicitly. Per the spec's Clarifications (spec.md's TODO-14 Q&A), this downgrades Oracle to documented-interface-only: `StoreConfig`/`LogConfig` deliberately do **not** grow an `Oracle` variant; an operator whose infrastructure standardizes on Oracle continues to implement `MessageStore`/`Log` directly against `Client<Compat<TcpStream>>`-equivalent driver of their choice, exactly like any other custom backend not bundled by TrueFix. |
 | FIX Orchestra (FPL/FIXTradingCommunity repositories) | current | Apache License 2.0 (the machine-readable repository/schema content; the prose Technical Specification document itself is separately CC-BY-ND, not implicated here since only the machine-readable Orchestra XML data is parsed) | Compatible — confirmed via the FIX Trading Community's own published terms |
 
 None of these dependencies have been added to any `Cargo.toml` yet — they are wired in only when the
@@ -223,11 +223,11 @@ per-key registry this table mirrors.
 
 | Key | Stage | Status |
 |-----|-------|--------|
-| `ValidateFieldsOutOfOrder` | G3 (US3) | pending |
-| `ValidateChecksum` / `ValidateIncomingMessage` / `AllowPosDup` / `RequiresOrigSendingTime` | G3 (US8) | pending |
-| `SendRedundantResendRequests` / `ClosedResendInterval` / `ResetOnError` / `DisconnectOnError` / `DisableHeartBeatCheck` / `RejectMessageOnUnhandledException` / `LogonTag` / `MaxScheduledWriteRequests` / `ContinueInitializationOnError` / `LogMessageWhenSessionNotFound` / `RefreshOnLogon` / `ForceResendWhenCorruptedStore` | G4 (US4) | pending |
-| `UseTCPProxy` / `TrustedProxyAddresses` / `ProxyType` / `ProxyHost` / `ProxyPort` / `ProxyUser` / `ProxyPassword` / `SocketPrivateKeyBytes` / `SocketCertificateBytes` / `SocketCABytes` / `CipherSuites` / `SocketSynchronousWrites` / `SocketSynchronousWriteTimeout` | G11 (US12) | pending |
-| `InChanCapacity` (`in_chan_capacity`) | G13 (US14) | pending |
+| `ValidateFieldsOutOfOrder` | G3 (US3) | done |
+| `ValidateChecksum` / `ValidateIncomingMessage` / `AllowPosDup` / `RequiresOrigSendingTime` | G3 (US8) | done |
+| `SendRedundantResendRequests` / `ClosedResendInterval` / `ResetOnError` / `DisconnectOnError` / `DisableHeartBeatCheck` / `RejectMessageOnUnhandledException` / `LogonTag` / `MaxScheduledWriteRequests` / `ContinueInitializationOnError` / `LogMessageWhenSessionNotFound` / `RefreshOnLogon` / `ForceResendWhenCorruptedStore` | G4 (US4) | done |
+| `UseTCPProxy` / `TrustedProxyAddresses` / `ProxyType` / `ProxyHost` / `ProxyPort` / `ProxyUser` / `ProxyPassword` / `SocketPrivateKeyBytes` / `SocketCertificateBytes` / `SocketCABytes` / `CipherSuites` / `SocketSynchronousWrites` / `SocketSynchronousWriteTimeout` | G11 (US12) | done |
+| `InChanCapacity` (`in_chan_capacity`) | G13 (US14) | done |
 
 ## Feature 003 — US2: session-owned durable resend consistency (FR-003/004)
 
@@ -557,3 +557,106 @@ traffic end-to-end, not just completing a handshake), `tls_hardening.rs` (inline
 vs. disjoint cipher suites, 3 tests), `sync_writes.rs` (a stalled-peer write-timeout test using a small
 socket buffer, 1 test), plus `crates/truefix-config/tests/network_hardening_mapping.rs` (16 `.cfg` →
 `ResolvedSession` mapping tests, including error paths).
+
+## Feature 003 — US13: `truefix-dict` CLI (FR-018)
+
+A standalone binary (`crates/truefix-dict/src/bin/truefix-dict.rs`, `[[bin]] required-features =
+["dict-tooling"]`) with three subcommands (`generate-dict`, `generate-code`, `validate`), matching
+QuickFIX/J's `dictgenerator` / QuickFIX/Go's `generate-fix` in spirit.
+
+**A real refactor, not just a thin wrapper**: the contract requires the CLI to wrap the *same*
+parse/codegen logic `build.rs` already uses — no parallel implementation (Principle IV). But that logic
+lived entirely inside `build.rs` itself, which a `src/bin/*.rs` binary in the same package can't depend
+on (a build script can't depend on its own not-yet-built library crate — the classic chicken-and-egg
+problem). Solved by extracting the logic into a new `crates/truefix-dict/src/codegen.rs` module, shared
+via `#[path = "src/codegen.rs"] mod codegen;` in `build.rs` (same *source file*, two independent
+compilations — `build.rs`'s own crate, and the library's `pub mod codegen`) rather than one binary
+depending on the other.
+
+**A real correctness fix that came out of the refactor**: `build.rs`'s codegen internals previously
+`panic!`ed directly on malformed input (bad tag/component tokens, unknown components, component
+cycles) — acceptable when this code was only ever reachable from `cargo build` failing a whole
+compilation, but no longer acceptable once the same functions became reachable from a user-facing CLI
+tool fed arbitrary files (Principle I: no panics on a path a user can trigger with ordinary bad input).
+All internal panics were converted to a new `CodegenError` (`thiserror`), propagated via `Result`;
+`build.rs`'s own top-level `main()` still panics on error (the correct, idiomatic behavior for a build
+script to fail loudly), but only there, after calling the now-fallible shared functions. The CLI's own
+`main()` catches the `Result` and prints a clean `error: ...` message with a non-zero exit code instead.
+
+CLI argument parsing is hand-rolled (`--flag value` pairs via `std::env::args()`) rather than pulling in
+`clap` — three subcommands, each with at most 3-4 flags, don't justify a new dependency (and its own
+license/provenance audit).
+
+Tests: `crates/truefix-dict/tests/cli.rs` (8 tests) drive the *actual compiled binary* as a subprocess
+(`std::process::Command` + `CARGO_BIN_EXE_truefix-dict`), not the library functions directly — proving
+the CLI itself (argument parsing, exit codes, error message text) works end-to-end, including two
+tests specifically asserting a malformed/missing argument produces a clean error rather than a panic
+backtrace. `generate_dict_converts_the_bundled_orchestra_fixture` and
+`generate_code_produces_typed_rust_from_a_sample_fixdict` cross-check the CLI's output against the
+shipped, `build.rs`-generated artifacts to prove the two code paths (build script vs. CLI) really do
+produce byte-identical results from the shared source.
+
+## Feature 003 — US14: inbound backpressure + MSSQL/Oracle SQL backends (FR-019/020)
+
+**Backpressure (FR-019)**: `crates/truefix-transport/src/lib.rs`'s `run_connection` splits the socket
+via `tokio::io::split` into a dedicated `read_loop` task and the original processing loop. Two
+in-process channels carry decoded inbound messages from the reader to the processor: an always-
+unbounded `admin_tx`/`admin_rx` for session-level messages (Heartbeat/TestRequest/ResendRequest/
+Logon/Logout/Reject), and an application channel bounded by the new `SessionConfig.in_chan_capacity:
+Option<usize>` (`InChanCapacity`, FR-008-adjacent) for everything else. `in_chan_capacity: None` (the
+default) collapses the application channel to a receiver whose sole sender is dropped immediately —
+`classify_buffered` then routes every message through `admin_tx` in strict wire order, byte-for-byte
+identical to pre-US14 single-channel behavior (Acceptance Scenario 2's explicit requirement).
+`Some(n)` engages true splitting: decode-time (fast, never blocks) is fully decoupled from
+delivery-time (a `tokio::select!` racing the cancel-safe `Sender::reserve()` against continued socket
+reads) via a local `VecDeque<Inbound>` staging admin-vs-application classification before either
+channel send — this is what lets the reader keep draining new admin traffic off the wire even while a
+saturated application channel has a message queued for delivery, satisfying the "admin must not
+starve behind a full application channel" requirement (spec Clarifications) without the reader itself
+ever blocking on a full channel mid-decode. `crates/truefix-transport/tests/backpressure.rs` proves
+both properties (2 tests): a filled application channel doesn't drop messages, and concurrent admin
+traffic still gets a prompt reply.
+
+**MSSQL (FR-020)**: `MssqlStore`/`MssqlLog` (`crates/truefix-store/src/mssql.rs`,
+`crates/truefix-log/src/mssql.rs`), behind a new `mssql` feature independent of the existing `sql`
+feature. Reached via `tiberius` (TDS driver; sqlx has no official MSSQL support) rather than sharing
+`sql.rs`'s sqlx-based implementation — a deliberate, disclosed deviation from tasks.md T076's literal
+wording ("implement the MSSQL branch on `SqlStore`/`SqlLog`"), since `tiberius`'s `Client` type and
+connection lifecycle share no common trait with `sqlx::Pool`; the two backends implement the same
+`MessageStore`/`Log` trait contracts and pass the identical conformance-test pattern
+(`MssqlStoreConfig`/`MssqlLogConfig` mirror `SqlStoreConfig`/`SqlLogConfig`'s shape, minus pool
+settings — `tiberius` has no built-in connection pool, so a single connection is serialized behind a
+`tokio::sync::Mutex`, judged adequate for a FIX session's inherently sequential store/log access
+pattern rather than pulling in a separate pooling crate for one backend). `tiberius`'s `rustls`
+feature (chosen over its `native-tls` option to keep this workspace's single, consistent TLS stack)
+transitively reintroduces `rustls-pemfile` (RUSTSEC-2025-0134) — the same advisory this workspace's
+own PEM handling already migrated off of; accepted and scoped to the `mssql` feature only via
+`deny.toml`'s `ignore` list (see that file's inline justification), since `tiberius` offers no
+rustls-based path around it and the alternative (`native-tls`) would fragment the TLS stack instead.
+Server-certificate validation is intentionally skipped (`Config::trust_cert()`) — MSSQL's own TDS-level
+encryption still protects the connection in transit; this only forgoes CA-chain validation, matching
+how containerized/dev SQL Server instances (no real CA-issued cert) are typically reached, the same
+tradeoff the project's CI service container in `.github/workflows/ci.yml`'s new `mssql` job exercises.
+Conformance tests (T073): `crates/truefix-store/tests/mssql_backend.rs` (2 tests) and
+`crates/truefix-log/tests/mssql_log.rs` (1 test), gated on `DATABASE_URL_MSSQL` exactly like the
+existing Postgres/MySQL precedent in `sql_backends.rs`/`sql_log.rs` — they compile and pass-by-skip
+everywhere `DATABASE_URL_MSSQL` is unset, and run for real against the new CI service container.
+
+**Oracle (FR-020, deferred)**: see this document's "Feature 003 — Dependency & Provenance Audit
+(T002)" table above for the final license rationale. No `StoreConfig::Oracle`/`LogConfig::Oracle`
+variant exists; an operator needing Oracle implements `MessageStore`/`Log` directly, same as any other
+backend TrueFix doesn't bundle. This is the spec's explicitly pre-approved downgrade path (Clarifications:
+"MAY downgrade Oracle support to documented-interface-only (deferred) if no license-compatible mature
+option exists"), not a silently dropped requirement.
+
+**Config wiring (T078)**: `InChanCapacity` is a new `Impl` key in
+`crates/truefix-config/src/keys.rs`, resolved into `SessionConfig.in_chan_capacity` in
+`crates/truefix-config/src/builder.rs`'s `resolve_one` (mirrors the other numeric session switches
+via the existing `usize_key` helper). The `Jdbc*` keys' stance comment was updated to note MSSQL's
+availability behind the new `mssql` feature, but their stance stays `Recognized` (not `Implemented`):
+QuickFIX/J dispatches SQL backend choice from a single `JdbcURL` via its JDBC driver registry, but
+TrueFix has no equivalent single-entry-point dispatch — PostgreSQL/MySQL/SQLite (`sqlx`) and MSSQL
+(`tiberius`) are reached only via their own `StoreConfig`/`LogConfig` Rust-API variant, not yet parsed
+from these `.cfg` keys. This is the same boundary the `sql` feature already had before this feature
+(pre-existing from feature 002, not a US14 regression) — a unified `.cfg`-driven SQL-backend dispatch
+across four structurally different native drivers is out of this feature's scope.

@@ -251,11 +251,13 @@ US1 收尾 (Phase 12) 新增了 `timestamps_suite()`/`resynch_suite()` 两个特
 
 ## P2 — Benchmark & 工具补全
 
-### TODO-07: Session round-trip latency benchmark
+### TODO-07: Session round-trip latency benchmark (已完成 — US11)
 
-- [ ] `benches/session.rs` — 会话往返延迟
+- [x] `benches/session.rs` — 会话往返延迟 (message-in → processed → response-out, 代表性
+      Heartbeat/TestRequest/NewOrderSingle 混合场景; 观测/回归工具, 不设数值门槛, CI `bench` job
+      `continue-on-error: true`)
 
-**文件**: `benches/session.rs` (新建)
+**文件**: `crates/truefix-session/benches/session.rs` (新建)
 
 ---
 
@@ -302,39 +304,87 @@ US1 收尾 (Phase 12) 新增了 `timestamps_suite()`/`resynch_suite()` 两个特
 
 ---
 
-### TODO-12: CLI 字典工具
+### TODO-12: CLI 字典工具 (已完成)
 
 **当前**: build.rs codegen 在编译时生成 typed structs, 但无独立 CLI 工具。QFJ 有 `dictgenerator` (FPL repo → XML), QF/Go 有 `generate-fix`。
 
-- [ ] `truefix-dict` CLI — 从 FIX Orchestra / FPL repository 生成 normalized `.fixdict`
-- [ ] `truefix-dict` CLI — 从 `.fixdict` 生成 typed Rust 代码 (脱离 build.rs 使用)
-- [ ] `truefix-dict` CLI — 验证字典文件语法 + 打印 hash
+- [x] `truefix-dict` CLI — 从 FIX Orchestra / FPL repository 生成 normalized `.fixdict`
+      (`generate-dict --source <orchestra.xml> --out <normalized.fixdict>`)
+- [x] `truefix-dict` CLI — 从 `.fixdict` 生成 typed Rust 代码 (脱离 build.rs 使用)
+      (`generate-code --dict <normalized.fixdict> --out <generated.rs> [--name <Name>]`)
+- [x] `truefix-dict` CLI — 验证字典文件语法 + 打印 hash (`validate --dict <normalized.fixdict>`)
 
-**文件**: `crates/truefix-dict/src/` (新增 `bin/` 或 `cli/` 模块)
+**实现**: 新增 `crates/truefix-dict/src/codegen.rs`(把 `build.rs` 原有的 codegen 逻辑原样搬出来，
+两边通过 `#[path = "src/codegen.rs"] mod codegen;` 共享**同一份源文件**——build.rs 天然不能依赖
+自己尚未构建完成的库 crate，故用"共享源文件、各自独立编译"而非"库依赖库"来满足
+"no parallel implementation"（Constitution Principle IV））。**顺带修复**：这次重构把
+codegen 内部原有的 6 处 `panic!`/`unwrap_or_else(|_| panic!(...))` 全部改成 `Result<_,
+CodegenError>`——build.rs 自身作为构建脚本继续在顶层 `main()` panic（构建脚本失败即 panic 是其
+本就正确、符合惯例的行为，未改动），但这些函数现在也会被 CLI（面向用户的工具）直接调用，
+用户提供格式错误的字典文件不应该看到 Rust panic 堆栈，而应该是一条干净的错误信息 + 非零退出码
+(Constitution Principle I)。CLI 二进制 (`crates/truefix-dict/src/bin/truefix-dict.rs`) 手写
+`--flag value` 参数解析(未新增 `clap` 等依赖，3 个子命令、每个最多 3-4 个 flag，不足以为此新增
+依赖并走一次许可证/来源审计)；`[[bin]] required-features = ["dict-tooling"]`，故默认
+`cargo build --workspace` 不构建该二进制(与其运行时依赖 `quick-xml` 保持一致的 tooling-only 边界)。
+
+**测试**: `crates/truefix-dict/tests/cli.rs`(8 项，通过 `std::process::Command` 起子进程驱动
+真正编译出的二进制——不是直接调用库函数——用以验证 CLI 本身：参数解析、退出码、错误信息，而不只是
+它包装的底层逻辑；含"未知子命令"/"缺少必填 flag"两个专门断言"干净报错、不是 panic"的用例)。
+
+**文件**: `crates/truefix-dict/src/codegen.rs`(新增)、`crates/truefix-dict/src/bin/truefix-dict.rs`
+(新增)、`crates/truefix-dict/build.rs`(改写为薄驱动)、`crates/truefix-dict/Cargo.toml`
 
 ---
 
-### TODO-13: 入站消息背压
+### TODO-13: 入站消息背压 — **已完成** (US14)
 
 **当前**: transport 无入站消息有界缓冲。QF/Go 有 `InChanCapacity` (有界 channel), QFJ 有 `MessageQueue` (InMemory / BoundInMemory) + `MaxScheduledWriteRequests`。
 
-- [ ] `SessionConfig` 增加 `in_chan_capacity: Option<usize>` — 有界入站 channel, 满时施加背压
-- [ ] transport 层 `message_in` channel 改为 bounded
-- [ ] 满载行为: 阻塞读取 (背压) 而非丢弃
+- [x] `SessionConfig` 增加 `in_chan_capacity: Option<usize>` — 有界入站 channel, 满时施加背压
+- [x] transport 层拆分为 reader 任务 + processor 任务：admin/session 消息走独立无界 channel
+      (`admin_tx`)，application 消息走受 `in_chan_capacity` 限制的有界 channel (`app_tx`)。
+      `in_chan_capacity` 缺省 (`None`) 时 application channel 的唯一 sender 立即被丢弃，
+      `classify_buffered` 因此把所有消息都送入 `admin_tx`，行为与 US14 之前的单 channel 完全一致
+      (对应 spec Acceptance Scenario 2 的显式要求)。
+- [x] 满载行为: 阻塞投递 (背压) 而非丢弃 — 解码 (`classify_buffered`，从不阻塞) 与投递 (对
+      `Sender::reserve()`——已确认 cancel-safe——与继续读取套接字做 `select!`) 完全解耦，
+      reader 因此始终能在 application channel 满载时继续把新的 admin 流量送达，不会被卡住。
 
-**文件**: `crates/truefix-session/src/config.rs`, `crates/truefix-transport/src/framing.rs`
+**文件**: `crates/truefix-session/src/config.rs`, `crates/truefix-transport/src/lib.rs`,
+`crates/truefix-config/src/keys.rs` (`InChanCapacity` → `Impl`), `crates/truefix-config/src/builder.rs`
+(`.cfg` → `SessionConfig.in_chan_capacity` 映射)
+
+**测试**: `crates/truefix-transport/tests/backpressure.rs` (2 用例：有界 channel 满载不丢消息；
+满载期间 admin 流量仍被及时处理)、`crates/truefix-config/tests/session_switches_mapping.rs`
+(`in_chan_capacity_*` 3 用例)。详见 `docs/parity-matrix.md` "Feature 003 — US14" 一节。
 
 ---
 
-### TODO-14: 额外 SQL 后端
+### TODO-14: 额外 SQL 后端 — **部分完成** (US14: MSSQL 已完成；Oracle 按 spec Clarifications 延期)
 
 **当前**: `SqlStore` 通过 sqlx 支持 PostgreSQL / MySQL / SQLite。QFJ (JDBC) 和 QF/Go 均额外支持 MSSQL 和 Oracle。
 
-- [ ] `SqlStore` 支持 MSSQL (sqlx `mssql` feature)
-- [ ] `SqlStore` 支持 Oracle (需评估 sqlx 或 oracle crate)
-- [ ] `SqlLog` 同步支持 MSSQL / Oracle
+- [x] `MssqlStore`/`MssqlLog` 支持 MSSQL — 独立的 `mssql` feature，经 `tiberius` (TDS 驱动；sqlx
+      无官方 MSSQL 支持) 而非 sqlx 实现，与 `SqlStore`/`SqlLog` 是并列而非同一实现 (二者共享同一
+      `MessageStore`/`Log` trait 契约与相同的一致性测试模式，但底层驱动类型 (`tiberius::Client` vs.
+      `sqlx::Pool`) 结构上不兼容，见 `docs/parity-matrix.md` "Feature 003 — US14" 一节的详细说明)。
+- [ ] Oracle 支持 — **确认延期，非遗漏**。`oracle` crate 本身许可证宽松，但需链接闭源、仅按
+      Oracle 自家 OTN License Agreement 分发的 Oracle Instant Client，与本项目 Principle III
+      "纯净 Apache-2.0 OR MIT 发行" 的立场冲突。按 spec Clarifications 的明确授权
+      ("MAY downgrade Oracle support to documented-interface-only (deferred) if no
+      license-compatible mature option exists")，`StoreConfig`/`LogConfig` 不新增 `Oracle`
+      分支；需要 Oracle 的使用方按同样方式直接实现 `MessageStore`/`Log` trait。详见
+      `docs/parity-matrix.md` "Feature 003 — Dependency & Provenance Audit (T002)" 表格中
+      `oracle` 一行的完整法务论证。
+- [x] `SqlLog` 同步 → `MssqlLog` 支持 MSSQL (Oracle 同上延期)
 
-**文件**: `crates/truefix-store/src/sql.rs`, `crates/truefix-log/src/sql.rs`, `crates/truefix-store/Cargo.toml`
+**文件**: `crates/truefix-store/src/mssql.rs` (新增)、`crates/truefix-log/src/mssql.rs` (新增)、
+`crates/truefix-store/Cargo.toml`/`crates/truefix-log/Cargo.toml` (`mssql` feature)、
+`.github/workflows/ci.yml` (`mssql` job，MSSQL service container)、`deny.toml`
+(RUSTSEC-2025-0134 的 `mssql`-feature-限定豁免)
+
+**测试**: `crates/truefix-store/tests/mssql_backend.rs`、`crates/truefix-log/tests/mssql_log.rs`，
+按 `DATABASE_URL_MSSQL` 门控，与既有 Postgres/MySQL 模式一致。
 
 ---
 
@@ -343,14 +393,14 @@ US1 收尾 (Phase 12) 新增了 `timestamps_suite()`/`resynch_suite()` 两个特
 > 以下功能 QFJ 不支持, TrueFix 可选择性实现。
 
 - [ ] `ResetSeqTime` / `EnableResetSeqTime` — 连接中定时序列号重置 → 已纳入 TODO-04 评估
-- [ ] `InChanCapacity` — 入站消息有界缓冲 → **TODO-13**
+- [x] `InChanCapacity` — 入站消息有界缓冲 → **TODO-13** (已完成)
 - [ ] `ConnectionValidator` + `NewListenerCallback` — acceptor 自定义认证 hook (mTLS/IP 之外的扩展认证)
 - [x] TCP PROXY protocol (HAProxy/ELB) — `UseTCPProxy` → **TODO-11** (已完成)
 - [x] 内联 PEM bytes 配置 → **TODO-11** (已完成)
 - [ ] MongoDB 存储/日志 — NoSQL 后端选项
 - [ ] `DynamicQualifier` — 动态会话限定符 (不预配 CompID 的 acceptor 场景)
 - [ ] `HeartBtIntOverride` — 覆盖对端 HeartBtInt (对端配置不合理时强制纠正)
-- [ ] `generate-fix` CLI → **TODO-12**
+- [x] `generate-fix` CLI → **TODO-12** (已完成)
 
 ## QuickFIX/J 独有功能 (无 Rust 等价物)
 
@@ -378,7 +428,7 @@ US1 收尾 (Phase 12) 新增了 `timestamps_suite()`/`resynch_suite()` 两个特
       本仓库内的两处调用点(测试)均已同步修复。`logoutBeforeDisconnect` 未额外建模——现有
       `reject_logon` 本就是"先发送 Logout 再断开"的顺序，天然满足该语义，无需新增开关。
 - [ ] `FieldNotFound` 异常 — 带字段号命名异常 → 不适合 (`RejectReason` 枚举 + typed outcomes 已覆盖)
-- [ ] `dictgenerator` CLI — FPL repository → 字典 XML → **TODO-12**
+- [x] `dictgenerator` CLI — FPL repository → 字典 XML → **TODO-12** (已完成)
 - [ ] SLF4J 日志门面 — `SLF4JLogFactory` → 不适合 (`tracing` 替代)
 - [ ] FIX Latest — `quickfixj-messages-fixlatest` 模块 → **TODO-10**
 - [ ] SleepycatStore — Berkeley DB JE → 不适合 (过时技术; Rust 有 sled/redb 等)

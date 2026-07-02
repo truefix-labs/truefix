@@ -364,6 +364,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.refresh_on_logon = bool_key(map, "RefreshOnLogon", false);
     cfg.force_resend_when_corrupted_store = bool_key(map, "ForceResendWhenCorruptedStore", false);
     cfg.logon_tag = resolve_logon_tag(map, &session)?;
+    cfg.in_chan_capacity = usize_key(map, "InChanCapacity", &session, None)?;
 
     let address = resolve_address(map, connection, &session)?;
     let store = resolve_store(map, &session)?;

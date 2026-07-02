@@ -35,6 +35,14 @@ ignore = [
     # connection without TLS, which is exactly what our own CI `sql` job's mysql:8 service
     # container test does.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2025-0134 (rustls-pemfile unmaintained) reappears transitively via `tiberius`'s own
+    # `rustls` feature (US14, FR-020's MSSQL backend, behind the new off-by-default `mssql`
+    # feature) — the same advisory this workspace's own direct PEM parsing already moved off of
+    # (see the `fix(deps)` commit migrating to rustls-pki-types::pem). tiberius offers no way to
+    # get rustls-based TLS without pulling this in; the only alternative is `native-tls`
+    # (tiberius's other TLS option), which this project avoids project-wide to keep a single,
+    # consistent TLS stack (rustls). Scoped to the `mssql` feature only, not the default build.
+    "RUSTSEC-2025-0134",
 ]
 
 [sources]

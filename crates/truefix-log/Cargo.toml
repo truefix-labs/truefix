@@ -14,6 +14,8 @@ tracing.workspace = true
 time.workspace = true
 sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "mysql-rsa"] }
 tokio = { workspace = true, optional = true }
+tiberius = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -21,6 +23,9 @@ tokio = { workspace = true }
 [features]
 # SQL-backed log (JDBC-equivalent), bridged to async via a background writer task.
 sql = ["dep:sqlx", "dep:tokio"]
+# MSSQL support (FR-020), via `tiberius` (a separate driver — sqlx has no official MSSQL
+# support). Independent of `sql`/sqlx's PG/MySQL/SQLite trio, so it can be enabled on its own.
+mssql = ["dep:tiberius", "dep:tokio-util", "dep:tokio"]
 
 [lints]
 workspace = true

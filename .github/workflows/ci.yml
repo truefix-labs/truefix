@@ -69,8 +69,32 @@ jobs:
       - name: Test (sql feature, all backends)
         run: cargo test -p truefix-store -p truefix-log --features sql
 
+  mssql:
+    name: MSSQL backend (mssql feature)
+    runs-on: ubuntu-latest
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: TrueFix_Test1
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd="/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P $MSSQL_SA_PASSWORD -C -Q 'SELECT 1' || exit 1"
+          --health-interval=10s --health-timeout=5s --health-retries=10 --health-start-period=10s
+    env:
+      # T073/T076 (US14, FR-020): the MSSQL tests read this and skip if absent, so dev boxes
+      # without the service still pass; CI always sets it.
+      DATABASE_URL_MSSQL: mssql://sa:TrueFix_Test1@localhost:1433/master
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (mssql feature)
+        run: cargo test -p truefix-store -p truefix-log --features mssql
+
   dict-tooling:
-    name: Orchestra conversion tool (dict-tooling feature)
+    name: Orchestra conversion tool + truefix-dict CLI (dict-tooling feature)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

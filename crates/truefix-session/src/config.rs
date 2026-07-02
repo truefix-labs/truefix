@@ -110,6 +110,12 @@ pub struct SessionConfig {
     /// action when local history can't be fully trusted, rather than resending possibly-incomplete
     /// data. Default `false`.
     pub force_resend_when_corrupted_store: bool,
+    /// Bound the inbound *application*-message channel to at most this many pending messages
+    /// (`InChanCapacity`; US14, FR-019). Administrative/session-level traffic (heartbeat,
+    /// TestRequest, ResendRequest, Logon, Logout, garbled-frame handling) always travels on a
+    /// separate, unbounded, priority-drained channel, so it is never starved by a full application
+    /// queue. `None` (the default) preserves today's unbounded behavior for both.
+    pub in_chan_capacity: Option<usize>,
 }
 
 /// Sub-second precision of emitted SendingTime timestamps (TimeStampPrecision; FR-009).
@@ -168,6 +174,7 @@ impl SessionConfig {
             max_scheduled_write_requests: None,
             continue_initialization_on_error: false,
             force_resend_when_corrupted_store: false,
+            in_chan_capacity: None,
         }
     }
 

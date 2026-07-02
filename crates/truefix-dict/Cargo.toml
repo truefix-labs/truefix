@@ -15,12 +15,20 @@ rust_decimal.workspace = true
 time.workspace = true
 quick-xml = { workspace = true, optional = true }
 
+[build-dependencies]
+thiserror.workspace = true
+
 [features]
 # Orchestra XML -> normalized-`.fixdict` conversion tool. Off by default so `quick-xml` never
 # enters the runtime engine's dependency graph — this feature is build/tooling-time only (used to
 # regenerate `dict-src/normalized/FIXLATEST.fixdict`, not at engine runtime); enable with
 # `--features dict-tooling`.
 dict-tooling = ["dep:quick-xml"]
+
+[[bin]]
+name = "truefix-dict"
+path = "src/bin/truefix-dict.rs"
+required-features = ["dict-tooling"]
 
 [lints]
 workspace = true

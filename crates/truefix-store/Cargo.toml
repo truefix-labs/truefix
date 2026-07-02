@@ -12,6 +12,9 @@ publish = false
 thiserror.workspace = true
 async-trait.workspace = true
 sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "mysql-rsa"] }
+tiberius = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -20,6 +23,9 @@ tokio = { workspace = true }
 # SQL-backed store (JDBC-equivalent). Off by default to keep the core build light and
 # license-clean; enable with `--features sql`.
 sql = ["dep:sqlx"]
+# MSSQL support (FR-020), via `tiberius` (a separate driver — sqlx has no official MSSQL
+# support). Independent of `sql`/sqlx's PG/MySQL/SQLite trio, so it can be enabled on its own.
+mssql = ["dep:tiberius", "dep:tokio-util", "dep:tokio"]
 
 [lints]
 workspace = true
