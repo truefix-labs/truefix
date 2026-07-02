@@ -101,6 +101,34 @@ async fn corrupted_trailing_record_is_recovered() {
     cleanup(&dir);
 }
 
+/// T028 (US4) — `MessageStore::was_corrupted()` (the trait method, not the inherent one) resolves
+/// to the inherent method rather than recursing infinitely, through a `dyn MessageStore` (as
+/// `ForceResendWhenCorruptedStore`'s transport-level check will use it).
+#[tokio::test]
+async fn was_corrupted_through_trait_object_does_not_recurse() {
+    let dir = unique_dir();
+    {
+        let s = FileStore::open(&dir).unwrap();
+        s.save(1, b"good").await.unwrap();
+    }
+    let body = dir.join("body");
+    let mut bytes = std::fs::read(&body).unwrap();
+    bytes.extend_from_slice(&[9, 9, 9]);
+    std::fs::write(&body, bytes).unwrap();
+
+    let boxed: std::sync::Arc<dyn truefix_store::MessageStore> =
+        std::sync::Arc::new(FileStore::open(&dir).unwrap());
+    assert!(boxed.was_corrupted());
+
+    let clean_dir = unique_dir();
+    let clean: std::sync::Arc<dyn truefix_store::MessageStore> =
+        std::sync::Arc::new(FileStore::open(&clean_dir).unwrap());
+    assert!(!clean.was_corrupted());
+
+    cleanup(&dir);
+    cleanup(&clean_dir);
+}
+
 #[tokio::test]
 async fn reset_clears_messages_and_seqs() {
     let s = MemoryStore::new();

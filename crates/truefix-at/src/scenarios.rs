@@ -11,8 +11,22 @@ use truefix_core::{Field, Message};
 
 use crate::runner::{client_message, ExpectMsg, Scenario, SessionTweaks, Step};
 
-/// The FIX versions the server suite is exercised against.
-pub const SUITE_VERSIONS: &[&str] = &["FIX.4.2", "FIX.4.4"];
+/// The FIX versions the server suite is exercised against (FR-002; US9 adds `FIX.Latest`, the
+/// tenth dictionary — the whole version-agnostic core (logon/sequencing/resend/admin) runs
+/// against it exactly as it does the other nine, since `start_acceptor`'s session-layer protocol
+/// logic never depends on a per-version dictionary being loaded — dictionary-backed field
+/// validation scenarios remain separately authored for FIX.4.2/FIX.4.4 only, unaffected).
+pub const SUITE_VERSIONS: &[&str] = &[
+    "FIX.4.0",
+    "FIX.4.1",
+    "FIX.4.2",
+    "FIX.4.3",
+    "FIX.4.4",
+    "FIX.5.0",
+    "FIX.5.0SP1",
+    "FIX.5.0SP2",
+    "FIX.Latest",
+];
 
 fn logon(version: &str, seq: i64, reset: bool) -> Message {
     let mut m = client_message(version, "A", seq);
@@ -1124,6 +1138,481 @@ fn resend_request_chunk_size(v: &str) -> Scenario {
     )
 }
 
+// --- 003 US1: identity/CompID/logon-integrity class (T012) ---
+//
+// NOTE: `1c_InvalidSenderCompID`/`1c_InvalidTargetCompID`/`1d_InvalidLogonWrongBeginString` (a
+// mismatch on the *Logon itself*) cannot be represented against this harness's dynamic-template
+// acceptor (`start_acceptor`): the template adopts whatever CompIDs/BeginString the first Logon
+// claims, rather than checking them against a pre-existing fixed identity, so there is nothing to
+// "mismatch" on a first connection. `identity_problem`'s CheckCompID/BeginString logic is instead
+// proven mid-session, where a fixed identity already exists from the earlier Logon — see
+// `begin_string_value_unexpected` / `comp_id_does_not_match_profile` below. Testing the Logon-time
+// variant would need a non-dynamic (fixed-identity) acceptor mode in this test harness, which is a
+// harness change, not scenario authoring — tracked as a follow-up, not attempted here.
+
+/// 1d — a Logon carrying a stale SendingTime (outside MaxLatency) draws a Logout and disconnect.
+/// Same underlying `CheckLatency` mechanism as the `special_CheckLatencyStaleSendingTime` suite,
+/// exposed here under its Appendix B name and run across the full version matrix.
+fn invalid_logon_bad_sending_time(v: &str) -> Scenario {
+    scenario_with(
+        "1d_InvalidLogonBadSendingTime",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("5")), // Logout: SendingTime accuracy problem
+            Step::ExpectDisconnect,
+        ],
+        SessionTweaks {
+            check_latency: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// QFJ648 — a Logon with a negative HeartBtInt does not crash or corrupt session state; the
+/// invalid value is ignored and the acceptor's configured heartbeat interval is kept, and the
+/// session logs on normally (defensive handling, not a protocol violation reply).
+fn qfj648_negative_heart_bt_int(v: &str) -> Scenario {
+    let mut lo = logon(v, 1, true);
+    lo.body.set(Field::int(108, -1)); // HeartBtInt, invalid
+    scenario(
+        "QFJ648_NegativeHeartBtInt",
+        v,
+        vec![
+            Step::Send(lo),
+            // Logon still succeeds (echoing the *default* HeartBtInt=30 the harness template
+            // configures, not the invalid -1) rather than a Reject/disconnect.
+            Step::Expect(ExpectMsg::of("A").field(108, "30")),
+        ],
+    )
+}
+
+// --- 003 US1: sequence/PossDup class (T013) ---
+
+/// 2a — a message whose MsgSeqNum exactly matches the expected inbound sequence number is
+/// processed normally (the baseline case every other sequencing scenario builds on).
+fn msgseqnum_correct(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2); // TestRequest at exactly the expected seq
+    tr.body.set(Field::string(112, "INSEQ"));
+    scenario(
+        "2a_MsgSeqNumCorrect",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "INSEQ")), // Heartbeat echo, not a reject
+        ],
+    )
+}
+
+/// 2e — a message carrying PossDupFlag=Y at exactly the expected sequence number is not actually
+/// a duplicate (the flag doesn't match reality); it is processed normally rather than specially
+/// rejected or ignored — only `Ordering::Less` PossDup traffic gets the "already received" pass.
+fn poss_dup_not_received(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2);
+    tr.header.set(Field::string(43, "Y")); // PossDupFlag, but this seq was never actually sent before
+    tr.body.set(Field::string(112, "NOTADUP"));
+    scenario(
+        "2e_PossDupNotReceived",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "NOTADUP")),
+        ],
+    )
+}
+
+/// 10 — a SequenceReset-Reset (not GapFill) with NewSeqNo equal to the current expected sequence
+/// is accepted (a no-op re-affirmation), unlike GapFill's backward case.
+fn seq_reset_new_seq_no_equal(v: &str) -> Scenario {
+    let mut sr = client_message(v, "4", 99);
+    sr.body.set(Field::int(36, 2)); // NewSeqNo == current expected (2), no GapFillFlag → Reset
+    let mut tr = client_message(v, "1", 2);
+    tr.body.set(Field::string(112, "STILL-2"));
+    scenario(
+        "10_MsgSeqNumEqual",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(sr),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "STILL-2")),
+        ],
+    )
+}
+
+/// 10 — a SequenceReset-Reset (not GapFill) with NewSeqNo *behind* the current expected sequence
+/// is still honored unconditionally (Reset, unlike GapFill, has no backward guard).
+fn seq_reset_new_seq_no_less(v: &str) -> Scenario {
+    let mut sr = client_message(v, "4", 99);
+    sr.body.set(Field::int(36, 1)); // NewSeqNo=1, behind the current expected (2)
+    let mut tr = client_message(v, "1", 1); // now-expected sequence per the (backward) reset
+    tr.body.set(Field::string(112, "REWOUND"));
+    scenario(
+        "10_MsgSeqNumLess",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(sr),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "REWOUND")),
+        ],
+    )
+}
+
+// --- 003 US1: resend/reset class (T014) ---
+
+/// 11b — a SequenceReset-GapFill with NewSeqNo equal to the current expected sequence is accepted
+/// (the `>=` guard passes; distinct from `11a`/`11c`, already covered by the existing
+/// `sequence_reset_gap_fill_advances`/`sequence_reset_gap_fill_backward_ignored` scenarios).
+fn seq_reset_gap_fill_new_seq_no_equal(v: &str) -> Scenario {
+    let mut sr = client_message(v, "4", 2); // GapFill's own MsgSeqNum is consumed as usual
+    sr.body.set(Field::string(123, "Y")); // GapFillFlag
+    sr.body.set(Field::int(36, 3)); // NewSeqNo == the seq the GapFill message itself would advance to
+    let mut tr = client_message(v, "1", 3);
+    tr.body.set(Field::string(112, "GAPFILL-EQ"));
+    scenario(
+        "11b_NewSeqNoEqual",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(sr),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "GAPFILL-EQ")),
+        ],
+    )
+}
+
+/// RejectResentMessage — a replayed (PossDupFlag=Y) message that itself fails dictionary
+/// validation still draws a session-level Reject; PossDup does not exempt a message from
+/// validation (requires the FIX.4.4 dictionary; scoped to that version like the other
+/// dictionary-validation scenarios).
+fn reject_resent_message() -> Scenario {
+    let mut order = new_order_single(2);
+    order.body = {
+        // rebuild body without HandlInst(21), the same required field `required_field_missing`
+        // demonstrates, so this exercises validation rather than a fresh failure mode.
+        let mut b = truefix_core::FieldMap::new();
+        for f in new_order_single(2).body.fields() {
+            if f.tag() != 21 {
+                b.set(Field::new(f.tag(), f.value_bytes().to_vec()));
+            }
+        }
+        b
+    };
+    order.header.set(Field::string(43, "Y")); // PossDupFlag
+    order.header.set(Field::string(122, "20240101-00:00:00")); // OrigSendingTime, required with PossDup
+    scenario(
+        "RejectResentMessage",
+        "FIX.4.4",
+        vec![
+            Step::Send(logon("FIX.4.4", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("3").field(373, "1")), // Reject: RequiredTagMissing
+        ],
+    )
+}
+
+// --- 003 US1: message-type/admin-app class (T015) ---
+
+/// 2i — a BeginString mismatch on a *post-logon* message (not the Logon itself) draws a Logout
+/// and disconnect, proving `CheckCompID`'s BeginString guard applies to every inbound message.
+fn begin_string_value_unexpected(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2);
+    tr.header.set(Field::string(8, "FIX.9.9"));
+    scenario(
+        "2i_BeginStringValueUnexpected",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("5")), // Logout: Incorrect BeginString
+            Step::ExpectDisconnect,
+        ],
+    )
+}
+
+/// 2k — a post-logon message whose CompIDs don't match the session profile draws a Logout and
+/// disconnect (the same `CheckCompID` guard as `1c_Invalid*CompID`, exercised mid-session).
+fn comp_id_does_not_match_profile(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2);
+    tr.header.set(Field::string(49, "IMPOSTER"));
+    scenario(
+        "2k_CompIDDoesNotMatchProfile",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("5")), // Logout: CompID problem
+            Step::ExpectDisconnect,
+        ],
+    )
+}
+
+/// A Logon with SendingTime stamped to the real current time (rather than `client_message`'s fixed
+/// 2024 timestamp), so a `CheckLatency`-enabled session accepts it.
+fn fresh_logon(version: &str, seq: i64, reset: bool) -> Message {
+    let mut m = logon(version, seq, reset);
+    m.header
+        .set(Field::utc_timestamp(52, time::OffsetDateTime::now_utc()));
+    m
+}
+
+/// 2o — a post-logon message with a stale SendingTime (outside MaxLatency) draws a Logout and
+/// disconnect, the same `CheckLatency` guard as `1d_InvalidLogonBadSendingTime` exercised
+/// mid-session (after a Logon whose own SendingTime is fresh) rather than at logon.
+fn sending_time_value_out_of_range(v: &str) -> Scenario {
+    let tr = client_message(v, "1", 2); // fixed 2024 SendingTime, stale relative to "now"
+    scenario_with(
+        "2o_SendingTimeValueOutOfRange",
+        v,
+        vec![
+            Step::Send(fresh_logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("5")), // Logout: SendingTime accuracy problem
+            Step::ExpectDisconnect,
+        ],
+        SessionTweaks {
+            check_latency: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// 8 — a stream of only admin (session-level) messages is processed in sequence with no
+/// application-layer involvement.
+fn only_admin_messages() -> Scenario {
+    let mut tr1 = client_message("FIX.4.4", "1", 2);
+    tr1.body.set(Field::string(112, "A1"));
+    let mut tr2 = client_message("FIX.4.4", "1", 3);
+    tr2.body.set(Field::string(112, "A2"));
+    scenario(
+        "8_OnlyAdminMessages",
+        "FIX.4.4",
+        vec![
+            Step::Send(logon("FIX.4.4", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr1),
+            Step::Expect(ExpectMsg::of("0").field(112, "A1")),
+            Step::Send(tr2),
+            Step::Expect(ExpectMsg::of("0").field(112, "A2")),
+        ],
+    )
+}
+
+/// 8 — a stream of only application messages (no admin traffic beyond the Logon) is processed in
+/// sequence, each acknowledged by the executor app.
+fn only_application_messages() -> Scenario {
+    scenario_with(
+        "8_OnlyApplicationMessages",
+        "FIX.4.4",
+        vec![
+            Step::Send(logon("FIX.4.4", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(new_order_single(2)),
+            Step::Expect(ExpectMsg::of("8")),
+            Step::Send(new_order_single(3)),
+            Step::Expect(ExpectMsg::of("8")),
+        ],
+        SessionTweaks {
+            executor_app: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// 8 — admin and application messages interleaved in the same stream are each dispatched to the
+/// correct layer, in order, without cross-contamination.
+fn admin_and_application_messages() -> Scenario {
+    let mut tr = client_message("FIX.4.4", "1", 3);
+    tr.body.set(Field::string(112, "MIXED"));
+    scenario_with(
+        "8_AdminAndApplicationMessages",
+        "FIX.4.4",
+        vec![
+            Step::Send(logon("FIX.4.4", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(new_order_single(2)),
+            Step::Expect(ExpectMsg::of("8")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("0").field(112, "MIXED")),
+            Step::Send(new_order_single(4)),
+            Step::Expect(ExpectMsg::of("8")),
+        ],
+        SessionTweaks {
+            executor_app: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+// --- 003 US3: field-order validation (T022) ---
+//
+// These require `ValidateFieldsOutOfOrder` enabled on the acceptor's validator (the
+// `validate_fields_out_of_order` `SessionTweaks` field), and a non-admin application message —
+// `Session::validate_app` skips admin-type messages (including Logon) entirely, so the Logon
+// itself is never a vehicle for this check. Raw bytes are sent directly (`Step::SendRaw`) since
+// `Message::encode()` always re-emits the canonical header/body/trailer order, which would erase
+// the very out-of-order-ness under test.
+
+/// Build a well-formed FIX.4.4 NewOrderSingle frame from `rest` (every field after BeginString/
+/// BodyLength), computing BodyLength/CheckSum correctly regardless of `rest`'s order.
+fn raw_new_order_single(rest: &[(u32, &str)]) -> Vec<u8> {
+    let body: String = rest.iter().map(|(t, v)| format!("{t}={v}\x01")).collect();
+    let prefix = format!("8=FIX.4.4\x019={}\x01", body.len());
+    let pre_checksum = format!("{prefix}{body}");
+    let checksum: u32 = pre_checksum.bytes().map(u32::from).sum::<u32>() & 0xFF;
+    format!("{pre_checksum}10={checksum:03}\x01").into_bytes()
+}
+
+/// 2t — the third field on the wire must be MsgType(35); here SenderCompID(49) usurps that slot.
+fn first_three_fields_out_of_order() -> Scenario {
+    let raw = raw_new_order_single(&[
+        (49, "CLIENT"),
+        (35, "D"),
+        (56, "SERVER"),
+        (34, "2"),
+        (52, "20240101-00:00:00"),
+        (11, "O1"),
+        (21, "1"),
+        (55, "AAPL"),
+        (54, "1"),
+        (60, "20240101-00:00:00"),
+        (40, "2"),
+    ]);
+    scenario_with(
+        "2t_FirstThreeFieldsOutOfOrder",
+        "FIX.4.4",
+        vec![
+            Step::Send(logon("FIX.4.4", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::SendRaw(raw),
+            Step::Expect(ExpectMsg::of("3").field(373, "14")), // Reject: TagOutOfRequiredOrder
+        ],
+        SessionTweaks {
+            validate_fields_out_of_order: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// 14g — a trailer-classified field (CheckSum aside) arriving before the body section is done, or
+/// a header field arriving after body fields have started, violates header/body/trailer
+/// sectioning.
+fn header_body_trailer_fields_out_of_order() -> Scenario {
+    let raw = raw_new_order_single(&[
+        (35, "D"),
+        (55, "AAPL"),   // body field
+        (49, "CLIENT"), // header field, arriving after a body field already appeared
+        (56, "SERVER"),
+        (34, "2"),
+        (52, "20240101-00:00:00"),
+        (11, "O1"),
+        (21, "1"),
+        (54, "1"),
+        (60, "20240101-00:00:00"),
+        (40, "2"),
+    ]);
+    scenario_with(
+        "14g_HeaderBodyTrailerFieldsOutOfOrder",
+        "FIX.4.4",
+        vec![
+            Step::Send(logon("FIX.4.4", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::SendRaw(raw),
+            Step::Expect(ExpectMsg::of("3").field(373, "14")), // Reject: TagOutOfRequiredOrder
+        ],
+        SessionTweaks {
+            validate_fields_out_of_order: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// 15 — header and body fields interleaved throughout the message (not just one field out of
+/// place), still caught by the same sectioning check.
+fn header_and_body_fields_ordered_differently() -> Scenario {
+    let raw = raw_new_order_single(&[
+        (35, "D"),
+        (49, "CLIENT"),
+        (55, "AAPL"),   // body field
+        (56, "SERVER"), // header field, after a body field already appeared
+        (11, "O1"),
+        (34, "2"),
+        (52, "20240101-00:00:00"),
+        (21, "1"),
+        (54, "1"),
+        (60, "20240101-00:00:00"),
+        (40, "2"),
+    ]);
+    scenario_with(
+        "15_HeaderAndBodyFieldsOrderedDifferently",
+        "FIX.4.4",
+        vec![
+            Step::Send(logon("FIX.4.4", 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::SendRaw(raw),
+            Step::Expect(ExpectMsg::of("3").field(373, "14")), // Reject: TagOutOfRequiredOrder
+        ],
+        SessionTweaks {
+            validate_fields_out_of_order: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// Special suite — validateChecksum: TrueFix validates the wire checksum unconditionally at
+/// decode time (a documented design decision — see `ValidationOptions::validate_checksum`'s doc
+/// comment — checksum enforcement is not an optional safety property), so a bad-checksum frame is
+/// always caught via the garbled-message path regardless of any validation toggle. Reuses the
+/// existing `garbled_message_dropped`/`garbled_message_rejected` scenarios as this suite's content.
+pub fn validate_checksum_suite() -> Vec<Scenario> {
+    vec![
+        garbled_message_dropped("FIX.4.4"),
+        garbled_message_rejected("FIX.4.4"),
+    ]
+}
+
+/// Special suite — timestamps: SendingTime-accuracy (CheckLatency) validation, the representative
+/// timestamp-handling behavior class this harness can assert today (exact wire-format-precision
+/// assertions on *outbound* SendingTime — e.g. millisecond vs. second precision on a non-fixed,
+/// "now"-derived value — would need `ExpectMsg` to support predicate/format matching rather than
+/// only exact-value matching; a disclosed harness-capability gap, not a protocol gap, tracked in
+/// `docs/todo-gap-analysis.md`'s TODO-01). Reuses `check_latency_timestamps` as this suite's content.
+pub fn timestamps_suite() -> Vec<Scenario> {
+    vec![check_latency_timestamps("FIX.4.4")]
+}
+
+/// Special suite — resynch: session resynchronization behavior (ResendRequest gap recovery,
+/// SequenceReset Reset/GapFill in both directions, out-of-order queueing/draining, and chunked
+/// resend) — QuickFIX/J's `resynch` AT category. Reuses the existing resend/reset scenarios as
+/// this suite's content (the same scenarios already run per-version inside `server_suite()`; this
+/// function groups them as their own discoverable, independently-runnable suite).
+pub fn resynch_suite() -> Vec<Scenario> {
+    vec![
+        resend_request_gap_fill("FIX.4.4"),
+        resend_request_bounded_end("FIX.4.4"),
+        resend_request_not_duplicated("FIX.4.4"),
+        resend_request_begin_zero_ignored("FIX.4.4"),
+        resend_request_nothing_to_resend("FIX.4.4"),
+        out_of_order_queued_then_drained("FIX.4.4"),
+        sequence_reset_reset("FIX.4.4"),
+        sequence_reset_gap_fill_advances("FIX.4.4"),
+        sequence_reset_gap_fill_backward_ignored("FIX.4.4"),
+        resend_request_chunk_size("FIX.4.4"),
+    ]
+}
+
 /// The (representative) server acceptance-test suite across [`SUITE_VERSIONS`].
 pub fn server_suite() -> Vec<Scenario> {
     let mut out = Vec::new();
@@ -1153,6 +1642,17 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(idle_heartbeat_emitted(v));
         out.push(test_request_on_silence(v));
         out.push(poss_dup_too_low(v));
+        // 003 US1: identity/CompID/logon-integrity + sequence/PossDup classes (T012/T013).
+        out.push(invalid_logon_bad_sending_time(v));
+        out.push(qfj648_negative_heart_bt_int(v));
+        out.push(msgseqnum_correct(v));
+        out.push(poss_dup_not_received(v));
+        out.push(seq_reset_new_seq_no_equal(v));
+        out.push(seq_reset_new_seq_no_less(v));
+        out.push(seq_reset_gap_fill_new_seq_no_equal(v));
+        out.push(begin_string_value_unexpected(v));
+        out.push(comp_id_does_not_match_profile(v));
+        out.push(sending_time_value_out_of_range(v));
     }
     // Field-validation scenarios for FIX.4.2 (its NewOrderSingle subset differs from 4.4).
     out.push(valid_new_order_accepted_42());
@@ -1188,5 +1688,14 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(garbled_message_dropped("FIX.4.4"));
     out.push(garbled_message_rejected("FIX.4.4"));
     out.push(resend_request_chunk_size("FIX.4.4"));
+    // 003 US3: field-order validation (T022).
+    out.push(first_three_fields_out_of_order());
+    out.push(header_body_trailer_fields_out_of_order());
+    out.push(header_and_body_fields_ordered_differently());
+    // 003 US1: resend/reset + message-type/admin-app classes (T014/T015), dictionary/app-dependent.
+    out.push(reject_resent_message());
+    out.push(only_admin_messages());
+    out.push(only_application_messages());
+    out.push(admin_and_application_messages());
     out
 }

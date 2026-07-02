@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TrueFix Orchestra source fixture — FIX.Latest (representative subset).
+
+  This is authored from the FIX Trading Community's publicly documented Orchestra repository
+  schema shape (fields/components/groups/messages, fieldRef/componentRef/groupRef, presence
+  attributes) — see `crates/truefix-dict/src/orchestra.rs`'s module doc for the exact supported
+  subset. No FPL Orchestra XML file content is copied (Constitution Principle III); this fixture is
+  hand-authored the same way the other 9 bundled dictionaries were hand-normalized from the public
+  FIX specification, mirroring their message set (session layer + NewOrderSingle) so `FIXLATEST`
+  slots into the existing AT suite/dual-track pipeline with no special-casing.
+-->
+<fixr:repository xmlns:fixr="http://fixprotocol.io/2020/orchestra/repository" version="FIX.Latest">
+  <fixr:fields>
+    <fixr:field id="8" name="BeginString" type="String"/>
+    <fixr:field id="9" name="BodyLength" type="Length"/>
+    <fixr:field id="35" name="MsgType" type="String"/>
+    <fixr:field id="34" name="MsgSeqNum" type="SeqNum"/>
+    <fixr:field id="49" name="SenderCompID" type="String"/>
+    <fixr:field id="56" name="TargetCompID" type="String"/>
+    <fixr:field id="52" name="SendingTime" type="UTCTimestamp"/>
+    <fixr:field id="43" name="PossDupFlag" type="Boolean"/>
+    <fixr:field id="122" name="OrigSendingTime" type="UTCTimestamp"/>
+    <fixr:field id="10" name="CheckSum" type="String"/>
+    <fixr:field id="98" name="EncryptMethod" type="int">
+      <fixr:code value="0" name="None"/>
+    </fixr:field>
+    <fixr:field id="108" name="HeartBtInt" type="int"/>
+    <fixr:field id="141" name="ResetSeqNumFlag" type="Boolean"/>
+    <fixr:field id="112" name="TestReqID" type="String"/>
+    <fixr:field id="7" name="BeginSeqNo" type="SeqNum"/>
+    <fixr:field id="16" name="EndSeqNo" type="SeqNum"/>
+    <fixr:field id="36" name="NewSeqNo" type="SeqNum"/>
+    <fixr:field id="123" name="GapFillFlag" type="Boolean"/>
+    <fixr:field id="58" name="Text" type="String"/>
+    <fixr:field id="45" name="RefSeqNum" type="SeqNum"/>
+    <fixr:field id="11" name="ClOrdID" type="String"/>
+    <fixr:field id="55" name="Symbol" type="String"/>
+    <fixr:field id="54" name="Side" type="char">
+      <fixr:code value="1" name="Buy"/>
+      <fixr:code value="2" name="Sell"/>
+    </fixr:field>
+    <fixr:field id="60" name="TransactTime" type="UTCTimestamp"/>
+    <fixr:field id="38" name="OrderQty" type="Qty"/>
+    <fixr:field id="40" name="OrdType" type="char">
+      <fixr:code value="1" name="Market"/>
+      <fixr:code value="2" name="Limit"/>
+    </fixr:field>
+    <fixr:field id="44" name="Price" type="Price"/>
+    <fixr:field id="75" name="TradeDate" type="UTCDateOnly"/>
+    <fixr:field id="96" name="RawData" type="data"/>
+    <fixr:field id="453" name="NoPartyIDs" type="NumInGroup"/>
+    <fixr:field id="448" name="PartyID" type="String"/>
+    <fixr:field id="447" name="PartyIDSource" type="char"/>
+    <fixr:field id="452" name="PartyRole" type="int"/>
+  </fixr:fields>
+
+  <fixr:groups>
+    <fixr:group id="453" name="NoPartyIDs">
+      <fixr:fieldRef id="448"/>
+      <fixr:fieldRef id="447"/>
+      <fixr:fieldRef id="452"/>
+    </fixr:group>
+  </fixr:groups>
+
+  <fixr:components>
+    <fixr:component id="1" name="StandardHeader">
+      <fixr:fieldRef id="8"/>
+      <fixr:fieldRef id="9"/>
+      <fixr:fieldRef id="35"/>
+      <fixr:fieldRef id="34"/>
+      <fixr:fieldRef id="49"/>
+      <fixr:fieldRef id="56"/>
+      <fixr:fieldRef id="52"/>
+      <fixr:fieldRef id="43"/>
+      <fixr:fieldRef id="122"/>
+    </fixr:component>
+    <fixr:component id="2" name="StandardTrailer">
+      <fixr:fieldRef id="10"/>
+    </fixr:component>
+    <fixr:component id="3" name="Parties">
+      <fixr:groupRef id="453"/>
+    </fixr:component>
+  </fixr:components>
+
+  <fixr:messages>
+    <fixr:message name="Heartbeat" msgType="0">
+      <fixr:structure>
+        <fixr:componentRef id="1"/>
+        <fixr:fieldRef id="112" presence="optional"/>
+        <fixr:componentRef id="2"/>
+      </fixr:structure>
+    </fixr:message>
+    <fixr:message name="TestRequest" msgType="1">
+      <fixr:structure>
+        <fixr:componentRef id="1"/>
+        <fixr:fieldRef id="112" presence="required"/>
+        <fixr:componentRef id="2"/>
+      </fixr:structure>
+    </fixr:message>
+    <fixr:message name="ResendRequest" msgType="2">
+      <fixr:structure>
+        <fixr:componentRef id="1"/>
+        <fixr:fieldRef id="7" presence="required"/>
+        <fixr:fieldRef id="16" presence="required"/>
+        <fixr:componentRef id="2"/>
+      </fixr:structure>
+    </fixr:message>
+    <fixr:message name="Reject" msgType="3">
+      <fixr:structure>
+        <fixr:componentRef id="1"/>
+        <fixr:fieldRef id="45" presence="required"/>
+        <fixr:fieldRef id="58" presence="optional"/>
+        <fixr:componentRef id="2"/>
+      </fixr:structure>
+    </fixr:message>
+    <fixr:message name="SequenceReset" msgType="4">
+      <fixr:structure>
+        <fixr:componentRef id="1"/>
+        <fixr:fieldRef id="36" presence="required"/>
+        <fixr:fieldRef id="123" presence="optional"/>
+        <fixr:componentRef id="2"/>
+      </fixr:structure>
+    </fixr:message>
+    <fixr:message name="Logout" msgType="5">
+      <fixr:structure>
+        <fixr:componentRef id="1"/>
+        <fixr:fieldRef id="58" presence="optional"/>
+        <fixr:componentRef id="2"/>
+      </fixr:structure>
+    </fixr:message>
+    <fixr:message name="Logon" msgType="A">
+      <fixr:structure>
+        <fixr:componentRef id="1"/>
+        <fixr:fieldRef id="98" presence="required"/>
+        <fixr:fieldRef id="108" presence="required"/>
+        <fixr:fieldRef id="141" presence="optional"/>
+        <fixr:componentRef id="2"/>
+      </fixr:structure>
+    </fixr:message>
+    <fixr:message name="NewOrderSingle" msgType="D">
+      <fixr:structure>
+        <fixr:componentRef id="1"/>
+        <fixr:fieldRef id="11" presence="required"/>
+        <fixr:fieldRef id="55" presence="required"/>
+        <fixr:fieldRef id="54" presence="required"/>
+        <fixr:fieldRef id="60" presence="required"/>
+        <fixr:fieldRef id="40" presence="required"/>
+        <fixr:fieldRef id="38" presence="optional"/>
+        <fixr:fieldRef id="44" presence="optional"/>
+        <fixr:fieldRef id="75" presence="optional"/>
+        <fixr:fieldRef id="96" presence="optional"/>
+        <fixr:componentRef id="3" presence="optional"/>
+        <fixr:componentRef id="2"/>
+      </fixr:structure>
+    </fixr:message>
+  </fixr:messages>
+</fixr:repository>

@@ -26,6 +26,36 @@ impl DataDictionary {
         message: &Message,
         opts: &ValidationOptions,
     ) -> Result<(), ValidationError> {
+        if !opts.validate_incoming_message {
+            return Ok(());
+        }
+
+        if opts.validate_fields_out_of_order && message.fields_out_of_order() {
+            return Err(ValidationError::session(
+                RejectReason::TagOutOfRequiredOrder,
+                None,
+                "header/body/trailer fields are out of wire-sectioning order",
+            ));
+        }
+
+        let poss_dup = message.header.get(43).and_then(|f| f.as_str().ok()) == Some("Y");
+        if poss_dup {
+            if !opts.allow_pos_dup {
+                return Err(ValidationError::session(
+                    RejectReason::ValueIsIncorrect,
+                    Some(43),
+                    "PossDup messages are not accepted (AllowPosDup=N)",
+                ));
+            }
+            if opts.requires_orig_sending_time && message.header.get(122).is_none() {
+                return Err(ValidationError::session(
+                    RejectReason::RequiredTagMissing,
+                    Some(122),
+                    "PossDup message missing OrigSendingTime",
+                ));
+            }
+        }
+
         let msg_type = message.msg_type().ok_or_else(|| {
             ValidationError::session(RejectReason::InvalidMsgType, Some(35), "missing MsgType")
         })?;

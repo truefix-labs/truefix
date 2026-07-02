@@ -68,3 +68,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test (sql feature, all backends)
         run: cargo test -p truefix-store -p truefix-log --features sql
+
+  dict-tooling:
+    name: Orchestra conversion tool (dict-tooling feature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (dict-tooling feature)
+        run: cargo test -p truefix-dict --features dict-tooling
+
+  bench:
+    name: Benchmarks (informational, non-blocking)
+    runs-on: ubuntu-latest
+    # Observation/regression tooling (US11, FR-014): no numeric latency SLO is enforced, per
+    # Clarifications, so this job must never block a merge — continue-on-error keeps its status
+    # visible without gating.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benchmarks (codec throughput, session round-trip latency)
+        run: |
+          cargo bench -p truefix-core
+          cargo bench -p truefix-session

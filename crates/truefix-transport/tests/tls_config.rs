@@ -61,18 +61,24 @@ async fn tls_from_config_alone_establishes_a_session() {
     let (server_combined, server_cert_only) = write_identity(&dir, "server", "localhost");
 
     let server_spec = TlsSpec {
-        key_store_path: server_combined,
+        key_store_path: Some(server_combined),
         trust_store_path: None,
+        key_store_bytes: None,
+        trust_store_bytes: None,
         need_client_auth: false,
         min_version: None,
         server_name: None,
+        cipher_suites: Vec::new(),
     };
     let client_spec = TlsSpec {
-        key_store_path: dir.join("unused.pem"), // client presents no cert (no_client_auth)
+        key_store_path: Some(dir.join("unused.pem")), // client presents no cert (no_client_auth)
         trust_store_path: Some(server_cert_only),
+        key_store_bytes: None,
+        trust_store_bytes: None,
         need_client_auth: false,
         min_version: None,
         server_name: Some("localhost".to_owned()),
+        cipher_suites: Vec::new(),
     };
 
     let server_cfg = build_server_config(&server_spec).expect("server tls config from files");
@@ -135,25 +141,34 @@ async fn mtls_requires_a_valid_client_certificate() {
     let (untrusted_combined, _) = write_identity(&dir, "untrusted", "client");
 
     let server_spec = TlsSpec {
-        key_store_path: server_combined,
+        key_store_path: Some(server_combined),
         trust_store_path: Some(client_cert_only), // trusts only the legitimate client cert
+        key_store_bytes: None,
+        trust_store_bytes: None,
         need_client_auth: true,
         min_version: None,
         server_name: None,
+        cipher_suites: Vec::new(),
     };
     let good_client_spec = TlsSpec {
-        key_store_path: client_combined,
+        key_store_path: Some(client_combined),
         trust_store_path: Some(server_cert_only.clone()),
+        key_store_bytes: None,
+        trust_store_bytes: None,
         need_client_auth: true,
         min_version: None,
         server_name: Some("localhost".to_owned()),
+        cipher_suites: Vec::new(),
     };
     let bad_client_spec = TlsSpec {
-        key_store_path: untrusted_combined,
+        key_store_path: Some(untrusted_combined),
         trust_store_path: Some(server_cert_only),
+        key_store_bytes: None,
+        trust_store_bytes: None,
         need_client_auth: true,
         min_version: None,
         server_name: Some("localhost".to_owned()),
+        cipher_suites: Vec::new(),
     };
 
     let server_cfg = build_server_config(&server_spec).expect("mTLS server config");
@@ -263,11 +278,14 @@ fn need_client_auth_without_trust_store_is_a_typed_error() {
     let dir = scratch_dir();
     let (combined, _) = write_identity(&dir, "solo", "localhost");
     let spec = TlsSpec {
-        key_store_path: combined,
+        key_store_path: Some(combined),
         trust_store_path: None,
+        key_store_bytes: None,
+        trust_store_bytes: None,
         need_client_auth: true,
         min_version: None,
         server_name: None,
+        cipher_suites: Vec::new(),
     };
     assert!(matches!(
         build_server_config(&spec),

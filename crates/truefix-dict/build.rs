@@ -58,10 +58,80 @@ struct Dict {
     messages: Vec<MessageDef>,
 }
 
+/// A `req:`/`opt:`/group-member-list token before `component:<Name>` references are expanded
+/// into their flat tag lists (mirrors `parser::RawMember` in the runtime track — codegen must
+/// understand `component:` tokens too, or messages using them would silently lose members).
+enum RawMember {
+    Tag(u32),
+    Component(String),
+}
+
+fn parse_member_list_raw(list: &str) -> Vec<RawMember> {
+    list.split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| match s.strip_prefix("component:") {
+            Some(name) => RawMember::Component(name.to_owned()),
+            None => RawMember::Tag(
+                s.parse()
+                    .unwrap_or_else(|_| panic!("bad tag or component:<Name> token: {s:?}")),
+            ),
+        })
+        .collect()
+}
+
+/// Resolve `name`'s component member list into flat tags, expanding nested `component:`
+/// references (recursively, with cycle detection matching the runtime parser).
+fn resolve_component(
+    name: &str,
+    raw: &BTreeMap<String, Vec<RawMember>>,
+    resolved: &mut BTreeMap<String, Vec<u32>>,
+    resolving: &mut std::collections::BTreeSet<String>,
+) -> Vec<u32> {
+    if let Some(members) = resolved.get(name) {
+        return members.clone();
+    }
+    if !resolving.insert(name.to_owned()) {
+        panic!("component {name:?} is part of a cycle");
+    }
+    let raw_members = raw
+        .get(name)
+        .unwrap_or_else(|| panic!("unknown component {name:?}"));
+    let mut members = Vec::new();
+    for m in raw_members {
+        match m {
+            RawMember::Tag(t) => members.push(*t),
+            RawMember::Component(n) => {
+                members.extend(resolve_component(n, raw, resolved, resolving))
+            }
+        }
+    }
+    resolving.remove(name);
+    resolved.insert(name.to_owned(), members.clone());
+    members
+}
+
+fn expand_members(raw: &[RawMember], components: &BTreeMap<String, Vec<u32>>) -> Vec<u32> {
+    let mut out = Vec::new();
+    for m in raw {
+        match m {
+            RawMember::Tag(t) => out.push(*t),
+            RawMember::Component(name) => out.extend(
+                components
+                    .get(name)
+                    .unwrap_or_else(|| panic!("unknown component {name:?}"))
+                    .iter()
+                    .copied(),
+            ),
+        }
+    }
+    out
+}
+
 fn parse_dict(text: &str) -> Dict {
     let mut fields = BTreeMap::new();
-    let mut groups = BTreeMap::new();
-    let mut messages = Vec::new();
+    let mut groups_raw: BTreeMap<u32, (String, u32, Vec<RawMember>)> = BTreeMap::new();
+    let mut messages_raw: Vec<(String, String, Vec<RawMember>, Vec<RawMember>)> = Vec::new();
+    let mut components_raw: BTreeMap<String, Vec<RawMember>> = BTreeMap::new();
 
     for raw in text.lines() {
         let line = match raw.find('#') {
@@ -103,18 +173,13 @@ fn parse_dict(text: &str) -> Dict {
                 let Some(delimiter) = tokens.next().and_then(|t| t.parse::<u32>().ok()) else {
                     continue;
                 };
-                let members: Vec<u32> = tokens
-                    .next()
-                    .map(|list| list.split(',').filter_map(|s| s.parse().ok()).collect())
-                    .unwrap_or_default();
-                groups.insert(
-                    count_tag,
-                    GroupDef {
-                        name: name.to_owned(),
-                        delimiter,
-                        members,
-                    },
-                );
+                let members = tokens.next().map(parse_member_list_raw).unwrap_or_default();
+                groups_raw.insert(count_tag, (name.to_owned(), delimiter, members));
+            }
+            Some("component") => {
+                let Some(name) = tokens.next() else { continue };
+                let members = tokens.next().map(parse_member_list_raw).unwrap_or_default();
+                components_raw.insert(name.to_owned(), members);
             }
             Some("message") => {
                 let Some(msg_type) = tokens.next() else {
@@ -125,21 +190,48 @@ fn parse_dict(text: &str) -> Dict {
                 let mut optional = Vec::new();
                 for tok in tokens {
                     if let Some(list) = tok.strip_prefix("req:") {
-                        required = list.split(',').filter_map(|s| s.parse().ok()).collect();
+                        required = parse_member_list_raw(list);
                     } else if let Some(list) = tok.strip_prefix("opt:") {
-                        optional = list.split(',').filter_map(|s| s.parse().ok()).collect();
+                        optional = parse_member_list_raw(list);
                     }
                 }
-                messages.push(MessageDef {
-                    msg_type: msg_type.to_owned(),
-                    name: name.to_owned(),
-                    required,
-                    optional,
-                });
+                messages_raw.push((msg_type.to_owned(), name.to_owned(), required, optional));
             }
             _ => {}
         }
     }
+
+    let mut components: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    for name in components_raw.keys() {
+        if !components.contains_key(name) {
+            let mut resolving = std::collections::BTreeSet::new();
+            resolve_component(name, &components_raw, &mut components, &mut resolving);
+        }
+    }
+
+    let groups = groups_raw
+        .into_iter()
+        .map(|(count_tag, (name, delimiter, raw_members))| {
+            (
+                count_tag,
+                GroupDef {
+                    name,
+                    delimiter,
+                    members: expand_members(&raw_members, &components),
+                },
+            )
+        })
+        .collect();
+
+    let messages = messages_raw
+        .into_iter()
+        .map(|(msg_type, name, req_raw, opt_raw)| MessageDef {
+            msg_type,
+            name,
+            required: expand_members(&req_raw, &components),
+            optional: expand_members(&opt_raw, &components),
+        })
+        .collect();
 
     Dict {
         fields,
@@ -587,6 +679,7 @@ fn version_begin_string(name: &str) -> &'static str {
         "FIX44" => "FIX.4.4",
         "FIXT11" => "FIXT.1.1",
         "FIX50" | "FIX50SP1" | "FIX50SP2" => "FIXT.1.1",
+        "FIXLATEST" => "FIX.Latest",
         _ => "",
     }
 }
@@ -607,6 +700,7 @@ fn main() {
         ("FIX50", "FIX50.fixdict"),
         ("FIX50SP1", "FIX50SP1.fixdict"),
         ("FIX50SP2", "FIX50SP2.fixdict"),
+        ("FIXLATEST", "FIXLATEST.fixdict"),
     ] {
         let path = Path::new(&manifest).join("dict-src/normalized").join(file);
         println!("cargo:rerun-if-changed={}", path.display());

@@ -62,6 +62,13 @@ pub trait MessageStore: Send + Sync {
     async fn get(&self, begin: u64, end: u64) -> Result<Vec<(u64, Vec<u8>)>, StoreError>;
     /// Reset: clear stored messages and set both sequence numbers back to 1.
     async fn reset(&self) -> Result<(), StoreError>;
+    /// Whether this store detected and recovered from corruption when it was opened
+    /// (`ForceResendWhenCorruptedStore`). Backends with no corruption-detection concept (e.g.
+    /// `MemoryStore`, `NoopStore`, SQL backends relying on the database's own durability) default
+    /// to `false`.
+    fn was_corrupted(&self) -> bool {
+        false
+    }
 }
 
 /// Which store backend to construct.

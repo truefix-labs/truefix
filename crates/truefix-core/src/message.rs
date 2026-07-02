@@ -17,6 +17,13 @@ pub struct Message {
     pub body: FieldMap,
     /// Trailer fields (SignatureLength, Signature, CheckSum).
     pub trailer: FieldMap,
+    /// Set by [`Self::decode`] when the wire byte stream violated header/body/trailer sectioning
+    /// (a field classified into an earlier section arrived after a later-section field had
+    /// already been seen) or the third field wasn't MsgType(35) — i.e. `ValidateFieldsOutOfOrder`
+    /// (FR-006). Always `false` for a `Message` built in code (assumed well-formed); the 3
+    /// separate `FieldMap`s preserve *within-section* wire order but classify by static tag
+    /// identity, so cross-section interleaving is only observable during decode itself.
+    pub(crate) fields_out_of_order: bool,
 }
 
 impl Message {
@@ -28,6 +35,13 @@ impl Message {
     /// The BeginString (tag 8) as a string, if present and valid UTF-8.
     pub fn begin_string(&self) -> Option<&str> {
         self.header.get(BEGIN_STRING).and_then(|f| f.as_str().ok())
+    }
+
+    /// Whether decoding observed header/body/trailer fields out of their wire-sectioning order,
+    /// or a third field other than MsgType(35) (`ValidateFieldsOutOfOrder`; FR-006). Always
+    /// `false` for a `Message` built in code rather than decoded from the wire.
+    pub fn fields_out_of_order(&self) -> bool {
+        self.fields_out_of_order
     }
 
     /// The MsgType (tag 35) as a string, if present and valid UTF-8.

@@ -33,10 +33,11 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use truefix_config::{ConnectionType, SessionSettings, SocketOptionsSpec};
+use truefix_config::{ConnectionType, ProxyKind, ProxySpec, SessionSettings, SocketOptionsSpec};
 use truefix_transport::{
-    build_client_config, build_server_config, connect_initiator_tls, connect_initiator_with,
-    Services, SocketOptions,
+    build_client_config, build_server_config, connect_initiator_tls, connect_initiator_via_proxy,
+    connect_initiator_via_proxy_tls, connect_initiator_with, ProxyConfig, ProxyType, Services,
+    SocketOptions,
 };
 
 fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {
@@ -50,6 +51,39 @@ fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {
         send_buffer_size: spec.send_buffer_size,
         traffic_class: spec.traffic_class,
     }
+}
+
+/// `truefix-config::ProxySpec` -> `truefix-transport::ProxyConfig` (US12, FR-016). The proxy
+/// server's own address (`spec.host`/`spec.port`) is resolved here (DNS if needed); the FIX
+/// counterparty's address arrives already-resolved as `rs.address` (`resolve_address` resolves it
+/// at config-resolution time, same as every other connection target in this crate), so the SOCKS/
+/// HTTP-CONNECT handshake tunnels to that resolved `SocketAddr` rather than deferring DNS
+/// resolution of the FIX counterparty to the proxy side.
+fn to_transport_proxy_config(spec: &ProxySpec) -> std::io::Result<ProxyConfig> {
+    use std::net::ToSocketAddrs;
+    let proxy_addr = (spec.host.as_str(), spec.port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "could not resolve proxy address {}:{}",
+                    spec.host, spec.port
+                ),
+            )
+        })?;
+    let proxy_type = match spec.proxy_type {
+        ProxyKind::Socks4 => ProxyType::Socks4,
+        ProxyKind::Socks5 => ProxyType::Socks5,
+        ProxyKind::HttpConnect => ProxyType::HttpConnect,
+    };
+    Ok(ProxyConfig {
+        proxy_type,
+        proxy_addr,
+        username: spec.username.clone(),
+        password: spec.password.clone(),
+    })
 }
 
 /// An error starting the engine from configuration (FR-015).
@@ -70,6 +104,9 @@ pub enum EngineError {
     /// A log could not be built from the session's `LogSpec` (FR-026).
     #[error("log: {0}")]
     Log(String),
+    /// A forward-proxy connection could not be established (US12, FR-016).
+    #[error("proxy: {0}")]
+    Proxy(String),
 }
 
 fn build_log(
@@ -131,6 +168,8 @@ impl Engine {
                 store: Some(Arc::from(store)),
                 socket_options: to_transport_socket_options(rs.socket_options),
                 log,
+                trusted_proxy_addresses: rs.trusted_proxy_addresses.clone(),
+                sync_write_timeout: rs.sync_write_timeout,
                 ..Services::default()
             };
             match rs.connection {
@@ -147,8 +186,43 @@ impl Engine {
                     acceptors.push(acc.serve());
                 }
                 ConnectionType::Initiator => {
-                    let handle = match &rs.tls {
-                        Some(tls) => {
+                    let proxy = rs
+                        .proxy
+                        .as_ref()
+                        .map(to_transport_proxy_config)
+                        .transpose()
+                        .map_err(|e| EngineError::Proxy(e.to_string()))?;
+                    let handle = match (&rs.tls, &proxy) {
+                        (Some(tls), Some(proxy)) => {
+                            let client_cfg = build_client_config(tls)
+                                .map_err(|e| EngineError::Tls(e.to_string()))?;
+                            let host = tls.server_name.clone().unwrap_or_default();
+                            let server_name = rustls::pki_types::ServerName::try_from(host)
+                                .map_err(|e| EngineError::Tls(e.to_string()))?;
+                            connect_initiator_via_proxy_tls(
+                                proxy,
+                                &rs.address.ip().to_string(),
+                                rs.address.port(),
+                                rs.session,
+                                app.clone(),
+                                services,
+                                client_cfg,
+                                server_name,
+                            )
+                            .await
+                            .map_err(|e| EngineError::Proxy(e.to_string()))?
+                        }
+                        (None, Some(proxy)) => connect_initiator_via_proxy(
+                            proxy,
+                            &rs.address.ip().to_string(),
+                            rs.address.port(),
+                            rs.session,
+                            app.clone(),
+                            services,
+                        )
+                        .await
+                        .map_err(|e| EngineError::Proxy(e.to_string()))?,
+                        (Some(tls), None) => {
                             let client_cfg = build_client_config(tls)
                                 .map_err(|e| EngineError::Tls(e.to_string()))?;
                             let host = tls.server_name.clone().unwrap_or_default();
@@ -165,7 +239,7 @@ impl Engine {
                             .await
                             .map_err(|e| EngineError::Io(e.to_string()))?
                         }
-                        None => {
+                        (None, None) => {
                             connect_initiator_with(rs.address, rs.session, app.clone(), services)
                                 .await
                                 .map_err(|e| EngineError::Io(e.to_string()))?

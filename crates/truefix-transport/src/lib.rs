@@ -18,8 +18,10 @@
 
 mod framing;
 mod metrics_export;
+mod proxy;
 mod tls_config;
 
+pub use proxy::{ProxyConfig, ProxyError, ProxyType};
 pub use tls_config::{
     build_client_config, build_server_config, TlsConfigError, TlsSpec, TlsVersion,
 };
@@ -145,6 +147,19 @@ pub struct Services {
         truefix_dict::DataDictionary,
         truefix_dict::ValidationOptions,
     )>,
+    /// Log a message via `log` when an inbound connection's Logon matches neither a static session
+    /// nor a dynamic template, before the connection is refused (`LogMessageWhenSessionNotFound`;
+    /// acceptor/routing-level, so it lives here rather than on `SessionConfig`).
+    pub log_message_when_session_not_found: bool,
+    /// PROXY protocol (v1/v2) is parsed only from a connection whose *physical* peer address is
+    /// in this set (`UseTCPProxy` + `TrustedProxyAddresses`; FR-015); empty disables PROXY
+    /// protocol entirely. Applied by both [`Acceptor`] and [`AcceptorBuilder`].
+    pub trusted_proxy_addresses: Vec<IpAddr>,
+    /// `SocketSynchronousWrites` + `SocketSynchronousWriteTimeout` (FR-017): when set, an
+    /// outbound write exceeding this duration surfaces a typed timeout (logged and the
+    /// connection is torn down) rather than blocking indefinitely. `None` (the default) leaves
+    /// writes unbounded, as before.
+    pub sync_write_timeout: Option<Duration>,
 }
 
 /// Control messages to a running session task.
@@ -327,6 +342,52 @@ where
     Ok(spawn_session_io(stream, config, app, services))
 }
 
+/// Connect out as an initiator through a configured forward proxy (SOCKS4/SOCKS5/HTTP CONNECT;
+/// FR-016). Unlike `connect_initiator*`'s `SocketAddr`, `target_host`/`target_port` is resolved on
+/// the proxy side, not locally — the proxy performs the DNS lookup (or, for SOCKS4, the caller is
+/// expected to have already resolved the address, per the protocol's own limitation).
+pub async fn connect_initiator_via_proxy<A>(
+    proxy: &ProxyConfig,
+    target_host: &str,
+    target_port: u16,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> Result<SessionHandle, ProxyError>
+where
+    A: Application + 'static,
+{
+    let stream = proxy::connect_through_proxy(proxy, target_host, target_port).await?;
+    services.socket_options.apply(&stream);
+    Ok(spawn_session_io(stream, config, app, services))
+}
+
+/// As [`connect_initiator_via_proxy`], but wraps the tunneled stream in TLS afterward (FR-016 +
+/// FR-017).
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_initiator_via_proxy_tls<A>(
+    proxy: &ProxyConfig,
+    target_host: &str,
+    target_port: u16,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+    tls: Arc<rustls::ClientConfig>,
+    server_name: rustls::pki_types::ServerName<'static>,
+) -> Result<SessionHandle, ProxyError>
+where
+    A: Application + 'static,
+{
+    let tcp = proxy::connect_through_proxy(proxy, target_host, target_port).await?;
+    services.socket_options.apply(&tcp);
+    let connector = tokio_rustls::TlsConnector::from(tls);
+    let stream = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(ProxyError::Io)?;
+    Ok(spawn_session_io(stream, config, app, services))
+}
+
 /// A listening acceptor that serves one static session configuration per connection.
 pub struct Acceptor<A: Application + 'static> {
     listener: TcpListener,
@@ -375,7 +436,16 @@ impl<A: Application + 'static> Acceptor<A> {
     pub fn serve(self) -> JoinHandle<()> {
         let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         tokio::spawn(async move {
-            while let Ok((stream, _peer)) = self.listener.accept().await {
+            while let Ok((mut stream, peer)) = self.listener.accept().await {
+                // PROXY protocol (FR-015): a single-session acceptor has no allow-list to gate
+                // on, but a trusted upstream's header is still stripped so its bytes are never
+                // mistaken for the start of the FIX stream.
+                let _ = proxy::strip_trusted_proxy_header(
+                    &mut stream,
+                    peer,
+                    &self.services.trusted_proxy_addresses,
+                )
+                .await;
                 self.services.socket_options.apply(&stream);
                 let config = self.config.clone();
                 let app = self.app.clone();
@@ -478,6 +548,14 @@ async fn run_connection<A, S>(
                 session.seed_sent_messages(msgs);
             }
         }
+        // ForceResendWhenCorruptedStore: recovered-but-untrusted history isn't safe to resend from,
+        // so force a full reset (both sides realign via a fresh ResetSeqNumFlag logon) instead
+        // (FR-008).
+        if store.was_corrupted() && session.force_resend_when_corrupted_store() {
+            app.on_before_reset(&id).await;
+            session.reset();
+            let _ = store.reset().await;
+        }
     }
 
     if let Some(monitor) = &services.monitor {
@@ -559,6 +637,7 @@ async fn run_connection<A, S>(
                     }
                 }
                 Some(Control::Reset) => {
+                    app.on_before_reset(&id).await;
                     session.reset();
                     if let Some(store) = &services.store {
                         let _ = store.reset().await;
@@ -701,6 +780,21 @@ where
 
     if !*logged_on && session.is_logged_on() {
         *logged_on = true;
+        // RefreshOnLogon: re-sync sequence numbers from the durable store right at logon
+        // completion, in case it changed between connect time and logon (FR-008).
+        if session.refresh_on_logon() {
+            if let Some(store) = &services.store {
+                let out = store
+                    .next_sender_seq()
+                    .await
+                    .unwrap_or(session.next_out_seq());
+                let inn = store
+                    .next_target_seq()
+                    .await
+                    .unwrap_or(session.next_in_seq());
+                session.refresh_sequences(out, inn);
+            }
+        }
         app.on_logon(id).await;
         if let Some(log) = &services.log {
             log.on_event(&format!("{id}: logon"));
@@ -763,17 +857,56 @@ where
                 if let Some(log) = &services.log {
                     log.on_outgoing(&String::from_utf8_lossy(&bytes));
                 }
-                if stream.write_all(&bytes).await.is_err() {
-                    return Err(());
-                }
+                write_with_timeout(stream, &bytes, services, id).await?;
                 metrics_export::record_sent(id);
                 persist_sent(&msg, &bytes, session, services).await;
             }
             Action::Disconnect => disconnect = true,
+            Action::ResetStore => {
+                // The engine performed a full sequence/history reset internally (logon-time
+                // ResetSeqNumFlag, or ResetOnDisconnect/ResetOnLogout) — clear the durable store
+                // so it doesn't retain stale message bodies under recycled sequence numbers
+                // (FR-004). `on_before_reset` fires here (rather than inside `Session`, which is
+                // sans-IO and never holds an `Application` handle) — this is the earliest point
+                // the transport learns of an internally-triggered reset, immediately before the
+                // durable store itself is cleared (US10, FR-013).
+                app.on_before_reset(id).await;
+                if let Some(store) = &services.store {
+                    let _ = store.reset().await;
+                }
+            }
         }
     }
     let _ = stream.flush().await;
     Ok(disconnect)
+}
+
+/// Write `bytes` to `stream`, honoring `services.sync_write_timeout` (`SocketSynchronousWrites` +
+/// `SocketSynchronousWriteTimeout`; FR-017): a write exceeding the configured timeout is logged
+/// as a distinct, typed timeout (rather than a generic I/O failure) and the connection is torn
+/// down, instead of blocking indefinitely. `None` (the default) preserves the previous unbounded
+/// behavior.
+async fn write_with_timeout<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    bytes: &[u8],
+    services: &Services,
+    id: &SessionId,
+) -> Result<(), ()> {
+    match services.sync_write_timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, stream.write_all(bytes)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(()),
+            Err(_elapsed) => {
+                if let Some(log) = &services.log {
+                    log.on_event(&format!(
+                        "{id}: synchronous write timed out after {timeout:?}"
+                    ));
+                }
+                Err(())
+            }
+        },
+        None => stream.write_all(bytes).await.map_err(|_| ()),
+    }
 }
 
 fn is_admin(msg: &Message) -> bool {
@@ -901,6 +1034,18 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         self
     }
 
+    /// Trust a PROXY protocol (v1/v2) header — parsed into the connection's effective source
+    /// IP for the allow-list check above — only when the connection's *physical* peer address is
+    /// one of `ips` (`UseTCPProxy` + `TrustedProxyAddresses`; FR-015). A connection from any other
+    /// physical source never has its PROXY header parsed/trusted, even if one is present. Sugar
+    /// over `services.trusted_proxy_addresses` (also settable directly via
+    /// [`with_services`](Self::with_services)).
+    #[must_use]
+    pub fn trust_proxy_from(mut self, ips: Vec<IpAddr>) -> Self {
+        self.services.trusted_proxy_addresses = ips;
+        self
+    }
+
     /// Attach store/log/socket services.
     #[must_use]
     pub fn with_services(mut self, services: Services) -> Self {
@@ -920,9 +1065,18 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         let listener = self.listener;
         let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         tokio::spawn(async move {
-            while let Ok((stream, peer)) = listener.accept().await {
+            while let Ok((mut stream, peer)) = listener.accept().await {
+                // PROXY protocol (FR-015): only a physically-trusted upstream's header is parsed;
+                // otherwise `effective_ip` is just the physical peer address, unchanged.
+                let effective_ip = proxy::strip_trusted_proxy_header(
+                    &mut stream,
+                    peer,
+                    &services.trusted_proxy_addresses,
+                )
+                .await
+                .ip();
                 if let Some(allowed) = &registry.allowed_remotes {
-                    if !allowed.contains(&peer.ip()) {
+                    if !allowed.contains(&effective_ip) {
                         continue; // refuse: not in the allow-list
                     }
                 }
@@ -994,6 +1148,13 @@ async fn route_and_run<A, S>(
             .map(|t| dynamic_config(t, &begin, &their_target, &their_sender))
     });
     let Some(config) = config else {
+        if services.log_message_when_session_not_found {
+            if let Some(log) = &services.log {
+                log.on_event(&format!(
+                    "no session found for BeginString={begin} SenderCompID={their_sender} TargetCompID={their_target}"
+                ));
+            }
+        }
         return; // no static match and no template -> refuse
     };
 

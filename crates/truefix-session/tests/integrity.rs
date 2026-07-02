@@ -26,7 +26,7 @@ fn logon(begin: &str, sender: &str, target: &str) -> Message {
 fn sent(actions: &[Action]) -> Option<&Message> {
     actions.iter().find_map(|a| match a {
         Action::Send(m) => Some(m),
-        Action::Disconnect => None,
+        Action::Disconnect | Action::ResetStore => None,
     })
 }
 

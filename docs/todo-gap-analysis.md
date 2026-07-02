@@ -1,118 +1,255 @@
 # TrueFix 与 QuickFIX/J + QuickFIX/Go 功能差异 TODO
 
-> 基于 2026-07-01 全量代码审查，对照 `specs/001` + `specs/002` 规格文档。
+> 基于 2026-07-01 全量代码审查 (TrueFix crates + thrdpty/quickfixj + thrdpty/quickfix 三方对照)，对照 `specs/001` + `specs/002` 规格文档。
 
 ## P0 — 发布阻塞项
 
-### TODO-01: AT 场景覆盖率 (~22/73 = 30%)
+### TODO-01: AT 场景覆盖率 (已完成 — 353/353 场景运行通过, 9/9 目标版本已接入)
 
-**当前**: 56 种场景 / 81 实例, 仅覆盖 FIX.4.2 + FIX.4.4。
-**目标**: 73 个 server 场景 + 7 个特殊类别套件, 覆盖全部目标版本 (FR-M3)。
+**2026-07-01 (003 会话) 进展**: `SUITE_VERSIONS` 已扩展到全部 9 个目标版本 (fix40/41/42/43/44/50/50SP1/50SP2 +
+fixLatest，US9 落地后完成)；~34 个版本无关场景现跨全部 9 版本运行；新增约 20+ 个具名场景 (见下方勾选)。
+US1 收尾 (Phase 12) 新增了 `timestamps_suite()`/`resynch_suite()` 两个特殊套件函数，以及
+`crates/truefix-at/tests/coverage.rs` 的套件完整性回归下限测试。详见 `docs/acceptance-record.md`
+"003 — QuickFIX/J parity closure"节与 `specs/003-qfj-full-parity-closure/tasks.md` T012–T017/T054–T057
+的逐项完成/延后记录。
 
-**未覆盖的特殊类别套件**:
+**特殊类别套件 (三个，spec Acceptance Scenario 2)**:
 
-- [ ] `validateChecksum` — 未覆盖
-- [ ] `timestamps` — 未覆盖
-- [ ] `resynch` — 未覆盖
+- [x] `validateChecksum` — 已完成 (US3/T022): `validate_checksum_suite()`，复用
+      `garbled_message_dropped`/`garbled_message_rejected`；checksum 校验是无条件的 (设计决策，见
+      `ValidationOptions::validate_checksum` 文档)，故坏 checksum 帧总是走 garbled-message 路径。
+- [x] `timestamps` — 已完成，代表性覆盖 (US1 收尾/T054): `timestamps_suite()`，复用
+      `check_latency_timestamps` (CheckLatency/SendingTime 时效性校验)。**仍有一处已知、披露的
+      harness 能力缺口**：对*出站* SendingTime 做精度级格式断言 (如区分毫秒 vs 秒精度，而非固定期望
+      值——因为 SendingTime 总是"当前时间")需要 `ExpectMsg` 支持谓词/格式匹配而非仅精确值匹配；这是
+      harness 能力缺口，不是协议缺口，未在本次范围内实现。
+- [x] `resynch` — 已完成 (US1 收尾/T054): 新增 `resynch_suite()`，复用既有 ResendRequest gap
+      recovery/SequenceReset Reset+GapFill(双向)/乱序排队排空/分块 resend 场景，作为独立可发现套件
+      (此前这些场景仅隐式跑在 `server_suite()` 内，未被归组为独立套件)；transport 集成测试层
+      (`reconnect.rs`/`restart_continuity.rs`) 的覆盖依然保留，两者互补而非替代。
 
-**未覆盖的规格 server 场景** (~51 个):
+**未覆盖的规格 server 场景**:
 
-- [ ] `1b_DuplicateIdentity`
-- [ ] `1c_InvalidSenderCompID` / `1c_InvalidTargetCompID`
-- [ ] `1d_InvalidLogonBadSendingTime` / `1d_InvalidLogonLengthInvalid` / `1d_InvalidLogonNoDefaultApplVerID` / `1d_InvalidLogonWrongBeginString`
-- [ ] `1e_NotLogonMessage`
-- [ ] `2a_MsgSeqNumCorrect`
-- [ ] `2d_GarbledMessage` / `3b_InvalidChecksum` / `3c_GarbledMessage`
-- [ ] `2e_PossDupAlreadyReceived` / `2e_PossDupNotReceived`
-- [ ] `2f_PossDupOrigSendingTimeTooHigh` / `2g_PossDupNoOrigSendingTime`
-- [ ] `2i_BeginStringValueUnexpected` / `2k_CompIDDoesNotMatchProfile`
-- [ ] `2m_BodyLengthValueNotCorrect` / `2o_SendingTimeValueOutOfRange` / `2q_MsgTypeNotValid` / `2t_FirstThreeFieldsOutOfOrder`
-- [ ] `8_AdminAndApplicationMessages` / `8_AdminAndApplicationMessages-FIX50SP2` / `8_OnlyAdminMessages` / `8_OnlyApplicationMessages`
-- [ ] `10_MsgSeqNumEqual` / `10_MsgSeqNumGreater` / `10_MsgSeqNumLess`
-- [ ] `11a_NewSeqNoGreater` / `11b_NewSeqNoEqual` / `11c_NewSeqNoLess`
-- [ ] `14g_HeaderBodyTrailerFieldsOutOfOrder`
-- [ ] `15_HeaderAndBodyFieldsOrderedDifferently`
-- [ ] `19a_PossResendMessageThatHasAlreadyBeenSent` / `19b_PossResendMessageThatHasNotBeenSent`
-- [ ] `20_SimultaneousResendRequest`
-- [ ] `AlreadyLoggedOn` / `bugfix_QFJ634_ResendRequestAndSequenceReset` / `LogonUnknownDefaultApplVerID`
-- [ ] `MinQty40` / `MinQty41` / `MinQty42` / `MinQty43` / `MinQty44` / `MinQty50`
-- [ ] `QFJ648_NegativeHeartBtInt` / `RejectResentMessage` / `SessionReset`
+- [ ] `1b_DuplicateIdentity` — 延后: 需要并发连接/会话去重基础设施
+- [ ] `1c_InvalidSenderCompID` / `1c_InvalidTargetCompID` — 延后 (Logon 时): `start_acceptor` 的动态模板会直接采纳首个 Logon 声明的身份，无法在首连接上制造"不匹配"；已用会话中段等价场景验证同一 `identity_problem` 逻辑 (见下方 `2i`/`2k` 已完成项)，需要 harness 增加非动态固定身份 acceptor 模式才能补上 Logon-时变体
+- [x] `1d_InvalidLogonBadSendingTime` — 完成
+- [ ] `1d_InvalidLogonLengthInvalid` — 延后: BodyLength 损坏可能破坏 `frame_length` 本身的分帧，需要更安全的损坏辅助函数
+- [ ] `1d_InvalidLogonNoDefaultApplVerID` / `LogonUnknownDefaultApplVerID` — 不适用当前架构: 本代码库的 FIX50+ 版本未实现真正的 FIXT.1.1 ApplVerID 协商 (与 FIX4.x 一样用扁平 BeginString)
+- [ ] `1d_InvalidLogonWrongBeginString` — 延后 (同 `1c_Invalid*CompID` 的动态模板限制)
+- [ ] `1e_NotLogonMessage` — 延后: 需要产品决策 (首条非 Logon 消息是否应显式拒绝)
+- [x] `2a_MsgSeqNumCorrect` — 完成
+- [ ] `2d_GarbledMessage` / `3b_InvalidChecksum` / `3c_GarbledMessage` — 已在 `garbled_message_dropped`/`garbled_message_rejected` 下等价覆盖，不重复
+- [ ] `2e_PossDupAlreadyReceived` — 已在 `poss_dup_too_low` 下等价覆盖
+- [x] `2e_PossDupNotReceived` — 完成
+- [ ] `2f_PossDupOrigSendingTimeTooHigh` / `2g_PossDupNoOrigSendingTime` — 延后: 底层 `requires_orig_sending_time`/`allow_pos_dup` 开关本身已实现 (见 TODO-09，已完成)，仅 AT 场景尚未编写 —不属于 T054–T057 的既定范围，留作后续场景补齐项
+- [x] `2i_BeginStringValueUnexpected` — 完成 (会话中段)
+- [x] `2k_CompIDDoesNotMatchProfile` — 完成 (会话中段)
+- [ ] `2m_BodyLengthValueNotCorrect` — 延后 (同 `1d_InvalidLogonLengthInvalid` 的分帧风险)
+- [x] `2o_SendingTimeValueOutOfRange` — 完成 (新增 `fresh_logon` 辅助函数)
+- [ ] `2q_MsgTypeNotValid` — 延后: 与既有 `unregistered_msg_type`("2r") 业务层拒绝场景边界不清晰，无参考定义前不贸然区分
+- [x] `2t_FirstThreeFieldsOutOfOrder` — 完成 (US3/T022)
+- [x] `8_AdminAndApplicationMessages` / `8_OnlyAdminMessages` / `8_OnlyApplicationMessages` — 完成
+- [ ] `8_AdminAndApplicationMessages-FIX50SP2` — 延后: 需要给 `start_acceptor` 接入 FIX50SP2 字典校验器
+- [x] `10_MsgSeqNumEqual` / `10_MsgSeqNumLess` — 完成 (`10_MsgSeqNumGreater` 已由既有 `sequence_reset_reset` 覆盖)
+- [x] `11b_NewSeqNoEqual` — 完成 (`11a`/`11c` 已由既有 `sequence_reset_gap_fill_advances`/`_backward_ignored` 覆盖)
+- [x] `14g_HeaderBodyTrailerFieldsOutOfOrder` / `15_HeaderAndBodyFieldsOrderedDifferently` — 完成 (US3/T022)
+- [ ] `19a_PossResendMessageThatHasAlreadyBeenSent` / `19b_PossResendMessageThatHasNotBeenSent` — 延后: 无参考定义，精确语义不确定，为避免断言错误行为暂缓
+- [ ] `20_SimultaneousResendRequest` — 延后: 需要并发连接 harness 支持
+- [ ] `AlreadyLoggedOn` — 延后: 需要产品决策 (重复 Logon 是否应显式拒绝)
+- [ ] `bugfix_QFJ634_ResendRequestAndSequenceReset` — 延后: 无参考定义，精确交错时序不确定
+- [ ] `MinQty40` / `MinQty41` / `MinQty42` / `MinQty43` / `MinQty44` / `MinQty50` — 延后: 已用 grep 确认 tag 110 (MinQty) 未出现在任何已捆绑字典子集中，需扩展字典内容而非仅编写场景
+- [x] `QFJ648_NegativeHeartBtInt` — 完成
+- [x] `RejectResentMessage` — 完成
+- [ ] `SessionReset` — 延后: 需要 admin/control-channel 钩子接入 `Step` 模型 (目前只脚本化 wire 层 Send/Expect)
 
-**未覆盖的目标版本**: fix40/41/43/50/fixLatest (FR-M3)。
+**目标版本**: fix40/41/42/43/44/50/50SP1/50SP2/fixLatest (9/9，已全部接入 `SUITE_VERSIONS`)。
 
 **文件**: `crates/truefix-at/src/scenarios.rs`, `crates/truefix-at/src/runner.rs`
 
 ---
 
-### TODO-02: Session 内 MessageStore 集成
+### TODO-02: Session 内 MessageStore 集成 (已完成 — 设计有修正，见下)
 
-**当前**: Transport 层已持久化 seq numbers + sent messages, `seed_sequences()` / `seed_sent_messages()` 从 store 恢复。但 `Session` 内的 resend 仍使用内存 `BTreeMap<u64, Message>`。
+**2026-07-01 (003 会话) 结论**: 深入阅读实现后发现，"重启后从 store 恢复重发"这部分其实已经正确且已有测试
+(`crates/truefix-session/tests/restart_resend.rs`，来自 002)——`run_connection` 在每次新连接 (含崩溃后重连)
+时都会调用 `seed_sequences`/`seed_sent_messages` 从 store 全量恢复。真正的缺口是**重置一致性**：
+`on_logon` 的 `ResetSeqNumFlag` 内部重置、以及 `enter_disconnected` 的 `ResetOnLogout`/`ResetOnDisconnect`
+内部重置，都没有告知持久化 store 一并清空 (只有显式 `Control::Reset` 路径手动配对了)。
 
-- [ ] `Session::with_store(config, store: Arc<dyn MessageStore>)`
-- [ ] `build_resend()` 调用 `store.get(begin, end)` 而非内存 BTreeMap
-- [ ] `reset()` 调用 `store.reset()`
+- [x] ~~`Session::with_store(config, store: Arc<dyn MessageStore>)`~~ — **设计修正**: `Session` 刻意保持
+  sans-IO (无 I/O)，为此新增异步 store 句柄会违反该架构；改为新增 `Action::ResetStore` 声明式信号，
+  由已经异步的 transport 层执行 `store.reset().await`，复用既有"Session 声明意图、transport 执行 I/O"模式
+- [x] ~~`build_resend()` 调用 `store.get(begin, end)`~~ — 已确认现有 `seed_sequences`/`seed_sent_messages`
+  机制已满足此需求 (见上)，无需改动
+- [x] `reset()` 调用 `store.reset()` — 通过 `Action::ResetStore` 在 `on_logon`/`enter_disconnected` 的
+  内部重置路径补齐，端到端验证见 `crates/truefix-transport/tests/restart_continuity.rs` 的
+  `reset_on_logout_clears_the_durable_store`
 
-**文件**: `crates/truefix-session/src/state.rs`
+**文件**: `crates/truefix-session/src/state.rs`, `crates/truefix-transport/src/lib.rs`
 
 ---
 
 ## P1 — 功能完整性差距
 
-### TODO-03: `ValidateFieldsOutOfOrder` 验证
+### TODO-03: `ValidateFieldsOutOfOrder` 验证 (已完成)
 
-**当前**: `ValidationOptions` 有 9 个开关, 但顶层字段顺序验证未实现。
+**2026-07-01 (003 会话) 结论**: 新增 `truefix_core::Message::fields_out_of_order()` 标志，由
+`decode()` 在按 tag 静态归类 header/body/trailer 时一并计算——3 个 `FieldMap` 各自保留段内 wire
+顺序，但跨段交叉 (如 body 字段先于 header 段结束出现) 只有在 decode 过程中才可观察，解码完成后
+的 `Message` 无法反推。
 
-- [ ] `ValidationOptions` 增加 `validate_fields_out_of_order: bool`
-- [ ] `validate()` 检查字段顺序
-- [ ] AT 场景 `14g` / `15` / `2t`
+- [x] `ValidationOptions` 增加 `validate_fields_out_of_order: bool` (默认 `false`，维持现状行为)
+- [x] `validate()` 检查字段顺序 (读取 `Message::fields_out_of_order()`)
+- [x] AT 场景 `14g` / `15` / `2t` (需要给 `start_acceptor` 增加 `validate_fields_out_of_order`
+  `SessionTweaks` 字段；场景通过 `Step::SendRaw` 发送手工乱序的原始字节，因为 `Message::encode()`
+  总是重新按 canonical 顺序输出)
+
+**文件**: `crates/truefix-core/src/message.rs`, `crates/truefix-core/src/codec/decode.rs`,
+`crates/truefix-dict/src/model.rs`, `crates/truefix-dict/src/validate.rs`,
+`crates/truefix-at/src/scenarios.rs`, `crates/truefix-at/src/runner.rs`
+
+---
+
+### TODO-04: 剩余 Session 配置开关 (已完成)
+
+**2026-07-02 (003 会话) 结论**: 12 个全部有了明确结论；其中 8 个 `SessionConfig` 级别的开关真正做到了
+`.cfg` → engine 全链路接入 (`builder.rs::resolve_one`)，不同于 TODO-09 发现的 "validation" 组缺口。
+
+- [x] `SendRedundantResendRequests` — 已实现 (解除重发抑制)
+- [x] `ClosedResendInterval` — 设计决策: 文档化为有意 no-op (单线程 sans-IO session 无并发重发竞争可言)
+- [x] `ResetOnError` — 已实现
+- [x] `DisconnectOnError` — 已实现
+- [x] `DisableHeartBeatCheck` — 已实现
+- [x] `RejectMessageOnUnhandledException` — 设计决策: 有意 no-op (Rust 类型化错误架构无"未处理异常"概念)
+- [x] `LogonTag` — 已实现 (`LogonTag=<tag>=<value>` 格式)
+- [x] `MaxScheduledWriteRequests` — 设计决策: 有意 no-op (session 状态机同步返回 action，无内部写队列可限)
+- [x] `ContinueInitializationOnError` — 仍为 `Recognized`: 属于 `truefix::Engine::start` 多会话启动编排，非
+  per-connection `Session` 运行时行为，留待后续会话在正确的层实现
+- [x] `LogMessageWhenSessionNotFound` — 已实现，但发现它实际是 acceptor/路由层 (`route_and_run`)，不是
+  `SessionConfig` 字段，改为 `truefix-transport::Services.log_message_when_session_not_found`
+- [x] `RefreshOnLogon` — 已实现 (新增 `Session::refresh_sequences()` 无条件版本 + transport 端 logon 完成时钩子)
+- [x] `ForceResendWhenCorruptedStore` — 已实现 (新增 `MessageStore::was_corrupted()` trait 方法 + 连接时强制
+  `reset()`)
+
+**附带修复的真实 bug**: `on_tick` 的 `LoggedOn` 心跳超时分支的 `enter_disconnected()` 调用点缩进与 US2 中
+修复的另外两处不同，导致当时的 `replace_all` 编辑漏掉了它——该路径此前在超时断连时不会发出
+`Action::ResetStore`，已在实现 `DisableHeartBeatCheck` 时一并修复。
+
+**文件**: `crates/truefix-session/src/state.rs`, `crates/truefix-session/src/config.rs`,
+`crates/truefix-session/src/admin.rs`, `crates/truefix-transport/src/lib.rs`,
+`crates/truefix-store/src/lib.rs`, `crates/truefix-store/src/file.rs`,
+`crates/truefix-config/src/builder.rs`, `crates/truefix-config/src/keys.rs`
+
+---
+
+### TODO-05: 组件 (Components) 模型 (已完成 — 但发现 build.rs codegen 侧尚未支持)
+
+**2026-07-02 (003 会话) 结论**: normalized `.fixdict` 运行时侧 (`parser.rs`/`model.rs`) 已完整支持
+`component` 指令 (含嵌套 component、嵌套 group、循环检测、未定义引用报错)，在 `DataDictionary` 构建期
+完全展开为扁平 tag 列表，`decode.rs`/`validate.rs` 无需任何改动。
+
+- [x] normalized `.fixdict` 增加 `component` 指令
+- [x] `DataDictionary` 增加 `ComponentDef` 类型
+- [x] 消息定义引用组件 (`component:<Name>` token), 构建期展开, 验证行为与手工内联字典完全一致 (SC-005)
+
+**新发现的缺口 (未修复，已记录)**: `build.rs` 的独立 codegen 解析器 (`parse_dict`，双轨设计的另一半)
+完全不认识 `component`/`component:<Name>`——它的成员列表解析是
+`filter_map(|s| s.parse::<u32>().ok())`，会**静默丢弃**无法解析成 `u32` 的 `component:Name` token
+而不报错。若未来任何已捆绑字典采用 `component`，codegen 会静默生成不完整的强类型结构体，而运行期
+字典仍然正确——这是真实的双轨分歧风险。目前是**休眠状态** (无已捆绑字典使用 `component`)，扩展
+`build.rs` 支持 component 是比本 US 运行期模型范围更大的任务，留待后续会话，已在
+`docs/parity-matrix.md` 中明确记录以免被遗忘。
+
+**文件**: `crates/truefix-dict/src/parser.rs`, `crates/truefix-dict/src/model.rs`
+
+---
+
+### TODO-06: 自定义字典运行时加载 (已完成)
+
+**2026-07-02 (003 会话) 结论**: 两者均已实现，且 `extend()` 用"先全量冲突检测、后应用合并"的两阶段设计
+保证冲突时 `self` 完全不受影响 (而非部分合并后中止)。
+
+- [x] `DataDictionary::load_from_file(path: impl AsRef<Path>)` — 新增 `DictLoadError::Io`/`Parse`，
+  两者都携带路径
+- [x] `DataDictionary::extend(&mut self, other: &DataDictionary)` — 合并扩展字典；相同重定义幂等，
+  冲突重定义返回 `DictMergeConflict` 且不修改 `self`；header/trailer 直接取并集 (无"冲突"概念)；
+  `hash` 保持不变 (仍标识双轨基准来源，扩展字典有意游离在该不变量之外)
+
+**附带修复**: `load_from_file` 测试最初用纳秒时间戳做临时文件名去重，在并发测试线程间可能撞车，导致
+`cargo test --workspace` 下偶发失败 (单独运行时不可见)；已改用原子计数器 (与 `truefix-transport` 测试
+已有模式一致)。
+
+**文件**: `crates/truefix-dict/src/lib.rs`, `crates/truefix-dict/src/model.rs`
+
+---
+
+## P1 — 功能完整性差距 (续)
+
+### TODO-08: 字段类型完整性 (已完成 — Data/UtcDateOnly/UtcTimeOnly；Double 按范围决策排除)
+
+**2026-07-02 (003 会话) 结论**: 按 spec 003 Assumptions 中记录的范围决策，`Field::double`/`as_double`
+不在本次范围内 (审计本身标注为可选，`rust_decimal` 已覆盖 Price/Qty 场景)，其余 3 种全部实现。
+
+- [x] `Field::bytes(value: &[u8])` + `as_bytes()` — Data 字段类型 (FIX tag 95/96/212/348/352/445)；
+  语义化包装 `new`/`value_bytes`，验证含内嵌 SOH 字节的场景
+- [x] `Field::utc_date_only(date)` + `as_utc_date_only()` — UtcDateOnly (`YYYYMMDD`)
+- [x] `Field::utc_time_only(time)` + `as_utc_time_only()` — UtcTimeOnly (`HH:MM:SS.sss`，与既有
+  `utc_timestamp` 的毫秒精度惯例一致)；容忍到皮秒级小数位，截断为纳秒 (与 `as_utc_timestamp` 一致)
+- [ ] `Field::double(value: f64)` + `as_double()` — **有意排除** (spec Assumptions 明确的范围决策)
+
+**文件**: `crates/truefix-core/src/field.rs`, `crates/truefix-core/src/error.rs`
+
+---
+
+### TODO-09: 额外验证选项 (已完成)
+
+**2026-07-01 (003 会话) 结论**: 4 个字段全部实现；其中 `validate_checksum` 采用"文档化的强制行为"
+设计——TrueFix 解码器已经无条件校验 wire checksum (解码期错误，走既有 `RejectGarbledMessage` 路径)，
+新增一个可关闭该校验的开关会构成正确性倒退 (违反宪法 Principle I/II)，因此该字段仅为 QFJ 配置键
+对齐而存在，**不会**被用来削弱强制校验。
+
+- [x] `validate_checksum: bool` — 保留字段以对齐 QFJ 配置键，但校验始终强制生效 (设计决策，非缺口)
+- [x] `validate_incoming_message: bool` — 总体验证开关, 关闭则跳过所有字典验证 (QFJ `ValidateIncomingMessage`)
+- [x] `allow_pos_dup: bool` — PossDup 消息接受策略 (QFJ `AllowPosDup`)
+- [x] `requires_orig_sending_time: bool` — PossDup 必须携带 OrigSendingTime (QFJ `RequiresOrigSendingTime`)
+
+**同时发现 (Principle VII)**: 这 5 个字段 (含 TODO-03) 对应的 Appendix A 键此前部分已标记
+`Implemented`，但 `ValidationOptions` 根本没有对应字段、`validate()` 也未做任何检查——是一个
+先于本次会话就存在的登记不准确。更广泛地看，"validation" 组的**任何**键都没有从 `.cfg` 接入
+`Engine::start` 的 `Services.validator` (`builder.rs` 完全没有 dictionary/validator 解析函数)，
+这是比本次 5 个字段更大的缺口，记录在 `docs/parity-matrix.md`，留待后续会话。
 
 **文件**: `crates/truefix-dict/src/model.rs`, `crates/truefix-dict/src/validate.rs`
 
 ---
 
-### TODO-04: 剩余 Session 配置开关 (Recognized 未实现)
+### TODO-10: FIX Latest 支持 (已完成)
 
-- [ ] `SendRedundantResendRequests`
-- [ ] `ClosedResendInterval`
-- [ ] `ResetOnError`
-- [ ] `DisconnectOnError`
-- [ ] `DisableHeartBeatCheck`
-- [ ] `RejectMessageOnUnhandledException`
-- [ ] `LogonTag`
-- [ ] `MaxScheduledWriteRequests`
-- [ ] `ContinueInitializationOnError`
-- [ ] `LogMessageWhenSessionNotFound`
-- [ ] `RefreshOnLogon` — 字段存在但 builder 未读取, state 未执行
-- [ ] `ForceResendWhenCorruptedStore` — 检测有, 强制重发行为未完整
+**当前**: 9 个字典源覆盖 FIX40–FIX50SP2 + FIXT11, 无 FIX Latest。QFJ 有独立 `quickfixj-messages-fixlatest` 模块 + Orchestra XSLT 转换。
 
-**文件**: `crates/truefix-session/src/state.rs`, `crates/truefix-session/src/config.rs`, `crates/truefix-config/src/builder.rs`
+- [x] 从 FIX Orchestra 生成 normalized `.fixdict` (FIX Latest) — 新增 `crates/truefix-dict/src/orchestra.rs`
+      (feature `dict-tooling`, `quick-xml` 解析一个有代表性的 Orchestra repository schema 子集:
+      `<fixr:field>`/`<fixr:component>`/`<fixr:group>`/`<fixr:message>`，`StandardHeader`/
+      `StandardTrailer` 特化为 `header`/`trailer` 指令)；`dict-src/orchestra/FIXLATEST.orchestra.xml`
+      是自行编写的、体现 Orchestra schema 形状的 fixture(不拷贝任何 FPL 文件内容，Principle III)，
+      转换产物即 `dict-src/normalized/FIXLATEST.fixdict`(与 FIX40–44 一致的会话层内联式子集,
+      外加一个 `Parties` component 包一个 `NoPartyIDs` group，用于串联 US5/US7 的产出)。
+- [x] `DataDictionary::load_fixlatest()` 加载器 — `crates/truefix-dict/src/lib.rs`；`ALL_DICTS` 现有 10 项。
+- [x] build.rs codegen 生成 FIX Latest typed structs + `crack_fixlatest` — **附带修复**：`build.rs` 自己
+      的极简 dict 解析器此前完全不认识 `component`/`component:<Name>` token(`req:`/`opt:` 列表用
+      `.parse::<u32>().ok()` 直接把它们静默过滤掉——一个先前已被记录但未修的“静默丢数据”风险，
+      本次因为 FIXLATEST 是第一个真正使用 `component:` 的内置字典而实测触发)。已按运行时
+      `parser.rs` 同款的两阶段(先解析 raw component、再展开引用、带环检测)逻辑把 `build.rs` 补齐。
+- [x] AT 场景扩展至 `FIX.Latest` — 加入 `SUITE_VERSIONS`(现 9 项)。逻辑与其余版本无关的核心场景
+      (logon/时序/resend/管理消息等)自动对新版本生效，无需逐条新增；套件规模 318 → 353 runs，全绿。
 
----
-
-### TODO-05: 组件 (Components) 模型
-
-**当前**: 字典仅有 `field` / `message` / `group` 指令, 无 `component`。
-
-- [ ] normalized `.fixdict` 增加 `component` 指令
-- [ ] `DataDictionary` 增加 `ComponentDef` 类型
-- [ ] 消息定义引用组件, 解码时展开, 验证
-
-**文件**: `crates/truefix-dict/src/parser.rs`, `crates/truefix-dict/src/model.rs`, `crates/truefix-dict/src/validate.rs`
+**文件**: `crates/truefix-dict/src/orchestra.rs`(新增)、`crates/truefix-dict/src/lib.rs`、
+`crates/truefix-dict/build.rs`、`crates/truefix-dict/dict-src/orchestra/FIXLATEST.orchestra.xml`(新增)、
+`crates/truefix-dict/dict-src/normalized/FIXLATEST.fixdict`(新增)、`crates/truefix-at/src/scenarios.rs`
 
 ---
 
-### TODO-06: 自定义字典运行时加载
-
-**当前**: `parse(&str)` 公开, 但无 `load_from_file(path)`。
-
-- [ ] `DataDictionary::load_from_file(path: &Path)`
-- [ ] `DataDictionary::extend(other: &DataDictionary)` — 合并扩展字典
-
-**文件**: `crates/truefix-dict/src/lib.rs`
-
----
-
-## P2 — Benchmark 补全
+## P2 — Benchmark & 工具补全
 
 ### TODO-07: Session round-trip latency benchmark
 
@@ -122,30 +259,128 @@
 
 ---
 
+### TODO-11: 网络增强 (已完成)
+
+**当前**: transport 已有 TLS/mTLS、多端点 failover、socket 选项 (8 项)、IP allow-list。缺少以下 QFJ / QF/Go 网络功能。
+
+- [x] **TCP PROXY protocol** (HAProxy/ELB) — acceptor 从 PROXY header 恢复真实客户端 IP (QF/Go `UseTCPProxy`)。
+      新增 `crates/truefix-transport/src/proxy.rs`(`ppp` 解析 v1/v2)；仅当物理对端 IP 在
+      `TrustedProxyAddresses` 中才解析/信任该 header (Clarifications 的信任边界)；`Services.
+      trusted_proxy_addresses` 同时接入单会话 `Acceptor` 与多会话 `AcceptorBuilder`(后者把解析出的
+      IP 送入既有 allow-list 检查，前者没有 allow-list 概念，仅做剥离避免 header 字节被误当 FIX 帧)。
+- [x] **SOCKS Proxy** — initiator 透过 SOCKS 代理连接 (QFJ `Proxy*` settings, QF/Go
+      `ProxyType/Host/Port`)。SOCKS4(+user ID)/SOCKS5(+用户名密码) 用 `tokio-socks`；HTTP CONNECT
+      手写实现(单条请求行+头部块，不值得为此引入完整 HTTP 客户端依赖)。新增
+      `connect_initiator_via_proxy`/`connect_initiator_via_proxy_tls`(纯增量 API，不改动既有
+      `connect_initiator*` 系列的签名)。
+- [x] **内联 PEM bytes** — 替代文件路径 (QF/Go 独有)。**设计偏离**: 本代码库的 `TlsSpec` 早在
+      001/002 就把 cert+key 合并成单一 `key_store_path`(而非 QFJ 的 `SocketPrivateKeyFile`/
+      `SocketCertificateFile` 分离两个文件)，故新增的内联字段也对应合并为
+      `key_store_bytes`/`trust_store_bytes` 两项(通过 `SocketKeyStoreBytes`/`SocketTrustStoreBytes`
+      两个新 key)，而非契约草案里 `SocketPrivateKeyBytes`/`SocketCertificateBytes`/`SocketCABytes`
+      三项——与既有合并文件的既定设计保持一致，已如实记录而非悄悄改契约。`.cfg` 是逐行
+      `key=value` 格式，PEM 块天然多行，故用字面 `\n` 两字符转义表示真实换行(已文档化)。
+      `key_store_path` 字段类型从 `PathBuf` 改为 `Option<PathBuf>`(路径与内联 bytes 二选一)——
+      技术上是 `TlsSpec` 的又一处破坏性字段变更，与 US10 的 `Reject.session_status` 同类，已披露。
+- [x] **CipherSuites 配置** — rustls `SupportedCipherSuites` 可配 (QFJ `CipherSuites`)。构造一个过滤过的
+      `rustls::crypto::CryptoProvider`(基于 `aws_lc_rs::default_provider()`，按 `Debug` 格式的套件名
+      如 `"TLS13_AES_128_GCM_SHA256"` 做大小写不敏感匹配)，通过 `builder_with_provider` 接入。
+- [x] **SocketSynchronousWrites** + `SocketSynchronousWriteTimeout` (QFJ 独有)。用
+      `tokio::time::timeout` 包裹 `perform_actions` 里的出站 `write_all`；超时时通过 `Log::on_event`
+      记录一条可区分的超时事件(而非泛化 I/O 失败)，随后断开连接——这是本代码库现有
+      "Result<bool,()>" 错误处理约定下可行的、可测试的"typed error"落地方式。
+
+**测试**: `crates/truefix-transport/tests/proxy_protocol.rs`(trusted/untrusted 边界，2 项)、
+`proxy_client.rs`(SOCKS4/SOCKS5±认证/HTTP CONNECT，4 项，各自手写最小代理服务器并真实转发到一个
+真实 FIX acceptor)、`tls_hardening.rs`(内联 PEM bytes、cipher suite 匹配/不匹配，3 项)、
+`sync_writes.rs`(用小 socket 缓冲区 + 不再读取的"卡住的对端"逼出超时，1 项)，加上
+`crates/truefix-config/tests/network_hardening_mapping.rs`(16 项 `.cfg` → `ResolvedSession` 映射测试)。
+
+**文件**: `crates/truefix-transport/src/proxy.rs`(新增)、`crates/truefix-transport/src/lib.rs`、
+`crates/truefix-transport/src/tls_config.rs`、`crates/truefix-config/src/builder.rs`、
+`crates/truefix-config/src/keys.rs`、`crates/truefix/src/lib.rs`(facade `Engine::start` 接入)
+
+---
+
+### TODO-12: CLI 字典工具
+
+**当前**: build.rs codegen 在编译时生成 typed structs, 但无独立 CLI 工具。QFJ 有 `dictgenerator` (FPL repo → XML), QF/Go 有 `generate-fix`。
+
+- [ ] `truefix-dict` CLI — 从 FIX Orchestra / FPL repository 生成 normalized `.fixdict`
+- [ ] `truefix-dict` CLI — 从 `.fixdict` 生成 typed Rust 代码 (脱离 build.rs 使用)
+- [ ] `truefix-dict` CLI — 验证字典文件语法 + 打印 hash
+
+**文件**: `crates/truefix-dict/src/` (新增 `bin/` 或 `cli/` 模块)
+
+---
+
+### TODO-13: 入站消息背压
+
+**当前**: transport 无入站消息有界缓冲。QF/Go 有 `InChanCapacity` (有界 channel), QFJ 有 `MessageQueue` (InMemory / BoundInMemory) + `MaxScheduledWriteRequests`。
+
+- [ ] `SessionConfig` 增加 `in_chan_capacity: Option<usize>` — 有界入站 channel, 满时施加背压
+- [ ] transport 层 `message_in` channel 改为 bounded
+- [ ] 满载行为: 阻塞读取 (背压) 而非丢弃
+
+**文件**: `crates/truefix-session/src/config.rs`, `crates/truefix-transport/src/framing.rs`
+
+---
+
+### TODO-14: 额外 SQL 后端
+
+**当前**: `SqlStore` 通过 sqlx 支持 PostgreSQL / MySQL / SQLite。QFJ (JDBC) 和 QF/Go 均额外支持 MSSQL 和 Oracle。
+
+- [ ] `SqlStore` 支持 MSSQL (sqlx `mssql` feature)
+- [ ] `SqlStore` 支持 Oracle (需评估 sqlx 或 oracle crate)
+- [ ] `SqlLog` 同步支持 MSSQL / Oracle
+
+**文件**: `crates/truefix-store/src/sql.rs`, `crates/truefix-log/src/sql.rs`, `crates/truefix-store/Cargo.toml`
+
+---
+
 ## QuickFIX/Go 独有功能 (可选, 超出 QF/J 对等范围)
 
-- [ ] `ResetSeqTime` — 连接中定时序列号重置
-- [ ] `InChanCapacity` — 入站消息有界缓冲
-- [ ] `ConnectionValidator` + `NewListenerCallback` — acceptor 自定义 hook
-- [ ] TCP PROXY protocol (HAProxy/ELB) — `UseTCPProxy`
-- [ ] 内联 PEM bytes 配置 — `SocketPrivateKeyBytes`/`CertificateBytes`/`CABytes`
-- [ ] MongoDB 存储/日志
-- [ ] `DynamicQualifier` — 动态会话限定符
-- [ ] `HeartBtIntOverride` — 覆盖对端 HeartBtInt
-- [ ] `generate-fix` CLI — 独立代码生成命令行工具
+> 以下功能 QFJ 不支持, TrueFix 可选择性实现。
+
+- [ ] `ResetSeqTime` / `EnableResetSeqTime` — 连接中定时序列号重置 → 已纳入 TODO-04 评估
+- [ ] `InChanCapacity` — 入站消息有界缓冲 → **TODO-13**
+- [ ] `ConnectionValidator` + `NewListenerCallback` — acceptor 自定义认证 hook (mTLS/IP 之外的扩展认证)
+- [x] TCP PROXY protocol (HAProxy/ELB) — `UseTCPProxy` → **TODO-11** (已完成)
+- [x] 内联 PEM bytes 配置 → **TODO-11** (已完成)
+- [ ] MongoDB 存储/日志 — NoSQL 后端选项
+- [ ] `DynamicQualifier` — 动态会话限定符 (不预配 CompID 的 acceptor 场景)
+- [ ] `HeartBtIntOverride` — 覆盖对端 HeartBtInt (对端配置不合理时强制纠正)
+- [ ] `generate-fix` CLI → **TODO-12**
 
 ## QuickFIX/J 独有功能 (无 Rust 等价物)
 
-- [ ] `ApplicationFunctionalAdapter` — Lambda 监听器, 多消费者 FIFO, 类型安全
-- [ ] `ApplicationExtended` 接口 — `canLogon` Predicate + `onBeforeSessionReset`
-- [ ] JMX MBean 远程管理 — `JmxExporter` + 远程协议 (Monitor 是能力等价但无远程协议)
-- [ ] 线程模型选择 — 单线程 vs ThreadPerSession (tokio async 是能力等价)
-- [ ] 队列背压 / 水位线 — watermark-based flow control
-- [ ] OSGi Bundle — `maven-bundle-plugin` (Rust 无 OSGi)
-- [ ] `@Handler` 注解 MessageCracker — 反射类型安全分派 (有 codegen `crack_<version>` 替代)
-- [ ] `RejectLogon` 异常 — SessionStatus + logoutBeforeDisconnect (`Reject` 近似但缺 SessionStatus)
-- [ ] `FieldNotFound` 异常 — 带字段号命名异常 (`RejectReason` 枚举近似)
-- [ ] `dictgenerator` CLI — FPL repository → 字典 XML
-- [ ] SLF4J 日志门面 — `SLF4JLogFactory` (tracing 替代)
-- [ ] FIX Latest — `quickfixj-messages-fixlatest` 模块
-- [ ] SleepycatStore — Berkeley DB JE (Unsup)
+> 以下功能 QF/Go 不支持。标注是否适合 TrueFix 实现。
+
+- [x] `ApplicationExtended` 接口 — `canLogon` Predicate + `onBeforeSessionReset` → **已完成** (US10)。
+      `canLogon` 复用既有 `from_admin(&Message, &SessionId) -> Result<(), Reject>` 回调 (无需新方法，
+      仅补充文档说明它就是任意 Logon 拒绝逻辑的执行点)；新增 `Application::on_before_reset(&self,
+      &SessionId)`(no-op 默认)。**设计修正**：`Session` 本身是刻意 sans-IO 的、从不持有
+      `Application` 句柄 (US2 已确立此边界)，因此该 hook 无法真的"写在 `reset()` 内部"，而是由
+      transport 层在三处实际触发 reset 的地方调用：显式 `Monitor::reset()`(`Control::Reset`)、
+      `ForceResendWhenCorruptedStore` 内部触发、以及 `Action::ResetStore`(覆盖 logon 期
+      `ResetSeqNumFlag`、`ResetOnLogout`/`ResetOnDisconnect` 等其余内部触发路径)。
+- [ ] `ApplicationFunctionalAdapter` — Lambda 监听器, 多消费者 FIFO, 类型安全 → Rust 用 `Arc<dyn Application>` + `tokio::sync` 可替代, 优先级低
+- [ ] JMX MBean 远程管理 — `JmxExporter` + 远程协议 → 不适合 (Rust 无 JMX; `metrics` facade + `Monitor` 是能力等价)
+- [ ] 线程模型选择 — 单线程 vs ThreadPerSession → 不适合 (tokio async 是能力等价)
+- [ ] 队列背压 / 水位线 — watermark-based flow control → **TODO-13** (有界 channel 近似)
+- [ ] OSGi Bundle — `maven-bundle-plugin` → 不适合 (Rust 无 OSGi)
+- [ ] `@Handler` 注解 MessageCracker — 反射类型安全分派 → 不适合 (有 codegen `crack_<version>` 编译时替代)
+- [x] `RejectLogon` 异常 — SessionStatus + logoutBeforeDisconnect → **已完成** (US10)。`Reject` 新增
+      `session_status: Option<u16>` 字段，`Session::reject_logon` 在其为 `Some` 时把 SessionStatus
+      (tag 573) 写入 outbound Logout。**注意**: 这是给 `Reject` (公开结构体、字段全 `pub`) 新增了一个
+      字段，对外部用直接结构体字面量构造 `Reject { .. }` 的调用方而言技术上是破坏性变更(需要补一行
+      `session_status: None`)——与 003 计划声明的"无破坏性 API 变更"存在这一处例外，如实记录于此；
+      本仓库内的两处调用点(测试)均已同步修复。`logoutBeforeDisconnect` 未额外建模——现有
+      `reject_logon` 本就是"先发送 Logout 再断开"的顺序，天然满足该语义，无需新增开关。
+- [ ] `FieldNotFound` 异常 — 带字段号命名异常 → 不适合 (`RejectReason` 枚举 + typed outcomes 已覆盖)
+- [ ] `dictgenerator` CLI — FPL repository → 字典 XML → **TODO-12**
+- [ ] SLF4J 日志门面 — `SLF4JLogFactory` → 不适合 (`tracing` 替代)
+- [ ] FIX Latest — `quickfixj-messages-fixlatest` 模块 → **TODO-10**
+- [ ] SleepycatStore — Berkeley DB JE → 不适合 (过时技术; Rust 有 sled/redb 等)
+- [x] `ValidateFieldsOutOfOrder` → **TODO-03** (已完成)
+- [x] `ValidateChecksum` / `ValidateIncomingMessage` / `AllowPosDup` / `RequiresOrigSendingTime` → **TODO-09** (已完成)

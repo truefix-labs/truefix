@@ -68,6 +68,8 @@ pub struct SessionTweaks {
     pub executor_app: bool,
     /// Enable RejectGarbledMessage (a garbled frame draws a session Reject instead of a silent drop).
     pub reject_garbled: bool,
+    /// Enable `ValidateFieldsOutOfOrder` on the acceptor's dictionary validator (FR-006).
+    pub validate_fields_out_of_order: bool,
 }
 
 /// A scripted acceptance-test scenario.
@@ -138,12 +140,16 @@ pub async fn start_acceptor(
     template.reject_garbled_message = tweaks.reject_garbled;
 
     // Enable dictionary validation so field-level reject scenarios produce Reject messages.
+    let validation_opts = truefix_dict::ValidationOptions {
+        validate_fields_out_of_order: tweaks.validate_fields_out_of_order,
+        ..truefix_dict::ValidationOptions::default()
+    };
     let validator = match version {
         "FIX.4.2" => truefix_dict::load_fix42().ok(),
         "FIX.4.4" => truefix_dict::load_fix44().ok(),
         _ => None,
     }
-    .map(|dict| (dict, truefix_dict::ValidationOptions::default()));
+    .map(|dict| (dict, validation_opts));
     let monitor = tweaks.executor_app.then(truefix_transport::Monitor::new);
     let services = truefix_transport::Services {
         validator,

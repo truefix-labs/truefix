@@ -25,6 +25,14 @@ pub trait Application: Send + Sync {
     /// Called when the session logs out or disconnects.
     async fn on_logout(&self, _session: &SessionId) {}
 
+    /// Called immediately before a full reset (explicit `Session::reset()`, or an internally
+    /// triggered one — logon-time `ResetSeqNumFlag`, `ResetOnLogout`/`ResetOnDisconnect`,
+    /// `ForceResendWhenCorruptedStore`) clears the durable store, so an integrator can capture or
+    /// react to pre-reset state (US10, FR-013). Fired by the transport layer, since `Session`
+    /// itself is deliberately sans-IO and never holds an `Application` handle — the same sans-IO
+    /// boundary `Action::ResetStore` already applies to the store reset itself.
+    async fn on_before_reset(&self, _session: &SessionId) {}
+
     /// Called before an outbound admin message is sent (allows mutation, e.g. credentials).
     async fn to_admin(&self, _message: &mut Message, _session: &SessionId) {}
 

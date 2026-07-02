@@ -24,7 +24,8 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 pub use builder::{
-    ConnectionType, LogSpec, ResolvedSession, SocketOptionsSpec, TlsSpec, TlsVersion,
+    ConnectionType, LogSpec, ProxyKind, ProxySpec, ResolvedSession, SocketOptionsSpec, TlsSpec,
+    TlsVersion,
 };
 pub use keys::{key_info, KeyInfo, Stance, APPENDIX_A_KEYS};
 

@@ -19,3 +19,4 @@ pub(crate) const SESSION_REJECT_REASON: u32 = 373;
 pub(crate) const BUSINESS_REJECT_REASON: u32 = 380;
 pub(crate) const ENCRYPT_METHOD: u32 = 98;
 pub(crate) const HEART_BT_INT: u32 = 108;
+pub(crate) const SESSION_STATUS: u32 = 573; // US10, FR-013

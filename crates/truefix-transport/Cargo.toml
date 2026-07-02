@@ -25,6 +25,8 @@ thiserror.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 time.workspace = true
+ppp.workspace = true
+tokio-socks.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }

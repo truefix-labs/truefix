@@ -32,6 +32,9 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"]
 tracing = "0.1"
 metrics = "0.24"
 async-trait = "0.1"
+quick-xml = "0.36"
+ppp = "2"
+tokio-socks = "0.5"
 truefix-core = { path = "crates/truefix-core" }
 truefix-dict = { path = "crates/truefix-dict" }
 truefix-session = { path = "crates/truefix-session" }

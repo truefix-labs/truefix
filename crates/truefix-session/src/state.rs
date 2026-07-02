@@ -17,7 +17,7 @@ use crate::config::{Role, SessionConfig};
 use crate::session_id::SessionId;
 use crate::tags::{
     GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM, POSS_DUP_FLAG,
-    RESET_SEQ_NUM_FLAG,
+    RESET_SEQ_NUM_FLAG, SESSION_STATUS,
 };
 use crate::time_util::now_utc_timestamp_prec;
 
@@ -71,6 +71,12 @@ pub enum Action {
     Send(Message),
     /// Close the connection.
     Disconnect,
+    /// A full sequence/message-history reset occurred in-engine (logon-time `ResetSeqNumFlag`, or
+    /// a disconnect-triggered `ResetOnDisconnect`/`ResetOnLogout`); the transport MUST clear the
+    /// durable store (if attached) so its persisted state stays consistent with the in-memory
+    /// reset (FR-004). Distinct from the explicit `Session::reset()` API, whose one call site
+    /// already pairs a store reset manually.
+    ResetStore,
 }
 
 /// A single FIX session.
@@ -133,6 +139,27 @@ impl Session {
         self.state
     }
 
+    /// Whether this session is configured to refresh sequence numbers from the durable store
+    /// right after logon completes (`RefreshOnLogon`).
+    pub fn refresh_on_logon(&self) -> bool {
+        self.config.refresh_on_logon
+    }
+
+    /// Whether this session is configured to force a full reset when the durable store reports it
+    /// recovered from corruption (`ForceResendWhenCorruptedStore`).
+    pub fn force_resend_when_corrupted_store(&self) -> bool {
+        self.config.force_resend_when_corrupted_store
+    }
+
+    /// Force sequence numbers to `next_out`/`next_in`, unconditionally (unlike [`Self::seed_sequences`],
+    /// which only applies before a logon has been sent). Used by the transport to honour
+    /// `RefreshOnLogon`: re-sync from the durable store immediately after logon completes, in case
+    /// it changed between connect time and logon (FR-008).
+    pub fn refresh_sequences(&mut self, next_out: u64, next_in: u64) {
+        self.next_out_seq = next_out.max(1);
+        self.next_in_seq = next_in.max(1);
+    }
+
     /// Whether the session is logged on.
     pub fn is_logged_on(&self) -> bool {
         self.state == SessionState::LoggedOn
@@ -183,10 +210,14 @@ impl Session {
 
     /// Refuse the session in response to an admin/logon callback rejection
     /// (`Application::from_admin` returning `Err(Reject)`): send a Logout carrying the rejection
-    /// text (if any) and disconnect (FR-016).
+    /// text (if any) and disconnect (FR-016). If `reject` carries a `SessionStatus` (tag 573)
+    /// reason, it is stamped onto the outbound Logout (US10, FR-013).
     pub fn reject_logon(&mut self, reject: &truefix_core::Reject) -> Vec<Action> {
         let seq = self.next_seq();
-        let lo = admin::logout(&self.config, seq, reject.text.as_deref());
+        let mut lo = admin::logout(&self.config, seq, reject.text.as_deref());
+        if let Some(status) = reject.session_status {
+            lo.body.set(Field::int(SESSION_STATUS, i64::from(status)));
+        }
         self.state = SessionState::Disconnected;
         vec![self.send_stored(lo), Action::Disconnect]
     }
@@ -324,6 +355,19 @@ impl Session {
         }
     }
 
+    /// When `ResetOnError` is configured, perform a full reset in response to an inbound-message
+    /// processing error (identity/latency failure, or a dictionary-validation reject) and return
+    /// the `Action::ResetStore` signal so the durable store stays consistent (FR-008/FR-004). A
+    /// no-op (returns nothing) when the switch is off.
+    fn reset_on_error(&mut self) -> Vec<Action> {
+        if !self.config.reset_on_error {
+            return Vec::new();
+        }
+        self.reset_sequences(true);
+        self.logon_sent = false;
+        vec![Action::ResetStore]
+    }
+
     /// Detect a BeginString or CompID mismatch (CheckCompID). Returns a Logout reason on failure.
     fn identity_problem(&self, msg: &Message) -> Option<&'static str> {
         if let Some(bs) = msg.header.get(8).and_then(|f| f.as_str().ok()) {
@@ -394,7 +438,10 @@ impl Session {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, Some("SendingTime accuracy problem"));
             self.state = SessionState::Disconnected;
-            return vec![self.send_stored(lo), Action::Disconnect];
+            let mut actions = vec![self.send_stored(lo)];
+            actions.extend(self.reset_on_error());
+            actions.push(Action::Disconnect);
+            return actions;
         }
 
         // BeginString / CheckCompID: a mismatched identity aborts the session (FR-007).
@@ -402,7 +449,10 @@ impl Session {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, Some(reason));
             self.state = SessionState::Disconnected;
-            return vec![self.send_stored(lo), Action::Disconnect];
+            let mut actions = vec![self.send_stored(lo)];
+            actions.extend(self.reset_on_error());
+            actions.push(Action::Disconnect);
+            return actions;
         }
 
         let mt = msg.msg_type().map(str::to_owned);
@@ -434,7 +484,13 @@ impl Session {
                 if let Some(reject) = self.validate_app(&msg) {
                     let mut actions = vec![reject];
                     self.next_in_seq = self.next_in_seq.saturating_add(1);
-                    actions.extend(self.drain_queue());
+                    actions.extend(self.reset_on_error());
+                    if self.config.disconnect_on_error {
+                        self.state = SessionState::Disconnected;
+                        actions.push(Action::Disconnect);
+                    } else {
+                        actions.extend(self.drain_queue());
+                    }
                     return actions;
                 }
                 let mut actions = self.process_in_order(&msg, mt.as_deref());
@@ -444,7 +500,7 @@ impl Session {
             }
             Ordering::Greater => {
                 self.queue.insert(seq, msg);
-                if self.resend_requested {
+                if self.resend_requested && !self.config.send_redundant_resend_requests {
                     Vec::new()
                 } else {
                     self.resend_requested = true;
@@ -623,13 +679,16 @@ impl Session {
     }
 
     fn on_logon(&mut self, msg: Message) -> Vec<Action> {
+        let mut store_reset = false;
         if msg
             .body
             .get(RESET_SEQ_NUM_FLAG)
             .and_then(|f| f.as_str().ok())
             == Some("Y")
         {
-            self.reset_sequences(!self.logon_sent);
+            let full = !self.logon_sent;
+            self.reset_sequences(full);
+            store_reset = full;
         }
 
         // Account for the Logon's own sequence number *before* building our response, so that
@@ -647,6 +706,9 @@ impl Session {
         }
 
         let mut actions = Vec::new();
+        if store_reset {
+            actions.push(Action::ResetStore);
+        }
         match self.config.role {
             Role::Acceptor if self.state == SessionState::AwaitingLogon => {
                 if let Some(hbi) = msg
@@ -716,14 +778,19 @@ impl Session {
 
     fn on_logout_msg(&mut self) -> Vec<Action> {
         if self.state == SessionState::AwaitingLogout {
-            self.enter_disconnected();
-            vec![Action::Disconnect]
+            let reset = self.enter_disconnected();
+            let mut actions: Vec<Action> = reset.into_iter().collect();
+            actions.push(Action::Disconnect);
+            actions
         } else {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, None);
             let send = self.send_stored(lo);
-            self.enter_disconnected();
-            vec![send, Action::Disconnect]
+            let reset = self.enter_disconnected();
+            let mut actions = vec![send];
+            actions.extend(reset);
+            actions.push(Action::Disconnect);
+            actions
         }
     }
 
@@ -739,11 +806,17 @@ impl Session {
         }
     }
 
-    fn enter_disconnected(&mut self) {
+    /// Transition to `Disconnected`, honoring `ResetOnDisconnect`/`ResetOnLogout`. Returns
+    /// `Some(Action::ResetStore)` when a full reset happened, so the caller can include it in the
+    /// actions it returns (FR-004) — the durable store is otherwise unaware this reset occurred.
+    fn enter_disconnected(&mut self) -> Option<Action> {
         self.state = SessionState::Disconnected;
         if self.config.reset_on_disconnect || self.config.reset_on_logout {
             self.reset_sequences(true);
             self.logon_sent = false;
+            Some(Action::ResetStore)
+        } else {
+            None
         }
     }
 
@@ -757,14 +830,18 @@ impl Session {
             SessionState::AwaitingLogon
                 if self.ticks_awaiting >= self.config.logon_timeout.max(1) =>
             {
-                self.enter_disconnected();
-                return vec![Action::Disconnect];
+                let reset = self.enter_disconnected();
+                let mut actions: Vec<Action> = reset.into_iter().collect();
+                actions.push(Action::Disconnect);
+                return actions;
             }
-            SessionState::LoggedOn => {
+            SessionState::LoggedOn if !self.config.disable_heart_beat_check => {
                 if self.ticks_since_recv >= hb * self.config.heartbeat_timeout_multiplier.max(1) + 2
                 {
-                    self.enter_disconnected();
-                    return vec![Action::Disconnect];
+                    let reset = self.enter_disconnected();
+                    let mut actions: Vec<Action> = reset.into_iter().collect();
+                    actions.push(Action::Disconnect);
+                    return actions;
                 }
                 let test_request_delay = f64::from(hb) * self.config.test_request_delay_multiplier;
                 if (self.ticks_since_recv as f64) > test_request_delay
@@ -781,11 +858,22 @@ impl Session {
                     actions.push(self.send_stored(h));
                 }
             }
+            // DisableHeartBeatCheck: still send heartbeats on our own cadence, but never probe or
+            // time out a silent peer.
+            SessionState::LoggedOn => {
+                if self.ticks_since_send >= hb {
+                    let seq = self.next_seq();
+                    let h = admin::heartbeat(&self.config, seq, None);
+                    actions.push(self.send_stored(h));
+                }
+            }
             SessionState::AwaitingLogout
                 if self.ticks_awaiting >= self.config.logout_timeout.max(1) =>
             {
-                self.enter_disconnected();
-                return vec![Action::Disconnect];
+                let reset = self.enter_disconnected();
+                let mut actions: Vec<Action> = reset.into_iter().collect();
+                actions.push(Action::Disconnect);
+                return actions;
             }
             _ => {}
         }

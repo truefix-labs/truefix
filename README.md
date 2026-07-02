@@ -91,10 +91,12 @@ runnable programs.
 
 ## Supported FIX versions
 
-FIX 4.0 / 4.1 / 4.2 / 4.3 / 4.4 / 5.0 / 5.0SP1 / 5.0SP2 and **FIXT 1.1** (with separate transport and
-application dictionaries; `DefaultApplVerID` resolution), via a dual-track dictionary that generates
-typed message structs/field enums/repeating-group structs at build time from the same normalized
-source the runtime `DataDictionary` validates against.
+FIX 4.0 / 4.1 / 4.2 / 4.3 / 4.4 / 5.0 / 5.0SP1 / 5.0SP2 / **FIX Latest** and **FIXT 1.1** (with separate
+transport and application dictionaries; `DefaultApplVerID` resolution), via a dual-track dictionary
+that generates typed message structs/field enums/repeating-group structs at build time from the same
+normalized source the runtime `DataDictionary` validates against. FIX Latest is sourced from FIX
+Orchestra XML via a build-tooling-only conversion tool (`--features dict-tooling`), feeding the same
+normalized-dictionary pipeline every other version uses.
 
 ## Architecture
 
@@ -107,7 +109,7 @@ Async-first engine on **tokio** (TLS via **rustls**), organized as a layered car
 | `truefix-session` | Session state machine, sequence management, admin messages, weekly scheduling + reset semantics, resend/gap-fill, `NextExpectedMsgSeqNum`, chunked resend, typed callback outcomes, reverse-route |
 | `truefix-store` | `MessageStore` trait + Memory / File (disk-only reads) / CachedFile (bounded in-memory cache + fsync toggle) / SQL (PostgreSQL/MySQL/SQLite via sqlx) / Noop |
 | `truefix-log` | `Log` trait + Screen / File / Tracing / SQL (PostgreSQL/MySQL/SQLite) / Composite, output switches (heartbeat filter, timestamps, visibility), `SessionPrefixLog` decorator |
-| `truefix-transport` | Initiator + Acceptor, multi/dynamic sessions, reconnect + multi-endpoint failover, full socket-option set, rustls TLS/mTLS, `metrics`-facade export |
+| `truefix-transport` | Initiator + Acceptor, multi/dynamic sessions, reconnect + multi-endpoint failover, full socket-option set, rustls TLS/mTLS (file or inline PEM bytes, configurable cipher suites), PROXY protocol v1/v2 (trusted-upstream-gated) + forward proxy (SOCKS4/SOCKS5+auth/HTTP CONNECT) for initiators, synchronous-write timeouts, `metrics`-facade export |
 | `truefix-config` | `SessionSettings`, `.cfg` parsing with `${name}` interpolation, `resolve()` into a runnable `Engine`-ready configuration, Appendix A key-stance registry |
 | `truefix` | Facade: re-exports + `Application` trait + `MessageCracker` + `Engine::start` (one-shot `.cfg`-driven start) |
 | `truefix-at` | Ported Acceptance Test suite (release gate) |
@@ -147,11 +149,17 @@ G1 Persistent resend ─▶ G2 Group parsing/validation ─▶ G3 Config-driven 
 - Two-process integration tests (real initiator ↔ acceptor) for handshake, heartbeat, resend, TLS/mTLS,
   failover, restart-survivable persistence, and metrics export.
 - The **AT suite** (`truefix-at`) ports QuickFIX/QuickFIX-J acceptance scenarios as black-box behavior
-  contracts — **56 scenario classes / 81 scenario runs** across FIX.4.2/4.4 — and is the hard release
-  gate (`cargo test -p truefix-at --test conformance`).
+  contracts — **353/353 scenario runs** across all 9 targeted FIX versions (fix40/41/42/43/44/50/50SP1/
+  50SP2/fixLatest), plus 3 independently-gated special-category suites (`validateChecksum`,
+  `timestamps`, `resynch`) and a CI-enforced coverage-regression floor — and is the hard release gate
+  (`cargo test -p truefix-at --test conformance`).
 - CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`, `cargo deny`, the AT
-  suite, and a dedicated `sql` job exercising PostgreSQL/MySQL/SQLite store+log backends against real
-  service containers (see [`docs/acceptance-record.md`](docs/acceptance-record.md) for the full mapping).
+  suite, a dedicated `sql` job exercising PostgreSQL/MySQL/SQLite store+log backends against real
+  service containers, and a `dict-tooling` job exercising the FIX Orchestra conversion tool (see
+  [`docs/acceptance-record.md`](docs/acceptance-record.md) for the full mapping).
+- **Benchmarks** (`cargo bench -p truefix-core`, `cargo bench -p truefix-session`) are
+  observation/regression tools, not CI-blocking gates — no numeric latency SLO is enforced; they exist
+  to make performance regressions visible across changes, not to fail a build on their own.
 
 ## Building & MSRV
 
@@ -161,7 +169,10 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test -p truefix-store -p truefix-log --features sql   # PostgreSQL/MySQL gated on availability
+cargo test -p truefix-dict --features dict-tooling            # Orchestra conversion tool
 cargo test -p truefix-at --test conformance                  # AT suite (release gate)
+cargo bench -p truefix-core                                   # codec throughput (non-gating)
+cargo bench -p truefix-session                                # session round-trip latency (non-gating)
 cargo deny check        # license/advisory gate (requires cargo-deny)
 ```
 
