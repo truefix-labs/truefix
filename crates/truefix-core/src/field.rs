@@ -42,6 +42,51 @@ impl Field {
         Self::string(tag, &format_utc_timestamp_millis(value))
     }
 
+    /// Create a `Data`-typed field from raw bytes (e.g. `RawData`/tag 96), preserving them
+    /// verbatim — including embedded SOH — since Data fields are not text (FR-011). A thin,
+    /// semantically-named wrapper over [`Self::new`]/[`Self::value_bytes`], distinguishing "this is
+    /// a Data field" call sites from generic byte construction.
+    pub fn bytes(tag: u32, value: &[u8]) -> Self {
+        Self::new(tag, value.to_vec())
+    }
+
+    /// The value as raw bytes, with no UTF-8 assumption (FIX `Data` fields; FR-011). Equivalent to
+    /// [`Self::value_bytes`], named for symmetry with [`Self::bytes`].
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.value
+    }
+
+    /// Create a UTC-date-only-valued field (`YYYYMMDD`; FR-011).
+    pub fn utc_date_only(tag: u32, value: time::Date) -> Self {
+        Self::string(tag, &format_utc_date_only(value))
+    }
+
+    /// The value as a UTC date-only (`YYYYMMDD`; FR-011).
+    pub fn as_utc_date_only(&self) -> Result<time::Date, FieldError> {
+        let s = self.as_str()?;
+        parse_utc_date_only(s).ok_or_else(|| FieldError::NotDateOnly {
+            tag: self.tag,
+            value: s.to_owned(),
+        })
+    }
+
+    /// Create a UTC-time-only-valued field at millisecond precision (`HH:MM:SS.sss`; FR-011),
+    /// matching [`Self::utc_timestamp`]'s precision convention.
+    pub fn utc_time_only(tag: u32, value: time::Time) -> Self {
+        Self::string(tag, &format_utc_time_only_millis(value))
+    }
+
+    /// The value as a UTC time-only (`HH:MM:SS[.fraction]`; FR-011). Accepts up to picosecond
+    /// fractional digits and truncates to nanosecond resolution, matching
+    /// [`Self::as_utc_timestamp`]'s tolerance.
+    pub fn as_utc_time_only(&self) -> Result<time::Time, FieldError> {
+        let s = self.as_str()?;
+        parse_utc_time_only(s).ok_or_else(|| FieldError::NotTimeOnly {
+            tag: self.tag,
+            value: s.to_owned(),
+        })
+    }
+
     /// The field's tag number.
     pub fn tag(&self) -> u32 {
         self.tag
@@ -166,4 +211,70 @@ fn parse_utc_timestamp(s: &str) -> Option<OffsetDateTime> {
     let date = time::Date::from_calendar_date(year, month, day).ok()?;
     let time = time::Time::from_hms_nano(hour, min, sec, nanos).ok()?;
     Some(time::PrimitiveDateTime::new(date, time).assume_utc())
+}
+
+/// Format `date` as a FIX UtcDateOnly `YYYYMMDD`.
+fn format_utc_date_only(date: time::Date) -> String {
+    format!(
+        "{:04}{:02}{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    )
+}
+
+/// Parse `YYYYMMDD` as a UTC date-only. Returns `None` on any malformation.
+fn parse_utc_date_only(s: &str) -> Option<time::Date> {
+    if s.len() != 8 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let year: i32 = s.get(0..4)?.parse().ok()?;
+    let month: u8 = s.get(4..6)?.parse().ok()?;
+    let day: u8 = s.get(6..8)?.parse().ok()?;
+    let month = time::Month::try_from(month).ok()?;
+    time::Date::from_calendar_date(year, month, day).ok()
+}
+
+/// Format `t` as a FIX UtcTimeOnly `HH:MM:SS.sss` at millisecond precision.
+fn format_utc_time_only_millis(t: time::Time) -> String {
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        t.hour(),
+        t.minute(),
+        t.second(),
+        t.millisecond()
+    )
+}
+
+/// Parse `HH:MM:SS[.fraction]` as a UTC time-only. Returns `None` on any malformation. Accepts one
+/// or more fractional digits up to picosecond, truncating to nanosecond resolution (matching
+/// `parse_utc_timestamp`'s tolerance).
+fn parse_utc_time_only(s: &str) -> Option<time::Time> {
+    let (hms, frac) = match s.split_once('.') {
+        Some((h, f)) => (h, Some(f)),
+        None => (s, None),
+    };
+    let mut parts = hms.split(':');
+    let hour: u8 = parts.next()?.parse().ok()?;
+    let min: u8 = parts.next()?.parse().ok()?;
+    let sec: u8 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let nanos: u32 = match frac {
+        None => 0,
+        Some(f) => {
+            if f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let mut buf = [b'0'; 9];
+            for (slot, digit) in buf.iter_mut().zip(f.bytes()) {
+                *slot = digit;
+            }
+            core::str::from_utf8(&buf).ok()?.parse().ok()?
+        }
+    };
+
+    time::Time::from_hms_nano(hour, min, sec, nanos).ok()
 }

@@ -43,7 +43,7 @@ fn sends(actions: &[Action]) -> Vec<&Message> {
         .iter()
         .filter_map(|a| match a {
             Action::Send(m) => Some(m),
-            Action::Disconnect => None,
+            Action::Disconnect | Action::ResetStore => None,
         })
         .collect()
 }
@@ -58,6 +58,7 @@ fn reject_logon_sends_logout_with_text_and_disconnects() {
         reason: 0,
         ref_tag: None,
         text: Some("bad credentials".to_owned()),
+        session_status: None,
     };
     let actions = s.reject_logon(&reject);
     let msgs = sends(&actions);
@@ -84,7 +85,7 @@ fn discarded_sent_message_gap_fills_instead_of_replaying() {
     let actions = s.send_app(order);
     let seq = match &actions[0] {
         Action::Send(m) => m.header.get(34).and_then(|f| f.as_int().ok()).unwrap_or(0),
-        Action::Disconnect => 0,
+        Action::Disconnect | Action::ResetStore => 0,
     };
     assert_eq!(seq, 2);
     s.discard_sent(seq as u64);

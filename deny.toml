@@ -35,6 +35,34 @@ ignore = [
     # connection without TLS, which is exactly what our own CI `sql` job's mysql:8 service
     # container test does.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2025-0134 (rustls-pemfile unmaintained) reappears transitively via `tiberius`'s own
+    # `rustls` feature (US14, FR-020's MSSQL backend, behind the new off-by-default `mssql`
+    # feature) — the same advisory this workspace's own direct PEM parsing already moved off of
+    # (see the `fix(deps)` commit migrating to rustls-pki-types::pem). tiberius offers no way to
+    # get rustls-based TLS without pulling this in; the only alternative is `native-tls`
+    # (tiberius's other TLS option), which this project avoids project-wide to keep a single,
+    # consistent TLS stack (rustls). Scoped to the `mssql` feature only, not the default build.
+    "RUSTSEC-2025-0134",
+    # RUSTSEC-2026-0098 / RUSTSEC-2026-0099 / RUSTSEC-2026-0104: `rustls-webpki` 0.101.7, pulled in
+    # transitively via the same `tiberius` `rustls` feature (mssql feature only) through its own
+    # pinned `tokio-rustls 0.24 -> rustls 0.21 -> rustls-webpki 0.101.7` stack — one major line
+    # behind this workspace's own direct rustls usage. No fix exists on the 0.101.x branch (patched
+    # versions start at >=0.103.12, which needs rustls 0.23+; `tiberius` 0.12.3 — the latest
+    # release on crates.io as of this writing — has no such upgrade available), and `tiberius` has
+    # no rustls-based path around it (native-tls, its only alternative, is avoided project-wide to
+    # keep a single, consistent TLS stack — see the RUSTSEC-2025-0134 entry above).
+    #
+    # All three advisories are in `rustls-webpki`'s certificate-chain/name-constraint/CRL path
+    # validation (`webpki::EndEntityCert::verify_*`), which our own MSSQL usage never reaches:
+    # `MssqlStore`/`MssqlLog::parse_url` always calls `tiberius::Config::trust_cert()`, which wires
+    # in `tiberius`'s own `NoCertVerifier` (`src/client/tls_stream/rustls_tls_stream.rs`) via
+    # rustls's `dangerous()` config API — `verify_server_cert`/`verify_tls12_signature` both return
+    # an unconditional `Ok(...::assertion())` without ever calling into `rustls-webpki`. Same
+    # reachability argument as the RUSTSEC-2023-0071 entry above: the vulnerable code path is
+    # present in the dependency tree but never executed by this codebase's own usage.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
 ]
 
 [sources]

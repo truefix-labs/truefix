@@ -62,3 +62,82 @@ fn invalid_timestamp_errors() {
         .as_utc_timestamp()
         .is_err());
 }
+
+// --- T039/T040 (US7) — Data/UtcDateOnly/UtcTimeOnly round-trips (FR-011) ---
+
+#[test]
+fn data_field_round_trips_raw_bytes_including_embedded_soh() {
+    let cases: &[&[u8]] = &[
+        b"hello",
+        b"",
+        b"with\x01embedded\x01SOH",
+        &[0u8, 1, 2, 255, 254, 0],
+    ];
+    for raw in cases {
+        let f = Field::bytes(96, raw); // RawData
+        assert_eq!(f.as_bytes(), *raw);
+        assert_eq!(f.value_bytes(), *raw);
+    }
+}
+
+#[test]
+fn data_field_bytes_and_value_bytes_agree() {
+    let f = Field::bytes(212, b"xml-data-length-prefixed");
+    assert_eq!(f.as_bytes(), f.value_bytes());
+}
+
+#[test]
+fn utc_date_only_round_trips_the_fix_wire_format() {
+    let cases = [
+        (2012, time::Month::March, 31, "20120331"),
+        (1999, time::Month::January, 1, "19990101"),
+        (2026, time::Month::December, 25, "20261225"),
+    ];
+    for (year, month, day, wire) in cases {
+        let date = time::Date::from_calendar_date(year, month, day).unwrap();
+        let f = Field::utc_date_only(453, date);
+        assert_eq!(f.as_str().unwrap(), wire);
+        let parsed = f.as_utc_date_only().unwrap();
+        assert_eq!(parsed, date);
+    }
+}
+
+#[test]
+fn utc_date_only_invalid_values_error_never_panic() {
+    assert!(Field::string(453, "not-a-date").as_utc_date_only().is_err());
+    assert!(Field::string(453, "20121331") // month 13
+        .as_utc_date_only()
+        .is_err());
+    assert!(Field::string(453, "2012033") // too short
+        .as_utc_date_only()
+        .is_err());
+    assert!(Field::string(453, "").as_utc_date_only().is_err());
+}
+
+#[test]
+fn utc_time_only_round_trips_the_fix_wire_format_at_millisecond_precision() {
+    let time = time::Time::from_hms_milli(10, 15, 30, 444).unwrap();
+    let f = Field::utc_time_only(273, time);
+    assert_eq!(f.as_str().unwrap(), "10:15:30.444");
+    assert_eq!(f.as_utc_time_only().unwrap(), time);
+}
+
+#[test]
+fn utc_time_only_accepts_no_fraction_and_truncates_picoseconds() {
+    let no_frac = Field::string(273, "10:15:30").as_utc_time_only().unwrap();
+    assert_eq!(no_frac.millisecond(), 0);
+
+    let with_ps = Field::string(273, "10:15:30.123456789012")
+        .as_utc_time_only()
+        .unwrap();
+    assert_eq!(with_ps.nanosecond(), 123_456_789);
+}
+
+#[test]
+fn utc_time_only_invalid_values_error_never_panic() {
+    assert!(Field::string(273, "not-a-time").as_utc_time_only().is_err());
+    assert!(Field::string(273, "25:00:00") // hour 25
+        .as_utc_time_only()
+        .is_err());
+    assert!(Field::string(273, "").as_utc_time_only().is_err());
+}

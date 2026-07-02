@@ -4,7 +4,7 @@
 //! naming the key and session, so no partially-configured engine is produced.
 
 use std::collections::BTreeMap;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -44,6 +44,44 @@ pub struct ResolvedSession {
     pub failover_addresses: Vec<SocketAddr>,
     /// A file-backed log to build for this session, present when `FileLogPath` is set (FR-026).
     pub log: Option<LogSpec>,
+    /// Forward-proxy configuration for an initiator connection, present when `ProxyType` is set
+    /// (US12, FR-016).
+    pub proxy: Option<ProxySpec>,
+    /// PROXY protocol (v1/v2) is trusted only from these physical source addresses (US12,
+    /// FR-015); empty when `UseTCPProxy` is unset/`N`, or `TrustedProxyAddresses` is absent.
+    pub trusted_proxy_addresses: Vec<IpAddr>,
+    /// `SocketSynchronousWrites` + `SocketSynchronousWriteTimeout` (US12, FR-017): present when
+    /// synchronous writes are enabled with a configured timeout.
+    pub sync_write_timeout: Option<Duration>,
+}
+
+/// Forward-proxy configuration for an initiator connection, resolved from configuration (US12,
+/// FR-016). Data-only mirror of `truefix_transport::ProxyConfig`; the mechanism that performs the
+/// SOCKS4/SOCKS5/HTTP-CONNECT handshake lives in `truefix-transport`, which depends on this crate
+/// for the shared spec shape (same pattern as [`TlsSpec`]/[`SocketOptionsSpec`]).
+#[derive(Debug, Clone)]
+pub struct ProxySpec {
+    /// Which proxy protocol to speak. Maps from `ProxyType`.
+    pub proxy_type: ProxyKind,
+    /// The proxy server's host. Maps from `ProxyHost`.
+    pub host: String,
+    /// The proxy server's port. Maps from `ProxyPort`.
+    pub port: u16,
+    /// Optional username (SOCKS5 password auth, or SOCKS4 user ID). Maps from `ProxyUser`.
+    pub username: Option<String>,
+    /// Optional password (SOCKS5 password auth only). Maps from `ProxyPassword`.
+    pub password: Option<String>,
+}
+
+/// Which forward-proxy protocol to use (`ProxyType`; US12, FR-016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyKind {
+    /// SOCKS4 (optionally with a user ID).
+    Socks4,
+    /// SOCKS5 (optionally with username/password authentication).
+    Socks5,
+    /// HTTP CONNECT.
+    HttpConnect,
 }
 
 /// A file-backed log resolved from configuration (FR-026). Data-only mirror of
@@ -105,17 +143,28 @@ impl Default for SocketOptionsSpec {
 #[derive(Debug, Clone)]
 pub struct TlsSpec {
     /// PEM file containing the certificate chain and private key (combined). Maps from
-    /// `SocketKeyStore`.
-    pub key_store_path: PathBuf,
+    /// `SocketKeyStore`. `None` when [`key_store_bytes`](Self::key_store_bytes) is set instead —
+    /// exactly one of the two must be present.
+    pub key_store_path: Option<PathBuf>,
+    /// Inline PEM bytes containing the certificate chain and private key (combined), in place of
+    /// a file path (US12, FR-017). Maps from `SocketKeyStoreBytes`.
+    pub key_store_bytes: Option<Vec<u8>>,
     /// PEM file of CA certificates (trust roots) used to verify the peer. Maps from
     /// `SocketTrustStore`.
     pub trust_store_path: Option<PathBuf>,
+    /// Inline PEM bytes of CA certificates, in place of a file path (US12, FR-017). Maps from
+    /// `SocketTrustStoreBytes`.
+    pub trust_store_bytes: Option<Vec<u8>>,
     /// Require and verify a client certificate (mTLS; server side). Maps from `NeedClientAuth`.
     pub need_client_auth: bool,
     /// Minimum TLS protocol version to accept/offer. Maps from `EnabledProtocols`.
     pub min_version: Option<TlsVersion>,
     /// SNI server name an initiator presents. Maps from `SNIHostName` (when `UseSNI=Y`).
     pub server_name: Option<String>,
+    /// Restrict the TLS handshake to these cipher suites (US12, FR-017); empty preserves rustls's
+    /// default suite set. Maps from `CipherSuites` (comma-separated names, e.g.
+    /// `TLS13_AES_128_GCM_SHA256`).
+    pub cipher_suites: Vec<String>,
 }
 
 /// A minimum TLS protocol version (`EnabledProtocols`).
@@ -173,6 +222,26 @@ fn bool_key(map: &Map, key: &str, default: bool) -> bool {
     map.get(key)
         .map(|v| v.eq_ignore_ascii_case("Y"))
         .unwrap_or(default)
+}
+
+/// `LogonTag=<tag>=<value>` (e.g. `LogonTag=9001=HOUSE-ID`); absent → `None`.
+fn resolve_logon_tag(map: &Map, session: &str) -> Result<Option<(u32, String)>, ConfigError> {
+    let Some(raw) = map.get("LogonTag") else {
+        return Ok(None);
+    };
+    let (tag, value) = raw
+        .split_once('=')
+        .ok_or_else(|| ConfigError::InvalidValue {
+            key: "LogonTag".to_owned(),
+            session: session.to_owned(),
+            reason: format!("expected `<tag>=<value>`, got {raw:?}"),
+        })?;
+    let tag: u32 = tag.parse().map_err(|_| ConfigError::InvalidValue {
+        key: "LogonTag".to_owned(),
+        session: session.to_owned(),
+        reason: format!("expected an integer tag, got {tag:?}"),
+    })?;
+    Ok(Some((tag, value.to_owned())))
 }
 
 fn f64_key(map: &Map, key: &str, session: &str, default: f64) -> Result<f64, ConfigError> {
@@ -288,6 +357,14 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.timestamp_precision =
         precision_key(map, "TimeStampPrecision", &session, cfg.timestamp_precision)?;
     cfg.schedule = resolve_schedule(map, &session)?;
+    cfg.send_redundant_resend_requests = bool_key(map, "SendRedundantResendRequests", false);
+    cfg.reset_on_error = bool_key(map, "ResetOnError", false);
+    cfg.disconnect_on_error = bool_key(map, "DisconnectOnError", false);
+    cfg.disable_heart_beat_check = bool_key(map, "DisableHeartBeatCheck", false);
+    cfg.refresh_on_logon = bool_key(map, "RefreshOnLogon", false);
+    cfg.force_resend_when_corrupted_store = bool_key(map, "ForceResendWhenCorruptedStore", false);
+    cfg.logon_tag = resolve_logon_tag(map, &session)?;
+    cfg.in_chan_capacity = usize_key(map, "InChanCapacity", &session, None)?;
 
     let address = resolve_address(map, connection, &session)?;
     let store = resolve_store(map, &session)?;
@@ -298,6 +375,9 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         ConnectionType::Acceptor => Vec::new(),
     };
     let log = resolve_log(map);
+    let proxy = resolve_proxy(map, &session)?;
+    let trusted_proxy_addresses = resolve_trusted_proxy_addresses(map, &session)?;
+    let sync_write_timeout = resolve_sync_write_timeout(map, &session)?;
 
     Ok(ResolvedSession {
         session: cfg,
@@ -308,7 +388,88 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         socket_options,
         failover_addresses,
         log,
+        proxy,
+        trusted_proxy_addresses,
+        sync_write_timeout,
     })
+}
+
+/// Resolve forward-proxy settings from `ProxyType`/`ProxyHost`/`ProxyPort`/`ProxyUser`/
+/// `ProxyPassword` (US12, FR-016); `None` when `ProxyType` is absent.
+fn resolve_proxy(map: &Map, session: &str) -> Result<Option<ProxySpec>, ConfigError> {
+    let Some(proxy_type_str) = map.get("ProxyType") else {
+        return Ok(None);
+    };
+    let proxy_type = match proxy_type_str.to_ascii_lowercase().as_str() {
+        "socks4" => ProxyKind::Socks4,
+        "socks5" => ProxyKind::Socks5,
+        "httpconnect" | "http_connect" | "http" => ProxyKind::HttpConnect,
+        other => {
+            return Err(ConfigError::InvalidValue {
+                key: "ProxyType".to_owned(),
+                session: session.to_owned(),
+                reason: format!(
+                    "unknown proxy type {other:?} (expected Socks4, Socks5, or HttpConnect)"
+                ),
+            })
+        }
+    };
+    let host = required(map, "ProxyHost", session)?.to_owned();
+    let port_str = required(map, "ProxyPort", session)?;
+    let port: u16 = port_str.parse().map_err(|_| ConfigError::InvalidValue {
+        key: "ProxyPort".to_owned(),
+        session: session.to_owned(),
+        reason: format!("expected a port number, got {port_str:?}"),
+    })?;
+    Ok(Some(ProxySpec {
+        proxy_type,
+        host,
+        port,
+        username: map.get("ProxyUser").cloned(),
+        password: map.get("ProxyPassword").cloned(),
+    }))
+}
+
+/// Resolve `UseTCPProxy`/`TrustedProxyAddresses` (US12, FR-015): the physical source addresses a
+/// PROXY protocol header is trusted from. Empty when `UseTCPProxy` is unset/`N`.
+fn resolve_trusted_proxy_addresses(map: &Map, session: &str) -> Result<Vec<IpAddr>, ConfigError> {
+    if !bool_key(map, "UseTCPProxy", false) {
+        return Ok(Vec::new());
+    }
+    match map.get("TrustedProxyAddresses") {
+        None => Ok(Vec::new()),
+        Some(v) => v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                s.parse::<IpAddr>().map_err(|_| ConfigError::InvalidValue {
+                    key: "TrustedProxyAddresses".to_owned(),
+                    session: session.to_owned(),
+                    reason: format!("expected an IP address, got {s:?}"),
+                })
+            })
+            .collect(),
+    }
+}
+
+/// Resolve `SocketSynchronousWrites`/`SocketSynchronousWriteTimeout` (US12, FR-017); `None`
+/// unless synchronous writes are enabled with a configured timeout.
+fn resolve_sync_write_timeout(map: &Map, session: &str) -> Result<Option<Duration>, ConfigError> {
+    if !bool_key(map, "SocketSynchronousWrites", false) {
+        return Ok(None);
+    }
+    match map.get("SocketSynchronousWriteTimeout") {
+        None => Ok(None),
+        Some(v) => {
+            let secs: u64 = v.parse().map_err(|_| ConfigError::InvalidValue {
+                key: "SocketSynchronousWriteTimeout".to_owned(),
+                session: session.to_owned(),
+                reason: format!("expected a whole number of seconds, got {v:?}"),
+            })?;
+            Ok(Some(Duration::from_secs(secs)))
+        }
+    }
 }
 
 /// Resolve a file-backed log from `FileLogPath` and its output-switch keys (FR-026); `None` when
@@ -402,13 +563,32 @@ fn resolve_failover_addresses(map: &Map, session: &str) -> Result<Vec<SocketAddr
     Ok(addrs)
 }
 
-/// Resolve TLS settings when `SocketUseSSL=Y` (FR-017): key/trust-store paths, mTLS, minimum
-/// version, and SNI.
+/// Decode a config value as inline PEM bytes (US12, FR-017): `.cfg` is line-oriented (one
+/// `key=value` per line, see `SessionSettings::parse`), so a literal multi-line PEM block can't
+/// appear as-is in a value — a literal `\n` two-character escape sequence stands in for a real
+/// newline, decoded here.
+fn pem_bytes_key(map: &Map, key: &str) -> Option<Vec<u8>> {
+    map.get(key).map(|v| v.replace("\\n", "\n").into_bytes())
+}
+
+/// Resolve TLS settings when `SocketUseSSL=Y` (FR-017): key/trust-store paths (or inline PEM
+/// bytes — US12), mTLS, minimum version, cipher suites, and SNI.
 fn resolve_tls(map: &Map, session: &str) -> Result<Option<TlsSpec>, ConfigError> {
     if !bool_key(map, "SocketUseSSL", false) {
         return Ok(None);
     }
-    let key_store_path = PathBuf::from(required(map, "SocketKeyStore", session)?);
+    let key_store_bytes = pem_bytes_key(map, "SocketKeyStoreBytes");
+    let key_store_path = match (map.get("SocketKeyStore"), &key_store_bytes) {
+        (Some(p), _) => Some(PathBuf::from(p)),
+        (None, Some(_)) => None,
+        (None, None) => {
+            return Err(ConfigError::MissingRequired {
+                key: "SocketKeyStore or SocketKeyStoreBytes".to_owned(),
+                session: session.to_owned(),
+            })
+        }
+    };
+    let trust_store_bytes = pem_bytes_key(map, "SocketTrustStoreBytes");
     let trust_store_path = map.get("SocketTrustStore").map(PathBuf::from);
     let need_client_auth = bool_key(map, "NeedClientAuth", false);
     let min_version = match map.get("EnabledProtocols").map(String::as_str) {
@@ -425,12 +605,25 @@ fn resolve_tls(map: &Map, session: &str) -> Result<Option<TlsSpec>, ConfigError>
     } else {
         None
     };
+    let cipher_suites = map
+        .get("CipherSuites")
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Some(TlsSpec {
         key_store_path,
+        key_store_bytes,
         trust_store_path,
+        trust_store_bytes,
         need_client_auth,
         min_version,
         server_name,
+        cipher_suites,
     }))
 }
 

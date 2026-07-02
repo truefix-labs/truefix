@@ -43,6 +43,7 @@ impl Application for AuthApp {
                     reason: 0,
                     ref_tag: None,
                     text: Some("authentication failed".to_owned()),
+                    session_status: None,
                 });
             }
         }

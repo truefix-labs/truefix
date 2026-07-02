@@ -41,6 +41,9 @@ pub(crate) fn logon(config: &SessionConfig, seq: u64, next_expected: Option<u64>
     if let Some(n) = next_expected {
         m.body.set(Field::int(NEXT_EXPECTED_MSG_SEQ_NUM, n as i64));
     }
+    if let Some((tag, value)) = &config.logon_tag {
+        m.body.set(Field::string(*tag, value));
+    }
     m
 }
 

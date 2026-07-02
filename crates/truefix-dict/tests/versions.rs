@@ -3,7 +3,8 @@
 use truefix_core::{Field, Message};
 use truefix_dict::{
     load_fix40, load_fix41, load_fix42, load_fix43, load_fix44, load_fix50, load_fix50sp1,
-    load_fix50sp2, load_fixt11, parse, DataDictionary, ParseError, ValidationOptions, ALL_DICTS,
+    load_fix50sp2, load_fixlatest, load_fixt11, parse, DataDictionary, ParseError,
+    ValidationOptions, ALL_DICTS,
 };
 
 type Loader = fn() -> Result<DataDictionary, ParseError>;
@@ -23,7 +24,7 @@ fn logon(begin: &str) -> Message {
 
 #[test]
 fn all_bundled_dictionaries_parse() {
-    assert_eq!(ALL_DICTS.len(), 9);
+    assert_eq!(ALL_DICTS.len(), 10);
     for (ver, src) in ALL_DICTS {
         let d = parse(src).unwrap();
         assert_eq!(&d.version(), ver, "version line");
@@ -34,7 +35,14 @@ fn all_bundled_dictionaries_parse() {
 
 #[test]
 fn fix4x_versions_validate_a_logon() {
-    let loaders: [Loader; 5] = [load_fix40, load_fix41, load_fix42, load_fix43, load_fix44];
+    let loaders: [Loader; 6] = [
+        load_fix40,
+        load_fix41,
+        load_fix42,
+        load_fix43,
+        load_fix44,
+        load_fixlatest,
+    ];
     for loader in loaders {
         let d = loader().unwrap();
         let m = logon(d.version());
@@ -84,4 +92,31 @@ fn version_specific_differences() {
     let fixt = load_fixt11().unwrap();
     assert!(fixt.field(1137).is_some());
     assert!(f44.field(1137).is_none());
+}
+
+/// US9 (FR-012) — the tenth dictionary, sourced from FIX Orchestra, exercises the field-type
+/// (US7) and component-model (US5) work added earlier in this feature end-to-end.
+#[test]
+fn fixlatest_wires_component_group_and_new_field_types_together() {
+    let d = load_fixlatest().unwrap();
+    assert_eq!(d.version(), "FIX.Latest");
+    assert!(d.component("Parties").is_some());
+    assert!(d.is_group_count(453)); // NoPartyIDs
+
+    let nos = d.message("D").expect("NewOrderSingle present");
+    assert!(
+        nos.contains_member(448),
+        "Parties component's group member (PartyID) reachable"
+    );
+    assert!(nos.allows_tag(75)); // TradeDate, UtcDateOnly
+    assert!(nos.allows_tag(96)); // RawData, Data
+
+    assert_eq!(
+        d.field(75).unwrap().field_type,
+        truefix_dict::FieldType::UtcDateOnly
+    );
+    assert_eq!(
+        d.field(96).unwrap().field_type,
+        truefix_dict::FieldType::Data
+    );
 }

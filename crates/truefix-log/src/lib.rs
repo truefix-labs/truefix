@@ -17,6 +17,8 @@
 
 mod composite;
 mod file;
+#[cfg(feature = "mssql")]
+mod mssql;
 mod prefix;
 mod screen;
 #[cfg(feature = "sql")]
@@ -29,6 +31,8 @@ use thiserror::Error;
 
 pub use composite::CompositeLog;
 pub use file::{FileLog, FileLogOptions};
+#[cfg(feature = "mssql")]
+pub use mssql::{MssqlLog, MssqlLogConfig};
 pub use prefix::SessionPrefixLog;
 pub use screen::{ScreenLog, ScreenLogOptions};
 #[cfg(feature = "sql")]

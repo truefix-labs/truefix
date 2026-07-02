@@ -51,6 +51,22 @@ pub enum FieldError {
         /// The offending value.
         value: String,
     },
+    /// The value is not a valid UTC date-only (`YYYYMMDD`).
+    #[error("field {tag}: invalid UTC date-only {value:?}")]
+    NotDateOnly {
+        /// The field tag.
+        tag: u32,
+        /// The offending value.
+        value: String,
+    },
+    /// The value is not a valid UTC time-only (`HH:MM:SS[.sss...]`).
+    #[error("field {tag}: invalid UTC time-only {value:?}")]
+    NotTimeOnly {
+        /// The field tag.
+        tag: u32,
+        /// The offending value.
+        value: String,
+    },
 }
 
 /// Error decoding raw bytes into a [`Message`](crate::Message).
@@ -118,6 +134,9 @@ pub struct Reject {
     pub ref_tag: Option<u32>,
     /// Optional human-readable text (tag 58).
     pub text: Option<String>,
+    /// Optional `SessionStatus` (tag 573) reason, propagated onto the outbound Logout when a
+    /// `from_admin` callback refuses a Logon (US10, FR-013).
+    pub session_status: Option<u16>,
 }
 
 /// Returned from an outbound callback to suppress a message: the engine does not send it and does

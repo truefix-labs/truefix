@@ -263,6 +263,9 @@ impl MessageStore for FileStore {
         self.corrupted.store(false, Ordering::SeqCst);
         self.seq.reset()
     }
+    fn was_corrupted(&self) -> bool {
+        self.was_corrupted()
+    }
 }
 
 struct CacheState {
@@ -397,6 +400,9 @@ impl MessageStore for CachedFileStore {
         self.corrupted.store(false, Ordering::SeqCst);
         self.cache.lock().map_err(|_| poisoned())?.clear();
         self.seq.reset()
+    }
+    fn was_corrupted(&self) -> bool {
+        self.was_corrupted()
     }
 }
 

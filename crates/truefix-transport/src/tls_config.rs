@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
@@ -26,14 +27,21 @@ pub enum TlsConfigError {
         #[source]
         source: rustls::pki_types::pem::Error,
     },
+    /// Inline PEM bytes (`SocketKeyStoreBytes`/`SocketTrustStoreBytes`) could not be parsed
+    /// (FR-017).
+    #[error("parsing inline PEM bytes: {0}")]
+    PemBytes(#[source] rustls::pki_types::pem::Error),
     /// No certificate was found in the key-store PEM.
     #[error("no certificate found in {0}")]
     NoCertificate(String),
     /// No private key was found in the key-store PEM.
     #[error("no private key found in {0}")]
     NoPrivateKey(String),
+    /// Neither `SocketKeyStore` (a path) nor `SocketKeyStoreBytes` (inline PEM) was provided.
+    #[error("no SocketKeyStore path or SocketKeyStoreBytes was provided")]
+    MissingKeyStore,
     /// `NeedClientAuth`/mTLS was requested without a trust store to verify against.
-    #[error("NeedClientAuth requires a trust store (SocketTrustStore)")]
+    #[error("NeedClientAuth requires a trust store (SocketTrustStore/SocketTrustStoreBytes)")]
     MissingTrustStoreForClientAuth,
     /// The client-cert verifier could not be built.
     #[error("client cert verifier: {0}")]
@@ -67,6 +75,40 @@ fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsConfigErro
     }
 }
 
+/// The key-store's certificate chain, from inline bytes when set (`SocketKeyStoreBytes`,
+/// FR-017), otherwise from `SocketKeyStore`'s file path. Exactly one of the two must be set — the
+/// resolver (`resolve_tls`) already enforces this, but a direct `TlsSpec` construction is checked
+/// here too via [`TlsConfigError::MissingKeyStore`].
+fn key_store_certs(spec: &TlsSpec) -> Result<Vec<CertificateDer<'static>>, TlsConfigError> {
+    if let Some(bytes) = &spec.key_store_bytes {
+        return CertificateDer::pem_slice_iter(bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(TlsConfigError::PemBytes);
+    }
+    match &spec.key_store_path {
+        Some(path) => load_certs(path),
+        None => Err(TlsConfigError::MissingKeyStore),
+    }
+}
+
+/// The key-store's private key, from inline bytes when set, otherwise from the file path. See
+/// [`key_store_certs`] for the precedence rule.
+fn key_store_private_key(spec: &TlsSpec) -> Result<PrivateKeyDer<'static>, TlsConfigError> {
+    if let Some(bytes) = &spec.key_store_bytes {
+        return match PrivateKeyDer::from_pem_slice(bytes) {
+            Ok(key) => Ok(key),
+            Err(rustls::pki_types::pem::Error::NoItemsFound) => {
+                Err(TlsConfigError::NoPrivateKey("<inline bytes>".to_owned()))
+            }
+            Err(source) => Err(TlsConfigError::PemBytes(source)),
+        };
+    }
+    match &spec.key_store_path {
+        Some(path) => load_private_key(path),
+        None => Err(TlsConfigError::MissingKeyStore),
+    }
+}
+
 fn load_root_store(path: &Path) -> Result<RootCertStore, TlsConfigError> {
     let mut roots = RootCertStore::empty();
     for cert in load_certs(path)? {
@@ -74,6 +116,29 @@ fn load_root_store(path: &Path) -> Result<RootCertStore, TlsConfigError> {
         let _ = roots.add(cert);
     }
     Ok(roots)
+}
+
+fn load_root_store_bytes(bytes: &[u8]) -> Result<RootCertStore, TlsConfigError> {
+    let mut roots = RootCertStore::empty();
+    for cert in CertificateDer::pem_slice_iter(bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(TlsConfigError::PemBytes)?
+    {
+        let _ = roots.add(cert);
+    }
+    Ok(roots)
+}
+
+/// The trust store, from inline bytes when set (`SocketTrustStoreBytes`), otherwise from
+/// `SocketTrustStore`'s file path; `None` when neither is configured.
+fn trust_store(spec: &TlsSpec) -> Result<Option<RootCertStore>, TlsConfigError> {
+    if let Some(bytes) = &spec.trust_store_bytes {
+        return Ok(Some(load_root_store_bytes(bytes)?));
+    }
+    match &spec.trust_store_path {
+        Some(path) => Ok(Some(load_root_store(path)?)),
+        None => Ok(None),
+    }
 }
 
 const TLS13_ONLY: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS13];
@@ -89,24 +154,45 @@ fn protocol_versions(
     }
 }
 
+/// The process-default `CryptoProvider`, optionally filtered down to `names` (`CipherSuites`;
+/// FR-017) — each entry matched case-insensitively against the suite's `Debug` name (e.g.
+/// `"TLS13_AES_128_GCM_SHA256"`). An empty `names` list preserves rustls's default suite set
+/// unchanged.
+fn crypto_provider(names: &[String]) -> Arc<CryptoProvider> {
+    let base = rustls::crypto::aws_lc_rs::default_provider();
+    if names.is_empty() {
+        return Arc::new(base);
+    }
+    let cipher_suites = base
+        .cipher_suites
+        .iter()
+        .filter(|suite| {
+            let suite_name = format!("{:?}", suite.suite());
+            names.iter().any(|n| n.eq_ignore_ascii_case(&suite_name))
+        })
+        .copied()
+        .collect();
+    Arc::new(CryptoProvider {
+        cipher_suites,
+        ..base
+    })
+}
+
 /// Build a server-side (acceptor) TLS configuration from `spec` (FR-017), including mTLS when
 /// `need_client_auth` is set.
 pub fn build_server_config(spec: &TlsSpec) -> Result<Arc<ServerConfig>, TlsConfigError> {
-    let certs = load_certs(&spec.key_store_path)?;
+    let certs = key_store_certs(spec)?;
     if certs.is_empty() {
-        return Err(TlsConfigError::NoCertificate(
-            spec.key_store_path.display().to_string(),
-        ));
+        return Err(TlsConfigError::NoCertificate(key_store_label(spec)));
     }
-    let key = load_private_key(&spec.key_store_path)?;
-    let builder = ServerConfig::builder_with_protocol_versions(protocol_versions(spec.min_version));
+    let key = key_store_private_key(spec)?;
+    let provider = crypto_provider(&spec.cipher_suites);
+    let builder = ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(protocol_versions(spec.min_version))?;
 
     let config = if spec.need_client_auth {
-        let trust_path = spec
-            .trust_store_path
-            .as_deref()
-            .ok_or(TlsConfigError::MissingTrustStoreForClientAuth)?;
-        let roots = Arc::new(load_root_store(trust_path)?);
+        let roots =
+            Arc::new(trust_store(spec)?.ok_or(TlsConfigError::MissingTrustStoreForClientAuth)?);
         let verifier = WebPkiClientVerifier::builder(roots).build()?;
         builder
             .with_client_cert_verifier(verifier)
@@ -118,22 +204,32 @@ pub fn build_server_config(spec: &TlsSpec) -> Result<Arc<ServerConfig>, TlsConfi
 }
 
 /// Build a client-side (initiator) TLS configuration from `spec` (FR-017). When
-/// `need_client_auth` is set, the initiator also presents `key_store_path` as its own client
+/// `need_client_auth` is set, the initiator also presents the key store as its own client
 /// certificate (mTLS).
 pub fn build_client_config(spec: &TlsSpec) -> Result<Arc<ClientConfig>, TlsConfigError> {
-    let roots = match &spec.trust_store_path {
-        Some(p) => load_root_store(p)?,
-        None => RootCertStore::empty(),
-    };
-    let builder = ClientConfig::builder_with_protocol_versions(protocol_versions(spec.min_version))
+    let roots = trust_store(spec)?.unwrap_or_else(RootCertStore::empty);
+    let provider = crypto_provider(&spec.cipher_suites);
+    let builder = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(protocol_versions(spec.min_version))?
         .with_root_certificates(roots);
 
     let config = if spec.need_client_auth {
-        let certs = load_certs(&spec.key_store_path)?;
-        let key = load_private_key(&spec.key_store_path)?;
+        let certs = key_store_certs(spec)?;
+        let key = key_store_private_key(spec)?;
         builder.with_client_auth_cert(certs, key)?
     } else {
         builder.with_no_client_auth()
     };
     Ok(Arc::new(config))
+}
+
+fn key_store_label(spec: &TlsSpec) -> String {
+    if spec.key_store_bytes.is_some() {
+        "<inline bytes>".to_owned()
+    } else {
+        spec.key_store_path
+            .as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    }
 }

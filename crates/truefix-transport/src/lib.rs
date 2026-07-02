@@ -18,8 +18,10 @@
 
 mod framing;
 mod metrics_export;
+mod proxy;
 mod tls_config;
 
+pub use proxy::{ProxyConfig, ProxyError, ProxyType};
 pub use tls_config::{
     build_client_config, build_server_config, TlsConfigError, TlsSpec, TlsVersion,
 };
@@ -31,7 +33,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{self, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -145,6 +147,19 @@ pub struct Services {
         truefix_dict::DataDictionary,
         truefix_dict::ValidationOptions,
     )>,
+    /// Log a message via `log` when an inbound connection's Logon matches neither a static session
+    /// nor a dynamic template, before the connection is refused (`LogMessageWhenSessionNotFound`;
+    /// acceptor/routing-level, so it lives here rather than on `SessionConfig`).
+    pub log_message_when_session_not_found: bool,
+    /// PROXY protocol (v1/v2) is parsed only from a connection whose *physical* peer address is
+    /// in this set (`UseTCPProxy` + `TrustedProxyAddresses`; FR-015); empty disables PROXY
+    /// protocol entirely. Applied by both [`Acceptor`] and [`AcceptorBuilder`].
+    pub trusted_proxy_addresses: Vec<IpAddr>,
+    /// `SocketSynchronousWrites` + `SocketSynchronousWriteTimeout` (FR-017): when set, an
+    /// outbound write exceeding this duration surfaces a typed timeout (logged and the
+    /// connection is torn down) rather than blocking indefinitely. `None` (the default) leaves
+    /// writes unbounded, as before.
+    pub sync_write_timeout: Option<Duration>,
 }
 
 /// Control messages to a running session task.
@@ -327,6 +342,52 @@ where
     Ok(spawn_session_io(stream, config, app, services))
 }
 
+/// Connect out as an initiator through a configured forward proxy (SOCKS4/SOCKS5/HTTP CONNECT;
+/// FR-016). Unlike `connect_initiator*`'s `SocketAddr`, `target_host`/`target_port` is resolved on
+/// the proxy side, not locally — the proxy performs the DNS lookup (or, for SOCKS4, the caller is
+/// expected to have already resolved the address, per the protocol's own limitation).
+pub async fn connect_initiator_via_proxy<A>(
+    proxy: &ProxyConfig,
+    target_host: &str,
+    target_port: u16,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> Result<SessionHandle, ProxyError>
+where
+    A: Application + 'static,
+{
+    let stream = proxy::connect_through_proxy(proxy, target_host, target_port).await?;
+    services.socket_options.apply(&stream);
+    Ok(spawn_session_io(stream, config, app, services))
+}
+
+/// As [`connect_initiator_via_proxy`], but wraps the tunneled stream in TLS afterward (FR-016 +
+/// FR-017).
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_initiator_via_proxy_tls<A>(
+    proxy: &ProxyConfig,
+    target_host: &str,
+    target_port: u16,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+    tls: Arc<rustls::ClientConfig>,
+    server_name: rustls::pki_types::ServerName<'static>,
+) -> Result<SessionHandle, ProxyError>
+where
+    A: Application + 'static,
+{
+    let tcp = proxy::connect_through_proxy(proxy, target_host, target_port).await?;
+    services.socket_options.apply(&tcp);
+    let connector = tokio_rustls::TlsConnector::from(tls);
+    let stream = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(ProxyError::Io)?;
+    Ok(spawn_session_io(stream, config, app, services))
+}
+
 /// A listening acceptor that serves one static session configuration per connection.
 pub struct Acceptor<A: Application + 'static> {
     listener: TcpListener,
@@ -375,7 +436,16 @@ impl<A: Application + 'static> Acceptor<A> {
     pub fn serve(self) -> JoinHandle<()> {
         let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         tokio::spawn(async move {
-            while let Ok((stream, _peer)) = self.listener.accept().await {
+            while let Ok((mut stream, peer)) = self.listener.accept().await {
+                // PROXY protocol (FR-015): a single-session acceptor has no allow-list to gate
+                // on, but a trusted upstream's header is still stripped so its bytes are never
+                // mistaken for the start of the FIX stream.
+                let _ = proxy::strip_trusted_proxy_header(
+                    &mut stream,
+                    peer,
+                    &self.services.trusted_proxy_addresses,
+                )
+                .await;
                 self.services.socket_options.apply(&stream);
                 let config = self.config.clone();
                 let app = self.app.clone();
@@ -443,19 +513,61 @@ where
     }
 }
 
+/// An item forwarded from the reader task to the session-processing loop: either a fully decoded
+/// message, or a garbled (undecodable) frame that still needs `RejectGarbledMessage` handling
+/// (US14, FR-019).
+enum Inbound {
+    /// A fully decoded inbound message.
+    Message(Message),
+    /// A frame whose length was determinable but whose content failed to decode.
+    Garbled,
+}
+
+/// The inbound *application*-message channel sender, present only when `in_chan_capacity` is
+/// `Some(n)` (US14, FR-019). When `None` (default), there is no separate application channel at
+/// all: every message — admin or application — is routed through the single, always-unbounded
+/// admin channel below, in strict wire order, reproducing pre-US14 behavior exactly.
+///
+/// **Trade-off, accepted deliberately** (spec Clarifications) when a capacity *is* configured:
+/// administrative traffic is drained with priority ahead of the bounded application channel, so
+/// under backpressure a message that arrives on the wire *after* a still-queued application
+/// message can be processed *before* it. The session's existing out-of-order/gap-fill handling (a
+/// `ResendRequest`) already tolerates this safely — it's the same mechanism that recovers from
+/// genuine network reordering — but it *is* a real behavior change from strict wire order, which
+/// is exactly why the whole split is opt-in (`in_chan_capacity: None` never engages it).
+type AppSender = mpsc::Sender<Inbound>;
+
+/// Build the application-message channel per `SessionConfig::in_chan_capacity` (US14, FR-019).
+/// `None` capacity returns `(None, _)` — the returned receiver's sole sender is dropped
+/// immediately, so its `recv()` resolves to `None` on the processing loop's very first poll and
+/// that channel is permanently inert; see [`AppSender`]'s doc for why.
+fn app_channel(capacity: Option<usize>) -> (Option<AppSender>, mpsc::Receiver<Inbound>) {
+    match capacity {
+        Some(n) => {
+            let (tx, rx) = mpsc::channel(n.max(1));
+            (Some(tx), rx)
+        }
+        None => {
+            let (_tx, rx) = mpsc::channel(1);
+            (None, rx)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_connection<A, S>(
-    mut stream: S,
+    stream: S,
     config: SessionConfig,
     app: Arc<A>,
     services: Services,
     control_tx: mpsc::Sender<Control>,
     mut control: mpsc::Receiver<Control>,
-    mut buf: Vec<u8>,
+    buf: Vec<u8>,
 ) where
     A: Application + 'static,
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let in_chan_capacity = config.in_chan_capacity;
     let mut session = Session::new(config);
     if let Some((dict, opts)) = &services.validator {
         session.set_dictionary(dict.clone(), *opts);
@@ -478,24 +590,56 @@ async fn run_connection<A, S>(
                 session.seed_sent_messages(msgs);
             }
         }
+        // ForceResendWhenCorruptedStore: recovered-but-untrusted history isn't safe to resend from,
+        // so force a full reset (both sides realign via a fresh ResetSeqNumFlag logon) instead
+        // (FR-008).
+        if store.was_corrupted() && session.force_resend_when_corrupted_store() {
+            app.on_before_reset(&id).await;
+            session.reset();
+            let _ = store.reset().await;
+        }
     }
 
     if let Some(monitor) = &services.monitor {
         monitor.register(id.clone(), session.status(), control_tx);
     }
 
-    let mut chunk = [0u8; 4096];
+    // Split the stream: a spawned reader task owns the read half — it only frames/decodes/
+    // classifies inbound bytes and forwards them onto the admin/application channels below, no
+    // session-state logic — while this task keeps the write half and does all session processing
+    // (US14, FR-019). This lets admin traffic (heartbeat, TestRequest, Logon/Logout, garbled-frame
+    // handling) keep flowing, prioritized, even while a slow `Application` hook or a saturated
+    // bounded application channel is stalling app-message processing.
+    let (read_half, mut write_half) = split(stream);
+    let (admin_tx, mut admin_rx) = mpsc::unbounded_channel::<Inbound>();
+    let (app_tx, mut app_rx) = app_channel(in_chan_capacity);
+    let reader_services = services.clone();
+    let reader_id = id.clone();
+    tokio::spawn(read_loop(
+        read_half,
+        buf,
+        admin_tx,
+        app_tx,
+        reader_services,
+        reader_id,
+    ));
+
     let mut ticker = interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut logged_on = false;
     let mut control_open = true;
     let mut closing = false;
+    // Set once the reader task has ended *and* its channel has been fully drained (mpsc::recv
+    // keeps yielding buffered items after the sender drops, only returning `None` once truly
+    // empty) — the natural, no-message-lost way to detect "nothing more will ever arrive".
+    let mut admin_done = false;
+    let mut app_done = false;
 
     if dispatch(
         &mut session,
         Event::Connected,
-        &mut stream,
+        &mut write_half,
         &app,
         &id,
         &services,
@@ -507,42 +651,33 @@ async fn run_connection<A, S>(
         closing = true;
     }
 
-    // Drain any bytes pre-read while routing the connection (acceptor: the inbound Logon).
-    if !closing
-        && !buf.is_empty()
-        && drain_messages(
-            &mut buf,
-            &mut session,
-            &mut stream,
-            &app,
-            &id,
-            &services,
-            &mut logged_on,
-        )
-        .await
-        .is_err()
-    {
-        closing = true;
-    }
-
     while !closing {
         tokio::select! {
-            read = stream.read(&mut chunk) => match read {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if let Some(slice) = chunk.get(..n) {
-                        buf.extend_from_slice(slice);
-                    }
-                    if drain_messages(&mut buf, &mut session, &mut stream, &app, &id, &services, &mut logged_on)
+            biased;
+            inbound = admin_rx.recv(), if !admin_done => match inbound {
+                Some(item) => {
+                    if handle_inbound(item, &mut session, &mut write_half, &app, &id, &services, &mut logged_on)
                         .await
                         .is_err()
                     {
                         closing = true;
                     }
                 }
+                None => admin_done = true,
+            },
+            inbound = app_rx.recv(), if !app_done => match inbound {
+                Some(item) => {
+                    if handle_inbound(item, &mut session, &mut write_half, &app, &id, &services, &mut logged_on)
+                        .await
+                        .is_err()
+                    {
+                        closing = true;
+                    }
+                }
+                None => app_done = true,
             },
             _ = ticker.tick() => {
-                if dispatch(&mut session, Event::Tick, &mut stream, &app, &id, &services, &mut logged_on)
+                if dispatch(&mut session, Event::Tick, &mut write_half, &app, &id, &services, &mut logged_on)
                     .await
                     .is_err()
                 {
@@ -551,7 +686,7 @@ async fn run_connection<A, S>(
             },
             ctrl = recv_control(&mut control, control_open) => match ctrl {
                 Some(Control::Logout) => {
-                    if dispatch(&mut session, Event::StartLogout, &mut stream, &app, &id, &services, &mut logged_on)
+                    if dispatch(&mut session, Event::StartLogout, &mut write_half, &app, &id, &services, &mut logged_on)
                         .await
                         .is_err()
                     {
@@ -559,6 +694,7 @@ async fn run_connection<A, S>(
                     }
                 }
                 Some(Control::Reset) => {
+                    app.on_before_reset(&id).await;
                     session.reset();
                     if let Some(store) = &services.store {
                         let _ = store.reset().await;
@@ -569,7 +705,7 @@ async fn run_connection<A, S>(
                     }
                 }
                 Some(Control::Send(msg)) => {
-                    if send_app(&mut session, *msg, &mut stream, &app, &id, &services)
+                    if send_app(&mut session, *msg, &mut write_half, &app, &id, &services)
                         .await
                         .is_err()
                     {
@@ -579,9 +715,12 @@ async fn run_connection<A, S>(
                 None => control_open = false,
             },
         }
+        if admin_done && app_done {
+            closing = true;
+        }
     }
 
-    let _ = stream.shutdown().await;
+    let _ = write_half.shutdown().await;
     if let Some(monitor) = &services.monitor {
         monitor.mark_disconnected(&id);
     }
@@ -602,20 +741,122 @@ async fn recv_control(control: &mut mpsc::Receiver<Control>, open: bool) -> Opti
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn drain_messages<A, S>(
+/// Reads bytes off `read_half`, frames complete messages, decodes them, classifies each as
+/// administrative or application traffic, and forwards it onto the corresponding channel — pure
+/// I/O and framing, no session-state logic (that lives in [`handle_inbound`], run by
+/// [`run_connection`]'s processing loop). Ends when the stream closes/errors, or the processing
+/// loop has dropped its receivers (connection torn down from elsewhere).
+///
+/// Administrative items are always forwarded the moment they're decoded (the admin channel is
+/// unbounded — never blocks). Application items, when a bounded channel is configured
+/// (`in_chan_capacity: Some(n)`), are *not* sent inline: decoding stages them into `pending_app`
+/// instead, and a separate loop below delivers them via `Sender::reserve()` — cancel-safe, so it
+/// can run concurrently (via `select!`) with continuing to read more bytes. This is what actually
+/// keeps admin traffic flowing under backpressure (US14, FR-019): an implementation that instead
+/// `.await`s each application send inline, in wire order, would still let one blocked send stall
+/// every frame decoded *after* it in the stream — including a later admin message — since a
+/// single sequential loop can't decode/forward anything past a point it's stuck awaiting.
+async fn read_loop<S: AsyncRead + Unpin>(
+    mut read_half: S,
+    mut buf: Vec<u8>,
+    admin_tx: mpsc::UnboundedSender<Inbound>,
+    app_tx: Option<AppSender>,
+    services: Services,
+    id: SessionId,
+) {
+    let mut chunk = [0u8; 4096];
+    let mut pending_app: std::collections::VecDeque<Inbound> = std::collections::VecDeque::new();
+    let has_app_channel = app_tx.is_some();
+
+    // Drain any bytes pre-read while routing the connection (acceptor: the inbound Logon) before
+    // blocking on the socket for more.
+    if classify_buffered(
+        &mut buf,
+        &admin_tx,
+        has_app_channel,
+        &mut pending_app,
+        &services,
+        &id,
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    let Some(app_tx) = app_tx else {
+        // No bounded application channel at all (in_chan_capacity: None): a plain read loop,
+        // identical to pre-US14 behavior (`pending_app` never gets used in this branch, since
+        // `classify_buffered` sends everything straight through `admin_tx` when `has_app_channel`
+        // is `false`).
+        loop {
+            match read_half.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    if let Some(slice) = chunk.get(..n) {
+                        buf.extend_from_slice(slice);
+                    }
+                    if classify_buffered(
+                        &mut buf,
+                        &admin_tx,
+                        false,
+                        &mut pending_app,
+                        &services,
+                        &id,
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+    };
+
+    loop {
+        tokio::select! {
+            biased;
+            permit = app_tx.reserve(), if !pending_app.is_empty() => {
+                match permit {
+                    Ok(permit) => {
+                        if let Some(item) = pending_app.pop_front() {
+                            permit.send(item);
+                        }
+                    }
+                    Err(_) => return, // the processing loop's application receiver was dropped
+                }
+            }
+            read = read_half.read(&mut chunk) => match read {
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    if let Some(slice) = chunk.get(..n) {
+                        buf.extend_from_slice(slice);
+                    }
+                    if classify_buffered(&mut buf, &admin_tx, true, &mut pending_app, &services, &id)
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Frame and classify every complete message currently in `buf`. Administrative items (and
+/// garbled frames) are forwarded immediately via `admin_tx` (unbounded — never blocks).
+/// Application items are appended to `pending_app` for [`read_loop`] to deliver at its own pace,
+/// rather than sent here, so this function itself never blocks on a full bounded channel. When
+/// `has_app_channel` is `false` (`in_chan_capacity: None`), every item — admin or application —
+/// goes through `admin_tx` instead, in strict wire order, reproducing pre-US14 behavior exactly;
+/// see [`AppSender`]'s doc. `Err` means the processing loop is gone (its admin receiver dropped).
+fn classify_buffered(
     buf: &mut Vec<u8>,
-    session: &mut Session,
-    stream: &mut S,
-    app: &Arc<A>,
-    id: &SessionId,
+    admin_tx: &mpsc::UnboundedSender<Inbound>,
+    has_app_channel: bool,
+    pending_app: &mut std::collections::VecDeque<Inbound>,
     services: &Services,
-    logged_on: &mut bool,
-) -> Result<(), ()>
-where
-    A: Application + 'static,
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+    id: &SessionId,
+) -> Result<(), ()> {
     loop {
         match frame_length(buf) {
             Ok(Some(total)) => {
@@ -625,51 +866,16 @@ where
                     if let Some(log) = &services.log {
                         log.on_incoming(&String::from_utf8_lossy(&raw));
                     }
-                    // Authentication / admin acceptance: an admin message the application rejects
-                    // (e.g. a Logon with bad credentials) sends a Logout with the reject's text (if
-                    // any) and tears the session down (FR-016).
-                    if is_admin(&msg) {
-                        if let Err(reject) = app.from_admin(&msg, id).await {
-                            if let Some(log) = &services.log {
-                                log.on_event(&format!(
-                                    "{id}: admin message rejected by application: {reject}"
-                                ));
-                            }
-                            let actions = session.reject_logon(&reject);
-                            let _ =
-                                perform_actions(actions, session, stream, app, id, services).await;
-                            return Err(());
-                        }
-                    } else if let Err(breject) = app.from_app(&msg, id).await {
-                        // Dictionary-driven business rejects are handled separately; this is the
-                        // application-supplied one (FR-016). Sequence processing still proceeds.
-                        let action = session.business_reject(&msg, &breject);
-                        let _ =
-                            perform_actions(vec![action], session, stream, app, id, services).await;
+                    if !has_app_channel || is_admin(&msg) {
+                        admin_tx.send(Inbound::Message(msg)).map_err(|_| ())?;
+                    } else {
+                        pending_app.push_back(Inbound::Message(msg));
                     }
-                    dispatch(
-                        session,
-                        Event::Received(msg),
-                        stream,
-                        app,
-                        id,
-                        services,
-                        logged_on,
-                    )
-                    .await?;
                 } else {
                     // The frame length was determinable but the content failed to decode (bad
-                    // checksum/body-length/tag): honor RejectGarbledMessage (FR-006).
-                    dispatch(
-                        session,
-                        Event::Garbled,
-                        stream,
-                        app,
-                        id,
-                        services,
-                        logged_on,
-                    )
-                    .await?;
+                    // checksum/body-length/tag): honor RejectGarbledMessage (FR-006) —
+                    // session-level, so it always goes through the (never-blocking) admin channel.
+                    admin_tx.send(Inbound::Garbled).map_err(|_| ())?;
                 }
             }
             Ok(None) => return Ok(()),
@@ -677,6 +883,72 @@ where
                 buf.clear();
                 return Ok(());
             }
+        }
+    }
+}
+
+/// Run the application hooks and drive the session state machine for one dequeued inbound item —
+/// the per-message logic `drain_messages` used to run inline before US14's reader/processor
+/// split; now run by the processing loop after a message has already been read, framed, and
+/// classified by the (separately-scheduled) reader task.
+#[allow(clippy::too_many_arguments)]
+async fn handle_inbound<A, S>(
+    inbound: Inbound,
+    session: &mut Session,
+    stream: &mut S,
+    app: &Arc<A>,
+    id: &SessionId,
+    services: &Services,
+    logged_on: &mut bool,
+) -> Result<(), ()>
+where
+    A: Application + 'static,
+    S: AsyncWrite + Unpin,
+{
+    match inbound {
+        Inbound::Message(msg) => {
+            // Authentication / admin acceptance: an admin message the application rejects (e.g. a
+            // Logon with bad credentials) sends a Logout with the reject's text (if any) and tears
+            // the session down (FR-016).
+            if is_admin(&msg) {
+                if let Err(reject) = app.from_admin(&msg, id).await {
+                    if let Some(log) = &services.log {
+                        log.on_event(&format!(
+                            "{id}: admin message rejected by application: {reject}"
+                        ));
+                    }
+                    let actions = session.reject_logon(&reject);
+                    let _ = perform_actions(actions, session, stream, app, id, services).await;
+                    return Err(());
+                }
+            } else if let Err(breject) = app.from_app(&msg, id).await {
+                // Dictionary-driven business rejects are handled separately; this is the
+                // application-supplied one (FR-016). Sequence processing still proceeds.
+                let action = session.business_reject(&msg, &breject);
+                let _ = perform_actions(vec![action], session, stream, app, id, services).await;
+            }
+            dispatch(
+                session,
+                Event::Received(msg),
+                stream,
+                app,
+                id,
+                services,
+                logged_on,
+            )
+            .await
+        }
+        Inbound::Garbled => {
+            dispatch(
+                session,
+                Event::Garbled,
+                stream,
+                app,
+                id,
+                services,
+                logged_on,
+            )
+            .await
         }
     }
 }
@@ -701,6 +973,21 @@ where
 
     if !*logged_on && session.is_logged_on() {
         *logged_on = true;
+        // RefreshOnLogon: re-sync sequence numbers from the durable store right at logon
+        // completion, in case it changed between connect time and logon (FR-008).
+        if session.refresh_on_logon() {
+            if let Some(store) = &services.store {
+                let out = store
+                    .next_sender_seq()
+                    .await
+                    .unwrap_or(session.next_out_seq());
+                let inn = store
+                    .next_target_seq()
+                    .await
+                    .unwrap_or(session.next_in_seq());
+                session.refresh_sequences(out, inn);
+            }
+        }
         app.on_logon(id).await;
         if let Some(log) = &services.log {
             log.on_event(&format!("{id}: logon"));
@@ -763,17 +1050,56 @@ where
                 if let Some(log) = &services.log {
                     log.on_outgoing(&String::from_utf8_lossy(&bytes));
                 }
-                if stream.write_all(&bytes).await.is_err() {
-                    return Err(());
-                }
+                write_with_timeout(stream, &bytes, services, id).await?;
                 metrics_export::record_sent(id);
                 persist_sent(&msg, &bytes, session, services).await;
             }
             Action::Disconnect => disconnect = true,
+            Action::ResetStore => {
+                // The engine performed a full sequence/history reset internally (logon-time
+                // ResetSeqNumFlag, or ResetOnDisconnect/ResetOnLogout) — clear the durable store
+                // so it doesn't retain stale message bodies under recycled sequence numbers
+                // (FR-004). `on_before_reset` fires here (rather than inside `Session`, which is
+                // sans-IO and never holds an `Application` handle) — this is the earliest point
+                // the transport learns of an internally-triggered reset, immediately before the
+                // durable store itself is cleared (US10, FR-013).
+                app.on_before_reset(id).await;
+                if let Some(store) = &services.store {
+                    let _ = store.reset().await;
+                }
+            }
         }
     }
     let _ = stream.flush().await;
     Ok(disconnect)
+}
+
+/// Write `bytes` to `stream`, honoring `services.sync_write_timeout` (`SocketSynchronousWrites` +
+/// `SocketSynchronousWriteTimeout`; FR-017): a write exceeding the configured timeout is logged
+/// as a distinct, typed timeout (rather than a generic I/O failure) and the connection is torn
+/// down, instead of blocking indefinitely. `None` (the default) preserves the previous unbounded
+/// behavior.
+async fn write_with_timeout<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    bytes: &[u8],
+    services: &Services,
+    id: &SessionId,
+) -> Result<(), ()> {
+    match services.sync_write_timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, stream.write_all(bytes)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(()),
+            Err(_elapsed) => {
+                if let Some(log) = &services.log {
+                    log.on_event(&format!(
+                        "{id}: synchronous write timed out after {timeout:?}"
+                    ));
+                }
+                Err(())
+            }
+        },
+        None => stream.write_all(bytes).await.map_err(|_| ()),
+    }
 }
 
 fn is_admin(msg: &Message) -> bool {
@@ -901,6 +1227,18 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         self
     }
 
+    /// Trust a PROXY protocol (v1/v2) header — parsed into the connection's effective source
+    /// IP for the allow-list check above — only when the connection's *physical* peer address is
+    /// one of `ips` (`UseTCPProxy` + `TrustedProxyAddresses`; FR-015). A connection from any other
+    /// physical source never has its PROXY header parsed/trusted, even if one is present. Sugar
+    /// over `services.trusted_proxy_addresses` (also settable directly via
+    /// [`with_services`](Self::with_services)).
+    #[must_use]
+    pub fn trust_proxy_from(mut self, ips: Vec<IpAddr>) -> Self {
+        self.services.trusted_proxy_addresses = ips;
+        self
+    }
+
     /// Attach store/log/socket services.
     #[must_use]
     pub fn with_services(mut self, services: Services) -> Self {
@@ -920,9 +1258,18 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         let listener = self.listener;
         let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         tokio::spawn(async move {
-            while let Ok((stream, peer)) = listener.accept().await {
+            while let Ok((mut stream, peer)) = listener.accept().await {
+                // PROXY protocol (FR-015): only a physically-trusted upstream's header is parsed;
+                // otherwise `effective_ip` is just the physical peer address, unchanged.
+                let effective_ip = proxy::strip_trusted_proxy_header(
+                    &mut stream,
+                    peer,
+                    &services.trusted_proxy_addresses,
+                )
+                .await
+                .ip();
                 if let Some(allowed) = &registry.allowed_remotes {
-                    if !allowed.contains(&peer.ip()) {
+                    if !allowed.contains(&effective_ip) {
                         continue; // refuse: not in the allow-list
                     }
                 }
@@ -994,6 +1341,13 @@ async fn route_and_run<A, S>(
             .map(|t| dynamic_config(t, &begin, &their_target, &their_sender))
     });
     let Some(config) = config else {
+        if services.log_message_when_session_not_found {
+            if let Some(log) = &services.log {
+                log.on_event(&format!(
+                    "no session found for BeginString={begin} SenderCompID={their_sender} TargetCompID={their_target}"
+                ));
+            }
+        }
         return; // no static match and no template -> refuse
     };
 

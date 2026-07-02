@@ -18,6 +18,8 @@
 
 mod file;
 mod memory;
+#[cfg(feature = "mssql")]
+mod mssql;
 mod noop;
 #[cfg(feature = "sql")]
 mod sql;
@@ -29,6 +31,8 @@ use thiserror::Error;
 
 pub use file::{CachedFileStore, FileStore, FileStoreOptions};
 pub use memory::MemoryStore;
+#[cfg(feature = "mssql")]
+pub use mssql::{MssqlStore, MssqlStoreConfig};
 pub use noop::NoopStore;
 #[cfg(feature = "sql")]
 pub use sql::{SqlPoolOptions, SqlStore, SqlStoreConfig};
@@ -62,6 +66,13 @@ pub trait MessageStore: Send + Sync {
     async fn get(&self, begin: u64, end: u64) -> Result<Vec<(u64, Vec<u8>)>, StoreError>;
     /// Reset: clear stored messages and set both sequence numbers back to 1.
     async fn reset(&self) -> Result<(), StoreError>;
+    /// Whether this store detected and recovered from corruption when it was opened
+    /// (`ForceResendWhenCorruptedStore`). Backends with no corruption-detection concept (e.g.
+    /// `MemoryStore`, `NoopStore`, SQL backends relying on the database's own durability) default
+    /// to `false`.
+    fn was_corrupted(&self) -> bool {
+        false
+    }
 }
 
 /// Which store backend to construct.
@@ -85,10 +96,16 @@ pub enum StoreConfig {
     },
     /// No-op store (never persists; sequence numbers stay at 1).
     Noop,
-    /// SQL-backed store (requires the `sql` feature).
+    /// SQL-backed store (PostgreSQL/MySQL/SQLite; requires the `sql` feature).
     #[cfg(feature = "sql")]
     Sql {
         /// Database URL.
+        url: String,
+    },
+    /// MSSQL-backed store (requires the `mssql` feature; FR-020).
+    #[cfg(feature = "mssql")]
+    Mssql {
+        /// Database URL (`mssql://user:password@host[:port]/database`).
         url: String,
     },
 }
@@ -106,5 +123,7 @@ pub async fn build_store(config: &StoreConfig) -> Result<Box<dyn MessageStore>, 
         StoreConfig::Noop => Box::new(NoopStore),
         #[cfg(feature = "sql")]
         StoreConfig::Sql { url } => Box::new(SqlStore::connect(url).await?),
+        #[cfg(feature = "mssql")]
+        StoreConfig::Mssql { url } => Box::new(MssqlStore::connect(url).await?),
     })
 }

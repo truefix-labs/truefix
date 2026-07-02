@@ -10,17 +10,42 @@ use crate::field_map::FieldMap;
 use crate::group::{Group, GroupSpec};
 use crate::message::Message;
 use crate::tags::{
-    data_field_for_length, is_header, is_trailer, BEGIN_STRING, BODY_LENGTH, CHECK_SUM, SOH,
+    data_field_for_length, is_header, is_trailer, BEGIN_STRING, BODY_LENGTH, CHECK_SUM, MSG_TYPE,
+    SOH,
 };
 
 /// A tokenized field: tag, raw value bytes, and the byte offset where the field began.
 type Token = (u32, Vec<u8>, usize);
 
+/// Wire section a tag statically classifies into (header < body < trailer). Used only to detect
+/// out-of-order sectioning (`ValidateFieldsOutOfOrder`; FR-006) — it does not affect where the
+/// field actually lands (that's still governed by `is_header`/`is_trailer` at each call site).
+fn section_of(tag: u32) -> u8 {
+    if is_trailer(tag) {
+        2
+    } else if is_header(tag) {
+        0
+    } else {
+        1
+    }
+}
+
 /// Decode `input` into a [`Message`] with flat fields (no dictionary-driven group structure).
 pub fn decode(input: &[u8]) -> Result<Message, DecodeError> {
     let fields = tokenize_validated(input)?;
     let mut msg = Message::new();
-    for (tag, value, _) in fields {
+    let mut max_section_seen = 0u8;
+    for (i, (tag, value, _)) in fields.iter().enumerate() {
+        let (tag, value) = (*tag, value.clone());
+        let section = section_of(tag);
+        if section < max_section_seen {
+            msg.fields_out_of_order = true;
+        } else {
+            max_section_seen = section;
+        }
+        if i == 2 && tag != MSG_TYPE {
+            msg.fields_out_of_order = true;
+        }
         let field = Field::new(tag, value);
         if is_trailer(tag) {
             msg.trailer.add_field(field);

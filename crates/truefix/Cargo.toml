@@ -24,6 +24,10 @@ rustls.workspace = true
 tokio = { workspace = true }
 async-trait.workspace = true
 rcgen = "0.13"
+ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
+pkcs8 = "0.10"
+base64 = "0.22"
+webpki-roots = "0.26"
 
 [lints]
 workspace = true

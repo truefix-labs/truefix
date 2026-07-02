@@ -21,18 +21,58 @@
     )
 )]
 
+pub mod codegen;
 pub mod fixt;
 mod hash;
 pub mod model;
+#[cfg(feature = "dict-tooling")]
+pub mod orchestra;
 pub mod parser;
 mod validate;
 
+pub use codegen::CodegenError;
 pub use fixt::FixtDictionaries;
 pub use model::{
-    DataDictionary, FieldDef, FieldType, GroupDef, MessageDef, RejectReason, ValidationError,
-    ValidationOptions,
+    ComponentDef, DataDictionary, DictMergeConflict, FieldDef, FieldType, GroupDef, MessageDef,
+    RejectReason, ValidationError, ValidationOptions,
 };
 pub use parser::{parse, ParseError};
+
+/// An error loading a dictionary file from disk (FR-010).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DictLoadError {
+    /// The file could not be read.
+    #[error("could not read dictionary file {path}: {reason}")]
+    Io {
+        /// The path that failed to read.
+        path: String,
+        /// The underlying I/O error, stringified.
+        reason: String,
+    },
+    /// The file's contents failed to parse.
+    #[error("could not parse dictionary file {path}: {source}")]
+    Parse {
+        /// The path whose contents failed to parse.
+        path: String,
+        /// The underlying parse error.
+        #[source]
+        source: ParseError,
+    },
+}
+
+/// Load and parse a dictionary from a file on disk (FR-010; a runtime, custom-dictionary
+/// counterpart to the bundled `load_fix*` loaders).
+pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<DataDictionary, DictLoadError> {
+    let path_ref = path.as_ref();
+    let text = std::fs::read_to_string(path_ref).map_err(|e| DictLoadError::Io {
+        path: path_ref.display().to_string(),
+        reason: e.to_string(),
+    })?;
+    parse(&text).map_err(|source| DictLoadError::Parse {
+        path: path_ref.display().to_string(),
+        source,
+    })
+}
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -54,6 +94,9 @@ pub const FIX50_DICT: &str = include_str!("../dict-src/normalized/FIX50.fixdict"
 pub const FIX50SP1_DICT: &str = include_str!("../dict-src/normalized/FIX50SP1.fixdict");
 /// FIX 5.0 SP2 application dictionary source.
 pub const FIX50SP2_DICT: &str = include_str!("../dict-src/normalized/FIX50SP2.fixdict");
+/// FIX Latest dictionary source (US9; sourced from FIX Orchestra XML via the `orchestra`
+/// conversion tool, `--features dict-tooling`).
+pub const FIXLATEST_DICT: &str = include_str!("../dict-src/normalized/FIXLATEST.fixdict");
 
 /// Parse the bundled FIX 4.0 dictionary.
 pub fn load_fix40() -> Result<DataDictionary, ParseError> {
@@ -100,6 +143,11 @@ pub fn load_fix50sp2() -> Result<DataDictionary, ParseError> {
     parse(FIX50SP2_DICT)
 }
 
+/// Parse the bundled FIX Latest dictionary (US9, FR-012).
+pub fn load_fixlatest() -> Result<DataDictionary, ParseError> {
+    parse(FIXLATEST_DICT)
+}
+
 /// All bundled dictionaries as `(version, source)` pairs, for iteration.
 pub const ALL_DICTS: &[(&str, &str)] = &[
     ("FIX.4.0", FIX40_DICT),
@@ -111,4 +159,5 @@ pub const ALL_DICTS: &[(&str, &str)] = &[
     ("FIX.5.0", FIX50_DICT),
     ("FIX.5.0SP1", FIX50SP1_DICT),
     ("FIX.5.0SP2", FIX50SP2_DICT),
+    ("FIX.Latest", FIXLATEST_DICT),
 ];

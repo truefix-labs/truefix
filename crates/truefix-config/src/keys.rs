@@ -56,7 +56,7 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("DataDictionary", "validation", Impl),
     k("AppDataDictionary", "validation", Impl),
     k("TransportDataDictionary", "validation", Impl),
-    k("ValidateFieldsOutOfOrder", "validation", Rec),
+    k("ValidateFieldsOutOfOrder", "validation", Impl),
     k("ValidateFieldsHaveValues", "validation", Impl),
     k("ValidateUnorderedGroupFields", "validation", Impl),
     k("ValidateUserDefinedFields", "validation", Impl),
@@ -69,35 +69,55 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("CheckCompID", "validation", Impl),
     k("RejectGarbledMessage", "validation", Impl),
     k("RejectInvalidMessage", "validation", Impl),
-    k("RejectMessageOnUnhandledException", "validation", Rec),
+    k(
+        "RejectMessageOnUnhandledException",
+        "validation",
+        Unsup("TrueFix's typed-error architecture (Constitution Principle I: no panics on critical paths) has no unhandled-exception class this would apply to"),
+    ),
     k("FirstFieldInGroupIsDelimiter", "validation", Impl),
     // Session behavior
     k("HeartBtInt", "session", Impl),
     k("HeartBeatTimeoutMultiplier", "session", Impl),
-    k("DisableHeartBeatCheck", "session", Rec),
+    k("DisableHeartBeatCheck", "session", Impl),
     k("TestRequestDelayMultiplier", "session", Impl),
     k("LogonTimeout", "session", Impl),
     k("LogoutTimeout", "session", Impl),
-    k("LogonTag", "session", Rec),
+    k("LogonTag", "session", Impl),
     k("ResetOnLogon", "session", Impl),
     k("ResetOnLogout", "session", Impl),
     k("ResetOnDisconnect", "session", Impl),
-    k("ResetOnError", "session", Rec),
-    k("RefreshOnLogon", "session", Rec),
+    k("ResetOnError", "session", Impl),
+    k("RefreshOnLogon", "session", Impl),
     k("PersistMessages", "session", Impl),
     k("ResendRequestChunkSize", "session", Impl),
-    k("SendRedundantResendRequests", "session", Rec),
-    k("ClosedResendInterval", "session", Rec),
+    k("SendRedundantResendRequests", "session", Impl),
+    k(
+        "ClosedResendInterval",
+        "session",
+        Unsup("TrueFix's session state machine processes one event at a time with no concurrent resend-servicing path, so there is no open/closed-interval race for this to resolve"),
+    ),
     k("EnableLastMsgSeqNumProcessed", "session", Impl),
     k("EnableNextExpectedMsgSeqNum", "session", Impl),
     k("RequiresOrigSendingTime", "session", Impl),
     k("AllowPosDup", "session", Impl),
-    k("ForceResendWhenCorruptedStore", "session", Rec),
-    k("DisconnectOnError", "session", Rec),
+    k("ForceResendWhenCorruptedStore", "session", Impl),
+    k("DisconnectOnError", "session", Impl),
     k("TimeStampPrecision", "session", Impl),
-    k("MaxScheduledWriteRequests", "session", Rec),
-    k("ContinueInitializationOnError", "session", Rec),
-    k("LogMessageWhenSessionNotFound", "session", Rec),
+    k(
+        "MaxScheduledWriteRequests",
+        "session",
+        Unsup("the session state machine returns actions synchronously for the transport to write immediately; there is no internal outbound write queue for this to bound"),
+    ),
+    k(
+        "ContinueInitializationOnError",
+        "session",
+        Rec,
+    ),
+    k("LogMessageWhenSessionNotFound", "acceptor", Impl),
+    // Backpressure (US14, FR-019): bounds the application-message inbound channel; admin/session
+    // messages always travel on a separate, unbounded channel so they're never starved by a full
+    // application channel. Absent (the default) preserves pre-US14 single-channel behavior exactly.
+    k("InChanCapacity", "session", Impl),
     // Scheduling
     k("StartTime", "scheduling", Impl),
     k("EndTime", "scheduling", Impl),
@@ -134,12 +154,12 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("SocketReceiveBufferSize", "socket", Impl),
     k("SocketSendBufferSize", "socket", Impl),
     k("SocketTrafficClass", "socket", Impl),
-    k("SocketSynchronousWrites", "socket", Rec),
-    k("SocketSynchronousWriteTimeout", "socket", Rec),
+    k("SocketSynchronousWrites", "socket", Impl),
+    k("SocketSynchronousWriteTimeout", "socket", Impl),
     // SSL/TLS (FR-017: config-driven rustls, PEM-based — not Java keystores)
     k("SocketUseSSL", "ssl", Impl),
     k("EnabledProtocols", "ssl", Impl),
-    k("CipherSuites", "ssl", Rec),
+    k("CipherSuites", "ssl", Impl),
     k(
         "KeyStoreType",
         "ssl",
@@ -161,12 +181,14 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
         Unsup("TrueFix uses PEM CA files via rustls, not Java keystores (JKS/PKCS12)"),
     ),
     k("SocketKeyStore", "ssl", Impl),
+    k("SocketKeyStoreBytes", "ssl", Impl),
     k(
         "SocketKeyStorePassword",
         "ssl",
         Unsup("TrueFix's PEM-based key store is not password-encrypted"),
     ),
     k("SocketTrustStore", "ssl", Impl),
+    k("SocketTrustStoreBytes", "ssl", Impl),
     k(
         "SocketTrustStorePassword",
         "ssl",
@@ -176,46 +198,28 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("EndpointIdentificationAlgorithm", "ssl", Rec),
     k("UseSNI", "ssl", Impl),
     k("SNIHostName", "ssl", Impl),
-    // Proxy
-    k(
-        "ProxyType",
-        "proxy",
-        Unsup("HTTP/SOCKS proxy is not yet implemented"),
-    ),
+    // Proxy (US12; FR-015/FR-016)
+    k("UseTCPProxy", "proxy", Impl),
+    k("TrustedProxyAddresses", "proxy", Impl),
+    k("ProxyType", "proxy", Impl),
     k(
         "ProxyVersion",
         "proxy",
-        Unsup("HTTP/SOCKS proxy is not yet implemented"),
+        Unsup("superseded by ProxyType (Socks4/Socks5/HttpConnect covers this project's proxy-type scope)"),
     ),
-    k(
-        "ProxyHost",
-        "proxy",
-        Unsup("HTTP/SOCKS proxy is not yet implemented"),
-    ),
-    k(
-        "ProxyPort",
-        "proxy",
-        Unsup("HTTP/SOCKS proxy is not yet implemented"),
-    ),
-    k(
-        "ProxyUser",
-        "proxy",
-        Unsup("HTTP/SOCKS proxy is not yet implemented"),
-    ),
-    k(
-        "ProxyPassword",
-        "proxy",
-        Unsup("HTTP/SOCKS proxy is not yet implemented"),
-    ),
+    k("ProxyHost", "proxy", Impl),
+    k("ProxyPort", "proxy", Impl),
+    k("ProxyUser", "proxy", Impl),
+    k("ProxyPassword", "proxy", Impl),
     k(
         "ProxyDomain",
         "proxy",
-        Unsup("HTTP/SOCKS proxy is not yet implemented"),
+        Unsup("Windows NTLM-proxy-specific field; out of this project's proxy-type scope (SOCKS4/SOCKS5/HTTP CONNECT)"),
     ),
     k(
         "ProxyWorkstation",
         "proxy",
-        Unsup("HTTP/SOCKS proxy is not yet implemented"),
+        Unsup("Windows NTLM-proxy-specific field; out of this project's proxy-type scope (SOCKS4/SOCKS5/HTTP CONNECT)"),
     ),
     // File store (FR-025)
     k("FileStorePath", "file-store", Impl),
@@ -255,7 +259,17 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     ),
     k("SLF4JLogPrependSessionID", "facade-log", Rec),
     k("SLF4JLogHeartbeats", "facade-log", Rec),
-    // SQL (JDBC-equivalent) store/log — available behind the `sql` feature
+    // SQL (JDBC-equivalent) store/log — PostgreSQL/MySQL/SQLite behind the `sql` feature
+    // (`SqlStore`/`SqlLog`, via `sqlx`) and MSSQL behind the separate `mssql` feature
+    // (`MssqlStore`/`MssqlLog`, via `tiberius` — sqlx has no official MSSQL driver). Both remain
+    // `Recognized` rather than `Implemented`: QuickFIX/J dispatches backend choice from a single
+    // `JdbcURL` connection string via its JDBC driver registry, but TrueFix has no such
+    // single-entry-point dispatch — each backend is a distinct native driver (`sqlx` vs.
+    // `tiberius`) reached only via its own `StoreConfig`/`LogConfig` variant through the direct
+    // Rust API, not yet parsed from these `.cfg` keys (same boundary the `sql` feature already
+    // had before this feature added `mssql`). Oracle (per this spec's Clarifications) is
+    // deferred rather than implemented — see `docs/parity-matrix.md`'s "Feature 003 — US14"
+    // section for the license rationale.
     k("JdbcDriver", "sql", Rec),
     k("JdbcURL", "sql", Rec),
     k("JdbcUser", "sql", Rec),

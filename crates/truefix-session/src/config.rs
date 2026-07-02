@@ -71,6 +71,51 @@ pub struct SessionConfig {
     pub reconnect_interval: u32,
     /// Optional activity schedule (StartTime/EndTime/Weekdays/NonStop).
     pub schedule: Option<crate::schedule::Schedule>,
+    /// Send a fresh ResendRequest even while one is already outstanding, instead of suppressing it
+    /// (SendRedundantResendRequests). Default `false` (today's suppress-while-pending behaviour).
+    pub send_redundant_resend_requests: bool,
+    /// Recognised for QuickFIX/J config-key parity (ClosedResendInterval). TrueFix's session state
+    /// machine processes one event at a time with no concurrent resend-servicing path, so there is
+    /// no open/closed-interval race for this to resolve — accepted but intentionally a no-op.
+    pub closed_resend_interval: bool,
+    /// Perform a full reset (sequence numbers + durable store) in addition to the normal
+    /// reject/disconnect handling when an inbound message fails validation or identity/latency
+    /// checks (ResetOnError). Default `false`.
+    pub reset_on_error: bool,
+    /// Disconnect when an inbound application message fails dictionary validation (session or
+    /// business reject), in addition to sending the reject (DisconnectOnError). Identity/latency
+    /// failures already disconnect unconditionally, independent of this flag. Default `false`.
+    pub disconnect_on_error: bool,
+    /// Skip the heartbeat-timeout disconnect and test-request-on-silence checks entirely
+    /// (DisableHeartBeatCheck). Default `false`.
+    pub disable_heart_beat_check: bool,
+    /// Recognised for QuickFIX/J config-key parity (RejectMessageOnUnhandledException). TrueFix's
+    /// typed-error architecture (Constitution Principle I: no panics on critical paths) has no
+    /// unhandled-exception class this would apply to — accepted but intentionally a no-op.
+    pub reject_message_on_unhandled_exception: bool,
+    /// An optional custom `(tag, value)` pair appended to every outbound Logon (LogonTag).
+    pub logon_tag: Option<(u32, String)>,
+    /// Recognised for QuickFIX/J config-key parity (MaxScheduledWriteRequests). TrueFix's session
+    /// state machine returns actions synchronously for the transport to write immediately — there
+    /// is no internal outbound write queue for this to bound — accepted but intentionally a no-op.
+    pub max_scheduled_write_requests: Option<u32>,
+    /// Recognised for QuickFIX/J config-key parity (ContinueInitializationOnError). This governs
+    /// whether a multi-session engine keeps starting *other* sessions when one session's
+    /// configuration fails during startup — an `Engine::start` (multi-session bring-up) concern in
+    /// the `truefix` crate, not a per-connection `Session` runtime behaviour, so it has no effect
+    /// here; the field exists so the setting round-trips through `SessionConfig`.
+    pub continue_initialization_on_error: bool,
+    /// Force a full reset (sequence numbers + durable store) at connect time when the durable store
+    /// reports it recovered from corruption (ForceResendWhenCorruptedStore) — the safest recovery
+    /// action when local history can't be fully trusted, rather than resending possibly-incomplete
+    /// data. Default `false`.
+    pub force_resend_when_corrupted_store: bool,
+    /// Bound the inbound *application*-message channel to at most this many pending messages
+    /// (`InChanCapacity`; US14, FR-019). Administrative/session-level traffic (heartbeat,
+    /// TestRequest, ResendRequest, Logon, Logout, garbled-frame handling) always travels on a
+    /// separate, unbounded, priority-drained channel, so it is never starved by a full application
+    /// queue. `None` (the default) preserves today's unbounded behavior for both.
+    pub in_chan_capacity: Option<usize>,
 }
 
 /// Sub-second precision of emitted SendingTime timestamps (TimeStampPrecision; FR-009).
@@ -119,6 +164,17 @@ impl SessionConfig {
             logout_timeout: 10,
             reconnect_interval: 5,
             schedule: None,
+            send_redundant_resend_requests: false,
+            closed_resend_interval: false,
+            reset_on_error: false,
+            disconnect_on_error: false,
+            disable_heart_beat_check: false,
+            reject_message_on_unhandled_exception: false,
+            logon_tag: None,
+            max_scheduled_write_requests: None,
+            continue_initialization_on_error: false,
+            force_resend_when_corrupted_store: false,
+            in_chan_capacity: None,
         }
     }
 

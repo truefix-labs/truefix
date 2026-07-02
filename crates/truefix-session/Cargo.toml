@@ -14,5 +14,9 @@ truefix-dict.workspace = true
 time.workspace = true
 async-trait.workspace = true
 
+[[bench]]
+name = "session"
+harness = false
+
 [lints]
 workspace = true

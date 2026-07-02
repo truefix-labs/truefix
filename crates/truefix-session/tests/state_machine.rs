@@ -28,7 +28,7 @@ fn inbound(msg_type: &str, seq: i64, hb: Option<i64>, test_req: Option<&str>) ->
 fn first_send(actions: &[Action]) -> Option<&Message> {
     actions.iter().find_map(|a| match a {
         Action::Send(m) => Some(m),
-        Action::Disconnect => None,
+        Action::Disconnect | Action::ResetStore => None,
     })
 }
 

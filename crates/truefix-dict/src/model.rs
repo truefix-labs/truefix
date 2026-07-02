@@ -85,7 +85,7 @@ impl FieldType {
 }
 
 /// A field definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDef {
     /// Tag number.
     pub tag: u32,
@@ -105,7 +105,7 @@ impl FieldDef {
 }
 
 /// A message definition: required and optional field tags.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageDef {
     /// MsgType value (e.g. `"D"`).
     pub msg_type: String,
@@ -133,6 +133,20 @@ impl MessageDef {
     }
 }
 
+/// A named, reusable group of field/group member tags, referenced from one or more message or
+/// group definitions via a `component:<Name>` token (FR-009). `members` is already fully expanded
+/// (nested `component:` references resolved recursively) by the time a `DataDictionary` exists —
+/// decode/validate code never has to know components exist; they see the same flat, transitively-
+/// expanded tag lists a hand-inlined dictionary would have produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentDef {
+    /// The component's name, as referenced by `component:<Name>` tokens.
+    pub name: String,
+    /// The fully-expanded, ordered member tags (a tag that is itself a group's count_tag denotes a
+    /// nested group, exactly like a message's or group's own member list).
+    pub members: Vec<u32>,
+}
+
 /// A parsed FIX data dictionary for one version.
 #[derive(Debug, Clone)]
 pub struct DataDictionary {
@@ -143,6 +157,7 @@ pub struct DataDictionary {
     pub(crate) header: BTreeSet<u32>,
     pub(crate) trailer: BTreeSet<u32>,
     pub(crate) groups: BTreeMap<u32, GroupDef>,
+    pub(crate) components: BTreeMap<String, ComponentDef>,
     pub(crate) hash: u64,
 }
 
@@ -177,6 +192,11 @@ impl DataDictionary {
         self.groups.get(&count_tag)
     }
 
+    /// Look up a component definition by name.
+    pub fn component(&self, name: &str) -> Option<&ComponentDef> {
+        self.components.get(name)
+    }
+
     /// Whether `tag` is a repeating-group count tag in this dictionary.
     pub fn is_group_count(&self, tag: u32) -> bool {
         self.groups.contains_key(&tag)
@@ -201,6 +221,91 @@ impl DataDictionary {
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }
+
+    /// Merge `other` into `self` (FR-010): fields/messages/groups/components present only in
+    /// `other` are added; a key present in both with an *identical* definition is a no-op
+    /// (idempotent — merging the same extension twice is safe); a key present in both with a
+    /// *different* definition is a [`DictMergeConflict`] and aborts the merge, leaving `self`
+    /// completely unmodified (checked in a dry-run pass before any mutation). `header`/`trailer`
+    /// membership has no "conflict" concept — an extension's header/trailer tags are simply unioned
+    /// in. `hash` is left unchanged: it identifies the base (bundled, dual-track) source, which
+    /// `extend()` deliberately sits outside of (Principle IV; a runtime extension is not part of the
+    /// codegen↔runtime provenance the hash proves).
+    pub fn extend(&mut self, other: &DataDictionary) -> Result<(), DictMergeConflict> {
+        for (tag, def) in &other.fields {
+            if let Some(existing) = self.fields.get(tag) {
+                if existing != def {
+                    return Err(DictMergeConflict {
+                        kind: "field",
+                        key: tag.to_string(),
+                    });
+                }
+            }
+        }
+        for (msg_type, def) in &other.messages {
+            if let Some(existing) = self.messages.get(msg_type) {
+                if existing != def {
+                    return Err(DictMergeConflict {
+                        kind: "message",
+                        key: msg_type.clone(),
+                    });
+                }
+            }
+        }
+        for (count_tag, def) in &other.groups {
+            if let Some(existing) = self.groups.get(count_tag) {
+                if existing != def {
+                    return Err(DictMergeConflict {
+                        kind: "group",
+                        key: count_tag.to_string(),
+                    });
+                }
+            }
+        }
+        for (name, def) in &other.components {
+            if let Some(existing) = self.components.get(name) {
+                if existing != def {
+                    return Err(DictMergeConflict {
+                        kind: "component",
+                        key: name.clone(),
+                    });
+                }
+            }
+        }
+
+        // No conflicts found — apply the merge.
+        for (tag, def) in &other.fields {
+            self.fields.entry(*tag).or_insert_with(|| def.clone());
+            self.field_by_name.entry(def.name.clone()).or_insert(*tag);
+        }
+        for (msg_type, def) in &other.messages {
+            self.messages
+                .entry(msg_type.clone())
+                .or_insert_with(|| def.clone());
+        }
+        for (count_tag, def) in &other.groups {
+            self.groups.entry(*count_tag).or_insert_with(|| def.clone());
+        }
+        for (name, def) in &other.components {
+            self.components
+                .entry(name.clone())
+                .or_insert_with(|| def.clone());
+        }
+        self.header.extend(other.header.iter().copied());
+        self.trailer.extend(other.trailer.iter().copied());
+        Ok(())
+    }
+}
+
+/// A conflicting redefinition found while [`DataDictionary::extend`]ing (FR-010): `other` redefines
+/// `key` (of kind `kind`) differently than `self` already defines it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("conflicting redefinition of {kind} {key:?}")]
+pub struct DictMergeConflict {
+    /// Which map the conflict is in: `"field"`, `"message"`, `"group"`, or `"component"`.
+    pub kind: &'static str,
+    /// The conflicting key (a tag number or name, stringified).
+    pub key: String,
 }
 
 /// FIX SessionRejectReason / business reject reason for a validation failure.
@@ -255,7 +360,7 @@ impl RejectReason {
 
 /// A repeating-group definition: the NoXxx count tag, the entry delimiter (first field), and the
 /// ordered member tags (a member that is itself a count tag denotes a nested group).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupDef {
     /// The NoXxx count tag (e.g. 453 NoPartyIDs).
     pub count_tag: u32,
@@ -320,6 +425,28 @@ pub struct ValidationOptions {
     pub validate_unordered_group_fields: bool,
     /// Reject a tag that appears more than once outside a repeating group.
     pub check_repeated_tags: bool,
+    /// Reject messages whose header/body/trailer fields violate wire-sectioning order, or whose
+    /// third field isn't MsgType(35) (`ValidateFieldsOutOfOrder`; FR-006). Default `false` —
+    /// matches today's lenient behaviour; the underlying violation is detected at decode time
+    /// regardless (see [`truefix_core::Message::fields_out_of_order`]), this toggle only governs
+    /// whether `validate()` rejects on it.
+    pub validate_fields_out_of_order: bool,
+    /// Documents QuickFIX/J's `ValidateChecksum` config key for parity purposes. TrueFix's decoder
+    /// always validates the wire checksum unconditionally (a bad checksum is a decode-time error,
+    /// handled via `RejectGarbledMessage` before a message ever reaches `validate()`) — this flag
+    /// does not weaken that enforcement; a `false` value is accepted but not honored, by design
+    /// (Constitution Principle I/II: checksum validation is not an optional safety property).
+    pub validate_checksum: bool,
+    /// Master switch: when `false`, `validate()` skips all other checks and returns `Ok(())`
+    /// unconditionally (`ValidateIncomingMessage`). Default `true` (today's behaviour).
+    pub validate_incoming_message: bool,
+    /// Whether a message carrying `PossDupFlag(43)=Y` is accepted at all (`AllowPosDup`). Default
+    /// `true` — matches today's behaviour (PossDup messages are not otherwise rejected by
+    /// `validate()`).
+    pub allow_pos_dup: bool,
+    /// Require `OrigSendingTime(122)` on any message carrying `PossDupFlag(43)=Y`
+    /// (`RequiresOrigSendingTime`). Default `false` — matches today's behaviour (not required).
+    pub requires_orig_sending_time: bool,
 }
 
 impl Default for ValidationOptions {
@@ -334,6 +461,11 @@ impl Default for ValidationOptions {
             first_field_in_group_is_delimiter: true,
             validate_unordered_group_fields: true,
             check_repeated_tags: true,
+            validate_fields_out_of_order: false,
+            validate_checksum: true,
+            validate_incoming_message: true,
+            allow_pos_dup: true,
+            requires_orig_sending_time: false,
         }
     }
 }
