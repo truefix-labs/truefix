@@ -24,8 +24,8 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 pub use builder::{
-    ConnectionType, LogSpec, ProxyKind, ProxySpec, ResolvedSession, SocketOptionsSpec, TlsSpec,
-    TlsVersion,
+    ConnectionType, LenientResolve, LogSpec, ProxyKind, ProxySpec, ResolvedSession,
+    SocketOptionsSpec, SqlLogSpec, TlsSpec, TlsVersion,
 };
 pub use keys::{key_info, KeyInfo, Stance, APPENDIX_A_KEYS};
 
@@ -65,6 +65,16 @@ pub enum ConfigError {
         session: String,
         /// Why the value is invalid.
         reason: String,
+    },
+    /// `JdbcURL`'s scheme names a backend that either isn't recognized at all, or is recognized
+    /// but its Cargo feature isn't compiled in (US3, feature 004, FR-003/004) — never a panic or a
+    /// silent fallback to the memory store.
+    #[error("session {session}: unsupported JdbcURL scheme `{scheme}`")]
+    UnsupportedBackend {
+        /// The session label.
+        session: String,
+        /// The offending URL scheme (e.g. `"mssql"`).
+        scheme: String,
     },
     /// `ConnectionType` was neither `acceptor` nor `initiator` (FR-014).
     #[error("session {session}: unknown ConnectionType `{value}`")]

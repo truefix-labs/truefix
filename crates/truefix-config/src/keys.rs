@@ -108,11 +108,11 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
         "session",
         Unsup("the session state machine returns actions synchronously for the transport to write immediately; there is no internal outbound write queue for this to bound"),
     ),
-    k(
-        "ContinueInitializationOnError",
-        "session",
-        Rec,
-    ),
+    // US4, feature 004 (FR-005): `.cfg` → `SessionConfig.continue_initialization_on_error`, and
+    // `Engine::start`'s multi-session bring-up (both config-resolution and runtime startup
+    // failures) actually honors it — was `Recognized` (round-tripped but inert) through feature
+    // 003.
+    k("ContinueInitializationOnError", "session", Impl),
     k("LogMessageWhenSessionNotFound", "acceptor", Impl),
     // Backpressure (US14, FR-019): bounds the application-message inbound channel; admin/session
     // messages always travel on a separate, unbounded channel so they're never starved by a full
@@ -137,7 +137,13 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("SocketConnectHost", "initiator", Impl),
     k("SocketConnectPort", "initiator", Impl),
     // Numbered backup endpoints (SocketConnectHost1/Port1, SocketConnectHost2/Port2, ...) for
-    // multi-endpoint failover (FR-019); N=1 shown as the representative entry.
+    // multi-endpoint failover (FR-019); N=1 shown as the representative entry. Already marked
+    // `Impl` since feature 002 (parsed into `ResolvedSession.failover_addresses`), but until
+    // feature 004 (US1, GAP-02) `Engine::start` never actually reconnected through them — only a
+    // one-shot `connect_initiator` was used. US1 makes the marking accurate: `Engine::start` now
+    // routes to `connect_initiator_reconnecting_multi[_tls]` whenever `failover_addresses` is
+    // non-empty (proxy+failover is the one unsupported combination — logged and falls back to the
+    // existing proxy path).
     k("SocketConnectHost1", "initiator", Impl),
     k("SocketConnectPort1", "initiator", Impl),
     k("SocketConnectProtocol", "initiator", Rec),
@@ -261,26 +267,36 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("SLF4JLogHeartbeats", "facade-log", Rec),
     // SQL (JDBC-equivalent) store/log — PostgreSQL/MySQL/SQLite behind the `sql` feature
     // (`SqlStore`/`SqlLog`, via `sqlx`) and MSSQL behind the separate `mssql` feature
-    // (`MssqlStore`/`MssqlLog`, via `tiberius` — sqlx has no official MSSQL driver). Both remain
-    // `Recognized` rather than `Implemented`: QuickFIX/J dispatches backend choice from a single
-    // `JdbcURL` connection string via its JDBC driver registry, but TrueFix has no such
-    // single-entry-point dispatch — each backend is a distinct native driver (`sqlx` vs.
-    // `tiberius`) reached only via its own `StoreConfig`/`LogConfig` variant through the direct
-    // Rust API, not yet parsed from these `.cfg` keys (same boundary the `sql` feature already
-    // had before this feature added `mssql`). Oracle (per this spec's Clarifications) is
-    // deferred rather than implemented — see `docs/parity-matrix.md`'s "Feature 003 — US14"
-    // section for the license rationale.
+    // (`MssqlStore`/`MssqlLog`, via `tiberius` — sqlx has no official MSSQL driver).
+    //
+    // `JdbcURL` itself is now `Implemented` (US3, feature 004, FR-003): `builder.rs`'s
+    // `resolve_store`/`resolve_log` dispatch on the URL's scheme prefix (`postgres://`/
+    // `mysql://`/`sqlite:` vs. `mssql://`/`sqlserver://`) — a scheme-sniffing equivalent to
+    // QuickFIX/J's `JdbcDriver`-class-based registry dispatch, not a literal port of it (this
+    // codebase has no driver-class registry to mirror). The four `JdbcLog*` keys consumed by
+    // that same dispatch (table names + heartbeat filter, feeding the new `SqlLogSpec`) are
+    // `Implemented` too. `JdbcDriver`/`JdbcUser`/`JdbcPassword`/`JdbcDataSourceName` stay
+    // `Recognized`: the URL already carries user/password/scheme inline
+    // (`postgres://user:pass@host/db`-style), so these QuickFIX/J-only auxiliary keys are parsed
+    // but have nothing left to configure. `JdbcStoreMessagesTableName`/
+    // `JdbcStoreSessionsTableName` also stay `Recognized`: `StoreConfig::Sql`/`Mssql` carry only a
+    // bare `url: String` (no table-name override field), a pre-existing limitation from before
+    // this feature, not a regression — same for the connection-pool keys below (`SqlLogSpec` has
+    // no pool-settings field; pool tuning remains programmatic-only via `SqlLogConfig`/
+    // `SqlStoreConfig` directly). Oracle (per spec 003's Clarifications) is deferred rather than
+    // implemented — see `docs/parity-matrix.md`'s "Feature 003 — US14" section for the license
+    // rationale.
     k("JdbcDriver", "sql", Rec),
-    k("JdbcURL", "sql", Rec),
+    k("JdbcURL", "sql", Impl),
     k("JdbcUser", "sql", Rec),
     k("JdbcPassword", "sql", Rec),
     k("JdbcDataSourceName", "sql", Rec),
     k("JdbcStoreMessagesTableName", "sql", Rec),
     k("JdbcStoreSessionsTableName", "sql", Rec),
-    k("JdbcLogIncomingTable", "sql", Rec),
-    k("JdbcLogOutgoingTable", "sql", Rec),
-    k("JdbcLogEventTable", "sql", Rec),
-    k("JdbcLogHeartBeats", "sql", Rec),
+    k("JdbcLogIncomingTable", "sql", Impl),
+    k("JdbcLogOutgoingTable", "sql", Impl),
+    k("JdbcLogEventTable", "sql", Impl),
+    k("JdbcLogHeartBeats", "sql", Impl),
     k("JdbcMaxActiveConnection", "sql", Rec),
     k("JdbcMaxConnectionLifeTime", "sql", Rec),
     k("JdbcMinIdleConnection", "sql", Rec),

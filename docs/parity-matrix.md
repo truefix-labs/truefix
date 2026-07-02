@@ -660,3 +660,49 @@ TrueFix has no equivalent single-entry-point dispatch — PostgreSQL/MySQL/SQLit
 from these `.cfg` keys. This is the same boundary the `sql` feature already had before this feature
 (pre-existing from feature 002, not a US14 regression) — a unified `.cfg`-driven SQL-backend dispatch
 across four structurally different native drivers is out of this feature's scope.
+
+## Feature 004 — Dependency & Provenance Audit (T002)
+
+| Dependency | Version | License | Verdict |
+|------------|---------|---------|---------|
+| `redb` | 4.1.0 | MIT OR Apache-2.0 | Compatible — permissive, no copyleft. `cargo deny check` clean; no transitive advisory-flagged dependency (pure Rust, minimal dependency tree). |
+| `mongodb` | 3.7.0 | Apache-2.0 | Compatible — permissive, no copyleft, matches QuickFIX/Go's own choice of driver for its equivalent feature. **Pulls in two transitive licenses not previously in `deny.toml`'s allow-list**: `tiny-keccak` (via `macro_magic`/`const-random`) under `CC0-1.0` (public-domain-equivalent dedication — strictly more permissive than MIT/Apache-2.0, no conditions at all) and `webpki-roots` (bundled Mozilla root CA certificate data) under `CDLA-Permissive-2.0` (an MIT-style permissive license for data). Neither is copyleft; both added to `deny.toml`'s allow list with justification, since Principle III's actual concern is copyleft contamination, not "not yet explicitly enumerated." |
+
+**Incidental fix, found by re-running `cargo deny check` for this audit (not caused by `redb`/
+`mongodb`)**: `quick-xml` 0.36.2 (feature 003's `dict-tooling`-only Orchestra-parsing dependency) had a
+newly-published advisory, RUSTSEC-2026-0194 (quadratic-time duplicate-attribute-name checking — a CPU
+DoS risk when parsing untrusted XML with many attributes on one tag). Fixed by upgrading to `quick-xml`
+0.41.0 (the advisory's stated fix version), which required one call-site migration:
+`Attribute::unescape_value()` is deprecated in favor of `Attribute::normalized_value(XmlVersion)` in
+0.41 — `crates/truefix-dict/src/orchestra.rs` now passes `XmlVersion::Implicit1_0` (FIX Orchestra
+sources don't declare an XML version, so the implicit-1.0 default rules apply). Verified
+byte-for-byte unchanged output via the existing
+`orchestra_conversion.rs::the_bundled_orchestra_fixture_matches_the_shipped_fixlatest_dict` test and
+the full `dict-tooling` test suite, all green after the upgrade.
+
+## Feature 004 — Stance Tracking Scaffold (T004) — final sweep (T032)
+
+Config keys/toggles this feature moves from **Recognized** → **Implemented** (FR-009); see
+`crates/truefix-config/src/keys.rs` (`APPENDIX_A_KEYS`) for the authoritative per-key registry this
+table mirrors.
+
+| Key | Stage | Status |
+|-----|-------|--------|
+| `ContinueInitializationOnError` | W4 (US4) | **landed** — new `SessionSettings::resolve_lenient()` (resolution-time tolerance) plus `Engine::start`'s per-session loop (startup-time tolerance); stance `Rec` → `Impl` |
+| `UseDataDictionary` / `DataDictionary` / `AppDataDictionary` / `TransportDataDictionary` (already marked `Impl`, previously unwired — this feature makes the marking accurate) | W2 (US2) | **landed** — `builder.rs::resolve_validator` reaches `Services.validator` via `ResolvedSession.validator`; stance unchanged (`Impl`), marking now accurate |
+| `JdbcURL` | W3 (US3) | **landed** — scheme-dispatched store/log selection in `resolve_store`/`resolve_log`; stance `Rec` → `Impl` |
+| `JdbcLogIncomingTable` / `JdbcLogOutgoingTable` / `JdbcLogEventTable` / `JdbcLogHeartBeats` | W3 (US3) | **landed** — consumed building the new `SqlLogSpec`; stance `Rec` → `Impl` |
+| `SocketConnectHost1` / `SocketConnectPort1` (already marked `Impl` since feature 002, parsed but not reconnected-through — this feature makes the marking accurate) | W1 (US1) | **landed** — `Engine::start` now routes to `connect_initiator_reconnecting_multi[_tls]` when `failover_addresses` is non-empty; stance unchanged (`Impl`), marking now accurate |
+
+Keys that stay `Recognized` on purpose (US3 scope boundary, not a regression): `JdbcDriver` / `JdbcUser`
+/ `JdbcPassword` / `JdbcDataSourceName` (the URL already carries scheme/user/password inline, nothing
+left for these to configure) and `JdbcStoreMessagesTableName` / `JdbcStoreSessionsTableName` /
+`Jdbc*Connection*` pool settings (`StoreConfig::Sql`/`Mssql` carry only a bare `url: String`, and
+`SqlLogSpec` has no pool-settings field — both pre-existing limitations from before this feature, out of
+scope to fix here).
+
+`RedbStore`/`RedbLog` (US5) and `MongoStore`/`MongoLog` (US6) introduce no new `.cfg` keys — per
+spec/data-model.md, both are library-level additions selectable only via `StoreConfig::Redb`/`Mongo`
+through the direct Rust API, matching `SqlLog`/`MssqlLog`'s precedent that not every store/log backend
+is `.cfg`-selectable (only `LogConfig::Screen`/`File`/`Tracing`/`Composite` are). See
+`docs/todo-gap-analysis.md`'s GAP-01–GAP-06 entries for the user-facing gap-closure summary.

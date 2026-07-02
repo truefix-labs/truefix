@@ -18,9 +18,13 @@
 
 mod file;
 mod memory;
+#[cfg(feature = "mongodb")]
+mod mongo;
 #[cfg(feature = "mssql")]
 mod mssql;
 mod noop;
+#[cfg(feature = "redb")]
+mod redb;
 #[cfg(feature = "sql")]
 mod sql;
 
@@ -31,9 +35,13 @@ use thiserror::Error;
 
 pub use file::{CachedFileStore, FileStore, FileStoreOptions};
 pub use memory::MemoryStore;
+#[cfg(feature = "mongodb")]
+pub use mongo::{MongoStore, MongoStoreConfig};
 #[cfg(feature = "mssql")]
 pub use mssql::{MssqlStore, MssqlStoreConfig};
 pub use noop::NoopStore;
+#[cfg(feature = "redb")]
+pub use redb::{RedbStore, RedbStoreConfig};
 #[cfg(feature = "sql")]
 pub use sql::{SqlPoolOptions, SqlStore, SqlStoreConfig};
 
@@ -108,6 +116,20 @@ pub enum StoreConfig {
         /// Database URL (`mssql://user:password@host[:port]/database`).
         url: String,
     },
+    /// Embedded transactional store via `redb` (requires the `redb` feature; US5, feature 004,
+    /// FR-006), a modern replacement for QuickFIX/J's obsolete `SleepycatStore`.
+    #[cfg(feature = "redb")]
+    Redb {
+        /// Path to the `redb` database file.
+        path: PathBuf,
+    },
+    /// MongoDB-backed store (requires the `mongodb` feature; US6, feature 004), matching
+    /// QuickFIX/Go's MongoDB option.
+    #[cfg(feature = "mongodb")]
+    Mongo {
+        /// MongoDB connection URI (`mongodb://...`).
+        uri: String,
+    },
 }
 
 /// Build a boxed [`MessageStore`] from a [`StoreConfig`].
@@ -125,5 +147,9 @@ pub async fn build_store(config: &StoreConfig) -> Result<Box<dyn MessageStore>, 
         StoreConfig::Sql { url } => Box::new(SqlStore::connect(url).await?),
         #[cfg(feature = "mssql")]
         StoreConfig::Mssql { url } => Box::new(MssqlStore::connect(url).await?),
+        #[cfg(feature = "redb")]
+        StoreConfig::Redb { path } => Box::new(RedbStore::connect(path).await?),
+        #[cfg(feature = "mongodb")]
+        StoreConfig::Mongo { uri } => Box::new(MongoStore::connect(uri).await?),
     })
 }

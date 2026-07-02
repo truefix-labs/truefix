@@ -1465,6 +1465,62 @@ where
     ReconnectHandle { stop, task }
 }
 
+/// As [`connect_initiator_reconnecting_multi`], but performs a TLS handshake on every connection
+/// attempt (US1, feature 004, FR-001) — mirroring [`connect_initiator_tls`]'s single-attempt
+/// handshake, looped with the same rotation/backoff as the plain multi-endpoint connector.
+pub fn connect_initiator_reconnecting_multi_tls<A>(
+    addrs: Vec<SocketAddr>,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+    tls: Arc<rustls::ClientConfig>,
+    server_name: rustls::pki_types::ServerName<'static>,
+) -> ReconnectHandle
+where
+    A: Application + 'static,
+{
+    let stop = Arc::new(AtomicBool::new(false));
+    let loop_stop = stop.clone();
+    let interval = Duration::from_secs(u64::from(config.reconnect_interval).max(1));
+    let id = config.session_id();
+    let connector = tokio_rustls::TlsConnector::from(tls);
+    let task = tokio::spawn(async move {
+        let mut connected_before = false;
+        let mut next_endpoint = 0usize;
+        while !loop_stop.load(Ordering::SeqCst) {
+            let Some(&addr) = addrs.get(next_endpoint % addrs.len().max(1)) else {
+                break; // addrs is empty; nothing to connect to
+            };
+            next_endpoint = next_endpoint.wrapping_add(1);
+            if let Ok(tcp) = TcpStream::connect(addr).await {
+                services.socket_options.apply(&tcp);
+                if let Ok(stream) = connector.connect(server_name.clone(), tcp).await {
+                    if connected_before {
+                        metrics_export::record_reconnect(&id);
+                    }
+                    connected_before = true;
+                    let (control_tx, control_rx) = mpsc::channel(8);
+                    run_connection(
+                        stream,
+                        config.clone(),
+                        app.clone(),
+                        services.clone(),
+                        control_tx,
+                        control_rx,
+                        Vec::new(),
+                    )
+                    .await;
+                }
+            }
+            if loop_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(interval).await;
+        }
+    });
+    ReconnectHandle { stop, task }
+}
+
 // ===========================================================================================
 // Scheduled initiator (S6 schedule wiring): connect only while in session (FR-E1/E2/E3).
 // ===========================================================================================

@@ -38,18 +38,23 @@ the automated tests that verify them. All run under `cargo test --workspace` unl
 
 ## Current gate status
 
-- Workspace tests: **green** (329 passing, default features — grown substantially across feature 003;
-  see the "003" section below for what drove the growth).
+- Workspace tests: **green** (351 passing, default features — grown across feature 004; see the "004"
+  section below for what drove the growth).
 - SQL feature tests: **green** (`cargo test -p truefix-store -p truefix-log --features sql`; SQLite
   cases run unconditionally, PostgreSQL/MySQL cases run when `DATABASE_URL_PG`/`DATABASE_URL_MYSQL`
   are set — CI's `sql` job provides both via service containers, see `.github/workflows/ci.yml`).
 - MSSQL feature tests: **green** (`cargo test -p truefix-store -p truefix-log --features mssql`;
   cases skip when `DATABASE_URL_MSSQL` is unset, run for real against CI's new `mssql` job service
   container, see `.github/workflows/ci.yml`).
+- `redb` feature tests: **green** (`cargo test -p truefix-store -p truefix-log --features redb`; all
+  cases run unconditionally — `redb` is embedded, like SQLite — see the "004" section's US5 entry).
+- `mongodb` feature tests: **green** (`cargo test -p truefix-store -p truefix-log --features mongodb`;
+  cases skip when `DATABASE_URL_MONGO` is unset, run for real against CI's new `mongo` job service
+  container, see `.github/workflows/ci.yml` and the "004" section's US6 entry).
 - `dict-tooling` feature tests: **green** (`cargo test -p truefix-dict --features dict-tooling`; the
   Orchestra XML → normalized-`.fixdict` conversion tool, off by default — CI's `dict-tooling` job).
-- `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`: **clean** (with and
-  without `--features sql`/`dict-tooling`).
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`: **clean** (default,
+  `--features sql`/`mssql`/`redb`/`mongodb`/`dict-tooling`).
 - AT conformance suite: **green** (`cargo test -p truefix-at --test conformance`; 353/353 scenario
   runs across all 9 targeted versions, plus 3 independently-gated special-category suites and a
   regression-floor test — see corpus below and the "003" section's US1-closeout entry).
@@ -226,6 +231,89 @@ before consuming the inbound Logon); see `truefix-session` `state_machine.rs`.
   through `SessionConfig` but has no effect — its real home would be multi-session bring-up logic in
   `truefix::Engine::start`, not a per-connection `Session` behavior, and building that out wasn't
   part of any 003 user story).
+
+## 004 — Engine wiring & extra backends
+
+Closes GAP-01–GAP-06 from the 2026-07-02 gap analysis (`docs/todo-gap-analysis.md`). None of the six
+gaps were protocol-correctness defects — this feature touches no session-state-machine/codec/protocol
+behavior, and the existing 353/353-scenario AT suite staying green **and unmodified** is itself the
+release gate (FR-010), not a target for new scenarios.
+
+- **Initiator failover wired into `Engine::start` (US1, GAP-02, FR-001)**: `Engine` gains
+  `failover_initiators: Vec<ReconnectHandle>`; when a session's `.cfg` sets `SocketConnectHost1`/
+  `SocketConnectPort1` (etc.) and no SOCKS/HTTP proxy is configured, `Engine::start` now routes to the
+  existing (previously unused by the facade) `connect_initiator_reconnecting_multi`, plus a new
+  `connect_initiator_reconnecting_multi_tls` for the TLS case. Proxy+failover together isn't supported
+  yet — a `tracing::warn!` fires and the session falls back to the existing one-shot proxy path rather
+  than silently dropping failover. `truefix-transport` `failover_engine.rs` (`truefix` crate,
+  `.cfg`-only, dead-primary-port + engine's-own-acceptor-as-backup) and `failover_tls.rs`.
+- **`.cfg`-only dictionary/validator wiring (US2, GAP-01, FR-002)**: new
+  `builder.rs::resolve_validator` reads `UseDataDictionary`/`DataDictionary`/`AppDataDictionary`/
+  `TransportDataDictionary` and resolves either a bundled dictionary (by version string, via
+  `truefix_dict::ALL_DICTS`) or a file path (`load_from_file`), producing
+  `ResolvedSession.validator: Option<(DataDictionary, ValidationOptions)>` that now actually reaches
+  `Services.validator` — previously only settable programmatically. `truefix-config`
+  `validator_mapping.rs` (10 tests) + `truefix` `config_start.rs`'s new
+  `cfg_only_acceptor_rejects_a_dictionary_invalid_message` end-to-end test.
+- **`.cfg`-only SQL backend selection via `JdbcURL` (US3, GAP-05, FR-003)**: `resolve_store`/
+  `resolve_log` dispatch on `JdbcURL`'s scheme prefix (`postgres://`/`mysql://`/`sqlite:` vs.
+  `mssql://`/`sqlserver://`), scheme-sniffed rather than `JdbcDriver`-class-registry-based (no such
+  registry exists in this codebase). Required a new three-layer optional-feature pass-through pattern
+  (`truefix-store`/`truefix-log` → `truefix-config` → `truefix` facade) since `truefix-config` now needs
+  to *construct* `StoreConfig::Sql`/`Mssql` variants that are feature-gated in a sibling crate. Log side
+  gets a new additive `SqlLogSpec` field (not a `LogConfig` enum variant — a design correction made
+  mid-implementation after grounding against the actual `LogConfig` shape). `truefix-config`
+  `store_and_log_mapping.rs` (+10 tests across all 4 feature combos) + `truefix` `config_start.rs`'s new
+  `cfg_only_session_with_jdbc_url_persists_sequence_numbers_across_a_restart` test.
+- **`ContinueInitializationOnError` (US4, GAP-06, FR-004)**: new `SessionSettings::resolve_lenient()`
+  resolves sessions one at a time, consulting each failed session's own raw `.cfg` for
+  `ContinueInitializationOnError` to decide skip-vs-abort — a genuinely new mechanism, not just a loop
+  restructuring, because `resolve()`'s `.collect()` is an all-or-nothing barrier that executes *before*
+  `Engine::start`'s per-session loop even begins (a design correction found mid-implementation).
+  `Engine::start`'s per-session startup body is similarly wrapped to tolerate startup-time (not just
+  resolution-time) failures per-session. Stance flips `Recognized` → `Implemented`. `truefix`
+  `continue_on_error.rs` (2 tests).
+- **`RedbStore`/`RedbLog` (US5, GAP-04, FR-005/006)**: new optional `redb` feature on `truefix-store`/
+  `truefix-log`, an embedded transactional KV replacement for QuickFIX/J's obsolete `SleepycatStore`
+  (Berkeley DB JE) — chosen over `sled` (same license, but its 1.0 rewrite has been stuck in alpha for
+  years). Found a real, load-bearing `redb` design property: `Database::create`/`open` takes an
+  exclusive file lock per call, so two independent connections to one file can't coexist in one process
+  (unlike networked SQL) — solved with a new `RedbStore::with_session_id` (clones the cheap
+  `Arc<Database>`, swaps only `session_id`). No `.cfg` wiring — library-level only, matching
+  `SqlLog`/`MssqlLog`'s existing precedent that not every store/log is `.cfg`-selectable.
+  `truefix-store` `redb_backend.rs` (4 tests, unconditional — `redb` is embedded like SQLite) +
+  `truefix-log` `redb_log.rs` (2 tests).
+- **`MongoStore`/`MongoLog` (US6, GAP-03, FR-007/008)**: new optional `mongodb` feature, matching
+  QuickFIX/Go's own `MongoStore`/`MongoLog` option (a deliberate reversal of feature 003's own MongoDB
+  deferral, now that the actual API surface has been evaluated). Native async `mongodb` crate API
+  throughout (no `spawn_blocking`, unlike `redb`); `SessionDoc`/`MessageDoc` collections with a compound
+  `(session_id, seq)` unique index. Also library-level only, no `.cfg` wiring, same rationale as US5.
+  `truefix-store` `mongo_backend.rs` + `truefix-log` `mongo_log.rs`, both gated on
+  `DATABASE_URL_MONGO` (skip-clean without it, real assertions in CI's new `mongo` service-container
+  job — no local Docker/MongoDB was available in the implementation environment, so these ran only
+  their skip path there).
+- **Config-key stance sweep (T032, FR-009)**: `JdbcURL`/`JdbcLogIncomingTable`/`JdbcLogOutgoingTable`/
+  `JdbcLogEventTable`/`JdbcLogHeartBeats` flip `Recognized` → `Implemented`;
+  `ContinueInitializationOnError` flips `Recognized` → `Implemented`. Two keys already marked `Impl`
+  from earlier features get their marking made *accurate* rather than changed:
+  `UseDataDictionary`/`DataDictionary`/`AppDataDictionary`/`TransportDataDictionary` (marked `Impl`
+  since 003 but never actually wired to `Services.validator` until US2) and `SocketConnectHost1`/
+  `SocketConnectPort1` (marked `Impl` since 002 but never actually reconnected-through until US1). See
+  `docs/parity-matrix.md`'s "Feature 004 — Stance Tracking Scaffold (T004)" table for the full sweep,
+  including which `Jdbc*` keys deliberately stay `Recognized` (URL already carries user/password
+  inline; `StoreConfig::Sql`/`Mssql` have no table-name-override field — pre-existing limitations, not
+  regressions).
+- **Incidental fixes found during T002's dependency audit (not caused by `redb`/`mongodb` themselves)**:
+  `quick-xml` 0.36.2 → 0.41.0 for RUSTSEC-2026-0194 (one call-site migration in
+  `crates/truefix-dict/src/orchestra.rs`, verified byte-identical output); `mongodb`'s two new
+  transitive licenses (`CC0-1.0`, `CDLA-Permissive-2.0`) added to `deny.toml`'s allow-list with
+  justification (both strictly permissive, no copyleft).
+- **Gate status (T036)**: `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -D
+  warnings` clean across default, `--features redb`, and `--features mongodb`; `cargo test --workspace`
+  green (**351 passing**, default features); `cargo test -p truefix-store -p truefix-log --features
+  redb`/`--features mongodb` green; `cargo test -p truefix-at --test conformance` + `--test coverage`
+  confirm the 353/353-scenario baseline is **unchanged** (FR-010); `cargo deny check`:
+  `advisories ok, bans ok, licenses ok, sources ok`.
 
 ## Outstanding before a v1 release claim
 

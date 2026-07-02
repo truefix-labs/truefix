@@ -44,6 +44,9 @@ pub struct ResolvedSession {
     pub failover_addresses: Vec<SocketAddr>,
     /// A file-backed log to build for this session, present when `FileLogPath` is set (FR-026).
     pub log: Option<LogSpec>,
+    /// A SQL-backed log to build for this session, present when `JdbcURL` is set (US3, feature 004,
+    /// FR-003). Mutually exclusive with [`log`](Self::log) — see `resolve_log`'s doc.
+    pub sql_log: Option<SqlLogSpec>,
     /// Forward-proxy configuration for an initiator connection, present when `ProxyType` is set
     /// (US12, FR-016).
     pub proxy: Option<ProxySpec>,
@@ -53,6 +56,13 @@ pub struct ResolvedSession {
     /// `SocketSynchronousWrites` + `SocketSynchronousWriteTimeout` (US12, FR-017): present when
     /// synchronous writes are enabled with a configured timeout.
     pub sync_write_timeout: Option<Duration>,
+    /// The inbound dictionary validator, present when `UseDataDictionary=Y` (US2, feature 004,
+    /// FR-002). `None` (the default) means no dictionary validation is wired, matching today's
+    /// behavior.
+    pub validator: Option<(
+        truefix_dict::DataDictionary,
+        truefix_dict::ValidationOptions,
+    )>,
 }
 
 /// Forward-proxy configuration for an initiator connection, resolved from configuration (US12,
@@ -97,6 +107,25 @@ pub struct LogSpec {
     pub include_timestamp: bool,
     /// `FileIncludeMilliseconds`.
     pub include_milliseconds: bool,
+}
+
+/// A SQL-backed log resolved from configuration (US3, feature 004, FR-003). Data-only mirror of
+/// `truefix_log::SqlLogConfig`/`MssqlLogConfig`; independent of, and mutually exclusive with,
+/// [`LogSpec`] (File-log) — see `resolve_log`'s doc for the precedence rule when both `JdbcURL` and
+/// `FileLogPath` are present. The mechanism that builds a live `Log` from this (dispatched by
+/// `url`'s scheme, same as the store side) lives in the facade.
+#[derive(Debug, Clone)]
+pub struct SqlLogSpec {
+    /// The `JdbcURL` value; scheme carries backend selection (SQL vs MSSQL).
+    pub url: String,
+    /// `JdbcLogIncomingTable`, default `"log_incoming"` (matching `SqlLogConfig::new`'s default).
+    pub incoming_table: String,
+    /// `JdbcLogOutgoingTable`, default `"log_outgoing"`.
+    pub outgoing_table: String,
+    /// `JdbcLogEventTable`, default `"log_event"`.
+    pub event_table: String,
+    /// `JdbcLogHeartBeats`, default `true`.
+    pub include_heartbeats: bool,
 }
 
 /// Socket-level tuning options resolved from configuration (FR-019). Data-only mirror of
@@ -176,6 +205,11 @@ pub enum TlsVersion {
     Tls13,
 }
 
+/// [`SessionSettings::resolve_lenient`]'s return shape: the successfully-resolved sessions, plus
+/// `(session label, error)` pairs for any sessions skipped via `ContinueInitializationOnError=Y`
+/// (US4, feature 004, FR-005).
+pub type LenientResolve = (Vec<ResolvedSession>, Vec<(String, ConfigError)>);
+
 impl SessionSettings {
     /// Resolve every `[SESSION]` into a runnable [`ResolvedSession`] (FR-013/014). All-or-nothing:
     /// the first invalid or missing key aborts with a typed [`ConfigError`] (FR-015).
@@ -185,6 +219,32 @@ impl SessionSettings {
             .enumerate()
             .map(|(i, map)| resolve_one(map, i))
             .collect()
+    }
+
+    /// As [`Self::resolve`], but tolerates a resolution failure for a session whose own
+    /// `ContinueInitializationOnError=Y` (US4, feature 004, FR-005) — that session's error is
+    /// collected into the second return value (labeled by `SenderCompID->TargetCompID`) instead of
+    /// aborting the whole resolve. A session without the flag set still aborts the *entire* resolve
+    /// on its first error, exactly as [`Self::resolve`] does — this is deliberately per-session
+    /// opt-in, not an engine-wide override (the flag is read directly from that session's own raw
+    /// `.cfg` map, since `ContinueInitializationOnError` itself is a simple, never-failing boolean
+    /// key — readable even when *other* keys in the same session are broken).
+    pub fn resolve_lenient(&self) -> Result<LenientResolve, ConfigError> {
+        let mut resolved = Vec::new();
+        let mut skipped = Vec::new();
+        for (i, map) in self.sessions().iter().enumerate() {
+            match resolve_one(map, i) {
+                Ok(rs) => resolved.push(rs),
+                Err(err) => {
+                    if bool_key(map, "ContinueInitializationOnError", false) {
+                        skipped.push((label(map, i), err));
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+        Ok((resolved, skipped))
     }
 }
 
@@ -363,6 +423,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.disable_heart_beat_check = bool_key(map, "DisableHeartBeatCheck", false);
     cfg.refresh_on_logon = bool_key(map, "RefreshOnLogon", false);
     cfg.force_resend_when_corrupted_store = bool_key(map, "ForceResendWhenCorruptedStore", false);
+    cfg.continue_initialization_on_error = bool_key(map, "ContinueInitializationOnError", false);
     cfg.logon_tag = resolve_logon_tag(map, &session)?;
     cfg.in_chan_capacity = usize_key(map, "InChanCapacity", &session, None)?;
 
@@ -374,10 +435,11 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         ConnectionType::Initiator => resolve_failover_addresses(map, &session)?,
         ConnectionType::Acceptor => Vec::new(),
     };
-    let log = resolve_log(map);
+    let (log, sql_log) = resolve_log(map, &session);
     let proxy = resolve_proxy(map, &session)?;
     let trusted_proxy_addresses = resolve_trusted_proxy_addresses(map, &session)?;
     let sync_write_timeout = resolve_sync_write_timeout(map, &session)?;
+    let validator = resolve_validator(map, &session)?;
 
     Ok(ResolvedSession {
         session: cfg,
@@ -388,9 +450,74 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         socket_options,
         failover_addresses,
         log,
+        sql_log,
         proxy,
         trusted_proxy_addresses,
         sync_write_timeout,
+        validator,
+    })
+}
+
+/// Resolve `UseDataDictionary` + `DataDictionary`/`AppDataDictionary`/`TransportDataDictionary` +
+/// the five already-implemented `ValidationOptions` toggles into a validator (US2, feature 004,
+/// FR-002). `None` when `UseDataDictionary` is absent/`N`, matching today's behavior (no dictionary
+/// validation wired) unchanged.
+///
+/// **Scope note**: `Services.validator` (which this feeds) already only carries a single
+/// `DataDictionary`, not `truefix_dict::FixtDictionaries`' separate transport/application pair —
+/// this is a pre-existing limitation of the programmatic API, not something newly introduced by
+/// `.cfg` wiring. `AppDataDictionary`/`TransportDataDictionary` are therefore treated as alternate
+/// key names for the same single dictionary value, not a true FIXT dual-dictionary setup.
+fn resolve_validator(
+    map: &Map,
+    session: &str,
+) -> Result<
+    Option<(
+        truefix_dict::DataDictionary,
+        truefix_dict::ValidationOptions,
+    )>,
+    ConfigError,
+> {
+    if !bool_key(map, "UseDataDictionary", false) {
+        return Ok(None);
+    }
+    let value = map
+        .get("DataDictionary")
+        .or_else(|| map.get("AppDataDictionary"))
+        .or_else(|| map.get("TransportDataDictionary"))
+        .ok_or_else(|| ConfigError::MissingRequired {
+            key: "DataDictionary".to_owned(),
+            session: session.to_owned(),
+        })?;
+    let dict = load_dictionary_value(value, session)?;
+    let opts = truefix_dict::ValidationOptions {
+        validate_fields_out_of_order: bool_key(map, "ValidateFieldsOutOfOrder", false),
+        validate_checksum: bool_key(map, "ValidateChecksum", true),
+        validate_incoming_message: bool_key(map, "ValidateIncomingMessage", true),
+        allow_pos_dup: bool_key(map, "AllowPosDup", true),
+        requires_orig_sending_time: bool_key(map, "RequiresOrigSendingTime", false),
+        ..truefix_dict::ValidationOptions::default()
+    };
+    Ok(Some((dict, opts)))
+}
+
+/// `DataDictionary`'s value is either one of `truefix_dict::ALL_DICTS`'s bundled version strings
+/// (e.g. `"FIX.4.4"`) or a filesystem path, tried in that order.
+fn load_dictionary_value(
+    value: &str,
+    session: &str,
+) -> Result<truefix_dict::DataDictionary, ConfigError> {
+    if let Some((_, source)) = truefix_dict::ALL_DICTS.iter().find(|(v, _)| *v == value) {
+        return truefix_dict::parse(source).map_err(|e| ConfigError::InvalidValue {
+            key: "DataDictionary".to_owned(),
+            session: session.to_owned(),
+            reason: e.to_string(),
+        });
+    }
+    truefix_dict::load_from_file(value).map_err(|e| ConfigError::InvalidValue {
+        key: "DataDictionary".to_owned(),
+        session: session.to_owned(),
+        reason: e.to_string(),
     })
 }
 
@@ -474,14 +601,52 @@ fn resolve_sync_write_timeout(map: &Map, session: &str) -> Result<Option<Duratio
 
 /// Resolve a file-backed log from `FileLogPath` and its output-switch keys (FR-026); `None` when
 /// `FileLogPath` is absent (matching the engine's pre-existing default of no log).
-fn resolve_log(map: &Map) -> Option<LogSpec> {
-    let dir = PathBuf::from(map.get("FileLogPath")?);
-    Some(LogSpec {
-        dir,
-        include_heartbeats: bool_key(map, "FileLogHeartbeats", true),
-        include_timestamp: bool_key(map, "FileIncludeTimeStampForMessages", false),
-        include_milliseconds: bool_key(map, "FileIncludeMilliseconds", false),
-    })
+/// Resolve `JdbcURL`'s log side (US3, feature 004, FR-003) and `FileLogPath`/its output switches
+/// (FR-026) into the mutually-exclusive `(log, sql_log)` pair. When both are configured, `JdbcURL`
+/// wins — `FileLogPath` is ignored for that session's log, with a `tracing::warn!` noting the
+/// precedence (an explicit, disclosed scope boundary: fanning out to both via `CompositeLog` was
+/// considered and rejected as beyond this feature's "SQL backend selection reachable from `.cfg`"
+/// scope; `CompositeLog` remains available programmatically for that combination).
+fn resolve_log(map: &Map, session: &str) -> (Option<LogSpec>, Option<SqlLogSpec>) {
+    if let Some(url) = map.get("JdbcURL") {
+        if map.contains_key("FileLogPath") {
+            tracing::warn!(
+                session = %session,
+                "both JdbcURL and FileLogPath are set; JdbcURL wins for this session's log"
+            );
+        }
+        return (
+            None,
+            Some(SqlLogSpec {
+                url: url.clone(),
+                incoming_table: map
+                    .get("JdbcLogIncomingTable")
+                    .cloned()
+                    .unwrap_or_else(|| "log_incoming".to_owned()),
+                outgoing_table: map
+                    .get("JdbcLogOutgoingTable")
+                    .cloned()
+                    .unwrap_or_else(|| "log_outgoing".to_owned()),
+                event_table: map
+                    .get("JdbcLogEventTable")
+                    .cloned()
+                    .unwrap_or_else(|| "log_event".to_owned()),
+                include_heartbeats: bool_key(map, "JdbcLogHeartBeats", true),
+            }),
+        );
+    }
+    let Some(dir) = map.get("FileLogPath") else {
+        return (None, None);
+    };
+    (
+        Some(LogSpec {
+            dir: PathBuf::from(dir),
+            include_heartbeats: bool_key(map, "FileLogHeartbeats", true),
+            include_timestamp: bool_key(map, "FileIncludeTimeStampForMessages", false),
+            include_milliseconds: bool_key(map, "FileIncludeMilliseconds", false),
+        }),
+        None,
+    )
 }
 
 /// Resolve the full socket-option set (FR-019): `SocketTcpNoDelay`/`SocketKeepAlive`/
@@ -664,10 +829,16 @@ fn resolve_address(
         })
 }
 
-/// Resolve `FileStorePath`/`FileStoreSync`/`FileStoreMaxCachedMsgs` (FR-025): a bare
-/// `FileStorePath` builds a plain [`StoreConfig::File`]; adding `FileStoreMaxCachedMsgs` opts into
-/// [`StoreConfig::CachedFile`] (its bound applies once you've asked to tune it).
+/// Resolve `JdbcURL`/`FileStorePath`/`FileStoreSync`/`FileStoreMaxCachedMsgs` (FR-025, and US3
+/// FR-003 for `JdbcURL`): `JdbcURL`, when present, is checked first and dispatches by URL scheme to
+/// a SQL-family `StoreConfig` variant (requiring the matching Cargo feature); otherwise a bare
+/// `FileStorePath` builds a plain [`StoreConfig::File`], and adding `FileStoreMaxCachedMsgs` opts
+/// into [`StoreConfig::CachedFile`] (its bound applies once you've asked to tune it); absent both,
+/// [`StoreConfig::Memory`].
 fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
+    if let Some(url) = map.get("JdbcURL") {
+        return jdbc_store_config(url, session);
+    }
     let Some(dir) = map.get("FileStorePath") else {
         return Ok(StoreConfig::Memory);
     };
@@ -692,6 +863,68 @@ fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
                 max_cached_msgs: 0,
             },
         },
+    })
+}
+
+/// `JdbcURL`'s scheme prefix, dispatched by string prefix — mirrors the scheme-sniffing
+/// `SqlStore::connect`/`MssqlStore::connect` already do internally (research.md §3: no
+/// `JdbcDriver`-class-based dispatch, since this codebase has no such registry to mirror).
+fn is_sql_scheme(url: &str) -> bool {
+    url.starts_with("postgres://")
+        || url.starts_with("postgresql://")
+        || url.starts_with("mysql://")
+        || url.starts_with("sqlite:")
+}
+
+fn is_mssql_scheme(url: &str) -> bool {
+    url.starts_with("mssql://") || url.starts_with("sqlserver://")
+}
+
+fn jdbc_scheme_of(url: &str) -> String {
+    url.split_once(':')
+        .map_or_else(|| url.to_owned(), |(s, _)| s.to_owned())
+}
+
+fn jdbc_store_config(url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
+    if is_sql_scheme(url) {
+        return sql_store_config(url, session);
+    }
+    if is_mssql_scheme(url) {
+        return mssql_store_config(url, session);
+    }
+    Err(ConfigError::UnsupportedBackend {
+        session: session.to_owned(),
+        scheme: jdbc_scheme_of(url),
+    })
+}
+
+#[cfg(feature = "sql")]
+fn sql_store_config(url: &str, _session: &str) -> Result<StoreConfig, ConfigError> {
+    Ok(StoreConfig::Sql {
+        url: url.to_owned(),
+    })
+}
+
+#[cfg(not(feature = "sql"))]
+fn sql_store_config(url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
+    Err(ConfigError::UnsupportedBackend {
+        session: session.to_owned(),
+        scheme: jdbc_scheme_of(url),
+    })
+}
+
+#[cfg(feature = "mssql")]
+fn mssql_store_config(url: &str, _session: &str) -> Result<StoreConfig, ConfigError> {
+    Ok(StoreConfig::Mssql {
+        url: url.to_owned(),
+    })
+}
+
+#[cfg(not(feature = "mssql"))]
+fn mssql_store_config(url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
+    Err(ConfigError::UnsupportedBackend {
+        session: session.to_owned(),
+        scheme: jdbc_scheme_of(url),
     })
 }
 

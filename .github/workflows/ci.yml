@@ -98,6 +98,39 @@ jobs:
       - name: Test (mssql feature)
         run: cargo test -p truefix-store -p truefix-log --features mssql
 
+  redb:
+    name: Embedded transactional store (redb feature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (redb feature)
+        # US5, feature 004: no external service needed (redb is embedded, like SQLite),
+        # so this runs unconditionally, unlike the mssql/mongo jobs' service containers.
+        run: cargo test -p truefix-store -p truefix-log --features redb
+
+  mongo:
+    name: MongoDB backend (mongodb feature)
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ping:1})' || mongo --eval 'db.runCommand({ping:1})'"
+          --health-interval=10s --health-timeout=5s --health-retries=10 --health-start-period=10s
+    env:
+      # US6, feature 004: the MongoDB tests read this and skip if absent, so dev boxes without the
+      # service still pass; CI always sets it.
+      DATABASE_URL_MONGO: mongodb://localhost:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (mongodb feature)
+        run: cargo test -p truefix-store -p truefix-log --features mongodb
+
   dict-tooling:
     name: Orchestra conversion tool + truefix-dict CLI (dict-tooling feature)
     runs-on: ubuntu-latest

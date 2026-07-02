@@ -69,10 +69,17 @@ async fn main() {
 ```
 
 A `.cfg` with `SocketUseSSL=Y`/`SocketKeyStore=...` builds mTLS from PEM files (no Java keystores);
-`SocketConnectHost1`/`SocketConnectPort1` (etc.) add initiator failover endpoints; `FileLogPath` builds
+`SocketConnectHost1`/`SocketConnectPort1` (etc.) add initiator failover endpoints — `Engine::start`
+automatically reconnects through them on connection loss, no code required; `UseDataDictionary=Y` (plus
+`DataDictionary`/`AppDataDictionary`/`TransportDataDictionary`, a bundled version string like `FIX.4.4`
+or a file path) wires real dictionary validation into the session; `JdbcURL=postgres://...`/
+`mysql://...`/`sqlite:...`/`mssql://...` selects a SQL/MSSQL store and log by URL scheme alone (behind
+the `sql`/`mssql` features respectively); `ContinueInitializationOnError=Y` lets the rest of a
+multi-session engine start even if one session's config or connection fails; `FileLogPath` builds
 a working session log; `InChanCapacity=<n>` bounds the inbound application-message channel (admin/
 session traffic always travels on its own unbounded channel, so it's never starved by a full
-application channel) — no code beyond `Application` required for any of it (FR-013/014/017/019/026).
+application channel) — no code beyond `Application` required for any of it
+(FR-001/002/003/004/013/014/017/019/026).
 
 The `Application` trait's callbacks return typed outcomes rather than a bare `Result<(), String>`
 (see [`MIGRATION.md`](MIGRATION.md) for the breaking-change rationale and upgrade path):
@@ -135,13 +142,21 @@ Async-first engine on **tokio** (TLS via **rustls**), organized as a layered car
 | `truefix-core` | Field / FieldMap / Group / Message, field types, SOH codec, BodyLength/CheckSum, typed errors, `MessageCracker` contract |
 | `truefix-dict` | Data dictionary: **build-time codegen of typed messages/field-enums/groups + a `crack_<version>` dispatcher**, plus runtime `DataDictionary` validation (dual-track, one source) |
 | `truefix-session` | Session state machine, sequence management, admin messages, weekly scheduling + reset semantics, resend/gap-fill, `NextExpectedMsgSeqNum`, chunked resend, typed callback outcomes, reverse-route |
-| `truefix-store` | `MessageStore` trait + Memory / File (disk-only reads) / CachedFile (bounded in-memory cache + fsync toggle) / SQL (PostgreSQL/MySQL/SQLite via sqlx, `--features sql`) / MSSQL (via tiberius, `--features mssql`) / Noop |
-| `truefix-log` | `Log` trait + Screen / File / Tracing / SQL (PostgreSQL/MySQL/SQLite, `--features sql`) / MSSQL (`--features mssql`) / Composite, output switches (heartbeat filter, timestamps, visibility), `SessionPrefixLog` decorator |
+| `truefix-store` | `MessageStore` trait + Memory / File (disk-only reads) / CachedFile (bounded in-memory cache + fsync toggle) / SQL (PostgreSQL/MySQL/SQLite via sqlx, `--features sql`) / MSSQL (via tiberius, `--features mssql`) / `Redb` (embedded transactional KV via `redb`, `--features redb`) / `Mongo` (via the `mongodb` driver, `--features mongodb`) / Noop |
+| `truefix-log` | `Log` trait + Screen / File / Tracing / SQL (PostgreSQL/MySQL/SQLite, `--features sql`) / MSSQL (`--features mssql`) / `Redb` (`--features redb`) / `Mongo` (`--features mongodb`) / Composite, output switches (heartbeat filter, timestamps, visibility), `SessionPrefixLog` decorator |
 | `truefix-transport` | Initiator + Acceptor, multi/dynamic sessions, reconnect + multi-endpoint failover, full socket-option set, rustls TLS/mTLS (file or inline PEM bytes, configurable cipher suites), PROXY protocol v1/v2 (trusted-upstream-gated) + forward proxy (SOCKS4/SOCKS5+auth/HTTP CONNECT) for initiators, synchronous-write timeouts, bounded inbound application-message backpressure (`InChanCapacity`, admin traffic never starved), `metrics`-facade export |
 | `truefix-config` | `SessionSettings`, `.cfg` parsing with `${name}` interpolation, `resolve()` into a runnable `Engine`-ready configuration, Appendix A key-stance registry |
 | `truefix` | Facade: re-exports + `Application` trait + `MessageCracker` + `Engine::start` (one-shot `.cfg`-driven start) |
 | `truefix-at` | Ported Acceptance Test suite (release gate) |
 | `examples/` (`crates/truefix/examples/`) | `executor`, `banzai`, `multi_acceptor`, `ordermatch` |
+
+`RedbStore`/`RedbLog` and `MongoStore`/`MongoLog` are library-level only — selected via
+`StoreConfig::Redb`/`Mongo`/`LogConfig`-adjacent constructors through the direct Rust API, not from a
+`.cfg` key. `RedbStore` replaces QuickFIX/J's obsolete `SleepycatStore` (Berkeley DB JE) with a modern,
+license-clean embedded transactional store; `MongoStore`/`MongoLog` match QuickFIX/Go's own MongoDB
+option. Neither introduces new `.cfg` surface, matching the existing precedent that `SqlLog`/`MssqlLog`
+also aren't fully `.cfg`-selectable beyond `JdbcURL`'s scheme dispatch (only `Screen`/`File`/`Tracing`/
+`Composite` logs are).
 
 ### Dual-track data dictionary
 
@@ -181,6 +196,15 @@ G2 Durable resend completion ─▶ G1a AT coverage broadening ─▶ G3 Field-o
    ─▶ G11 Network hardening ─▶ G12 `truefix-dict` CLI ─▶ G13/G14 Backpressure + MSSQL SQL backend
 ```
 
+004 (engine wiring & extra backends; see [`plan.md`](specs/004-engine-wiring-extra-backends/plan.md)):
+
+```
+W1 Initiator failover wired into Engine ─▶ W2 .cfg dictionary/validator wiring
+   ─▶ W3 .cfg SQL backend selection (JdbcURL) ─▶ W4 ContinueInitializationOnError
+   ─▶ W5 RedbStore/RedbLog ─▶ W6 MongoStore/MongoLog
+   (release gate: 353/353-scenario AT suite stays green and unmodified — no protocol behavior touched)
+```
+
 ## Testing & conformance
 
 - Table-driven unit tests for the codec and session state machine.
@@ -192,10 +216,11 @@ G2 Durable resend completion ─▶ G1a AT coverage broadening ─▶ G3 Field-o
   `timestamps`, `resynch`) and a CI-enforced coverage-regression floor — and is the hard release gate
   (`cargo test -p truefix-at --test conformance`).
 - CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`, `cargo deny`, the AT
-  suite, a dedicated `sql` job exercising PostgreSQL/MySQL/SQLite store+log backends and an `mssql` job
-  exercising the MSSQL store+log backend, each against real service containers, and a `dict-tooling` job
-  exercising the FIX Orchestra conversion tool (see
-  [`docs/acceptance-record.md`](docs/acceptance-record.md) for the full mapping).
+  suite, a dedicated `sql` job exercising PostgreSQL/MySQL/SQLite store+log backends, an `mssql` job
+  exercising the MSSQL store+log backend, a `redb` job (no service container needed — `redb` is
+  embedded), a `mongo` job exercising the MongoDB store+log backend, each against real service
+  containers where applicable, and a `dict-tooling` job exercising the FIX Orchestra conversion tool
+  (see [`docs/acceptance-record.md`](docs/acceptance-record.md) for the full mapping).
 - **Benchmarks** (`cargo bench -p truefix-core`, `cargo bench -p truefix-session`) are
   observation/regression tools, not CI-blocking gates — no numeric latency SLO is enforced; they exist
   to make performance regressions visible across changes, not to fail a build on their own.
@@ -207,8 +232,10 @@ cargo build --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo test -p truefix-store -p truefix-log --features sql   # PostgreSQL/MySQL gated on availability
-cargo test -p truefix-store -p truefix-log --features mssql # MSSQL gated on availability
+cargo test -p truefix-store -p truefix-log --features sql     # PostgreSQL/MySQL gated on availability
+cargo test -p truefix-store -p truefix-log --features mssql   # MSSQL gated on availability
+cargo test -p truefix-store -p truefix-log --features redb    # embedded, runs unconditionally
+cargo test -p truefix-store -p truefix-log --features mongodb # MongoDB gated on availability
 cargo test -p truefix-dict --features dict-tooling         # Orchestra conversion tool + CLI
 cargo test -p truefix-at --test conformance                  # AT suite (release gate)
 cargo bench -p truefix-core                                   # codec throughput (non-gating)
