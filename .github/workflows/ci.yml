@@ -31,13 +31,18 @@ jobs:
     runs-on: ubuntu-latest
     # cargo-deny-action runs its own bundled toolchain inside a container (musl-targeted); our
     # rust-toolchain.toml pins an exact channel for our own dev/CI builds, which the container
-    # doesn't have installed for its (non-gnu) host target. RUSTUP_TOOLCHAIN overrides the
-    # toolchain-file lookup so the action's own bundled toolchain is used instead.
-    env:
-      RUSTUP_TOOLCHAIN: stable
+    # doesn't have installed for its (non-gnu) host target. A prior fix tried overriding this via
+    # the RUSTUP_TOOLCHAIN env var set to "stable", but that only *points* rustup at an
+    # already-installed toolchain of that exact name — the container's default is literally named
+    # e.g. "1.85.0-x86_64-unknown-linux-musl", not "stable", so the override still failed to
+    # resolve. The action's own `rust-version` input actually provisions the requested toolchain
+    # (rather than assuming one already exists under that name), which is the documented mechanism
+    # for this.
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: stable
 
   sql:
     name: SQL backends (sqlite/postgres/mysql)
