@@ -15,6 +15,10 @@ sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "m
 tiberius = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+redb = { workspace = true, optional = true }
+mongodb = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -26,6 +30,12 @@ sql = ["dep:sqlx"]
 # MSSQL support (FR-020), via `tiberius` (a separate driver — sqlx has no official MSSQL
 # support). Independent of `sql`/sqlx's PG/MySQL/SQLite trio, so it can be enabled on its own.
 mssql = ["dep:tiberius", "dep:tokio-util", "dep:tokio"]
+# Embedded transactional store via `redb` (US5, feature 004) — a modern, license-clean
+# replacement for QuickFIX/J's obsolete SleepycatStore. Independent of `sql`/`mssql`.
+redb = ["dep:redb", "dep:tokio"]
+# MongoDB-backed store (US6, feature 004), matching QuickFIX/Go's MongoDB option.
+# Independent of `sql`/`mssql`/`redb`.
+mongodb = ["dep:mongodb", "dep:serde", "dep:futures-util"]
 
 [lints]
 workspace = true

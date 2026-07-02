@@ -99,11 +99,11 @@ pub struct SessionConfig {
     /// state machine returns actions synchronously for the transport to write immediately — there
     /// is no internal outbound write queue for this to bound — accepted but intentionally a no-op.
     pub max_scheduled_write_requests: Option<u32>,
-    /// Recognised for QuickFIX/J config-key parity (ContinueInitializationOnError). This governs
-    /// whether a multi-session engine keeps starting *other* sessions when one session's
-    /// configuration fails during startup — an `Engine::start` (multi-session bring-up) concern in
-    /// the `truefix` crate, not a per-connection `Session` runtime behaviour, so it has no effect
-    /// here; the field exists so the setting round-trips through `SessionConfig`.
+    /// `ContinueInitializationOnError` (US4, feature 004, FR-005): whether a multi-session engine
+    /// keeps starting *other* sessions when this one's configuration or startup fails — an
+    /// `Engine::start` (multi-session bring-up) concern in the `truefix` crate, honored there; this
+    /// field itself has no effect on `Session`'s own per-connection runtime behaviour, it only
+    /// carries the setting from `.cfg` for `Engine::start` to read.
     pub continue_initialization_on_error: bool,
     /// Force a full reset (sequence numbers + durable store) at connect time when the durable store
     /// reports it recovered from corruption (ForceResendWhenCorruptedStore) — the safest recovery

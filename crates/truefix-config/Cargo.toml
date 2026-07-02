@@ -12,7 +12,17 @@ publish = false
 thiserror.workspace = true
 truefix-session.workspace = true
 truefix-store.workspace = true
+truefix-dict.workspace = true
 time.workspace = true
+tracing.workspace = true
+
+[features]
+# `StoreConfig::Sql`/`Mssql` are feature-gated in `truefix-store` itself; this crate needs the
+# matching feature active to reference those variants when resolving `JdbcURL` (US3, feature 004,
+# FR-003) — a pass-through, same pattern any workspace member needing a downstream optional
+# capability would use.
+sql = ["truefix-store/sql"]
+mssql = ["truefix-store/mssql"]
 
 [lints]
 workspace = true

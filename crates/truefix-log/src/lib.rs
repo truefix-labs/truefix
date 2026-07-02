@@ -17,9 +17,13 @@
 
 mod composite;
 mod file;
+#[cfg(feature = "mongodb")]
+mod mongo;
 #[cfg(feature = "mssql")]
 mod mssql;
 mod prefix;
+#[cfg(feature = "redb")]
+mod redb;
 mod screen;
 #[cfg(feature = "sql")]
 mod sql;
@@ -31,9 +35,13 @@ use thiserror::Error;
 
 pub use composite::CompositeLog;
 pub use file::{FileLog, FileLogOptions};
+#[cfg(feature = "mongodb")]
+pub use mongo::{MongoLog, MongoLogConfig};
 #[cfg(feature = "mssql")]
 pub use mssql::{MssqlLog, MssqlLogConfig};
 pub use prefix::SessionPrefixLog;
+#[cfg(feature = "redb")]
+pub use redb::{RedbLog, RedbLogConfig};
 pub use screen::{ScreenLog, ScreenLogOptions};
 #[cfg(feature = "sql")]
 pub use sql::{SqlLog, SqlLogConfig, SqlLogPoolOptions};

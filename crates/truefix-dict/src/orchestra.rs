@@ -411,10 +411,14 @@ fn attr(
             reason: err.to_string(),
         })?;
         if local_name_bytes(a.key.as_ref()) == key {
-            let value = a.unescape_value().map_err(|err| OrchestraError::Xml {
-                pos: 0,
-                reason: err.to_string(),
-            })?;
+            // FIX Orchestra XML sources don't declare an explicit XML version, so the
+            // implicit-1.0 normalization rules apply (the vast majority of XML documents).
+            let value = a
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map_err(|err| OrchestraError::Xml {
+                    pos: 0,
+                    reason: err.to_string(),
+                })?;
             return Ok(Some(value.into_owned()));
         }
     }

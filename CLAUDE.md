@@ -1,23 +1,28 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/003-qfj-full-parity-closure/plan.md`
+`specs/004-engine-wiring-extra-backends/plan.md`
 
-Active feature: **003-qfj-full-parity-closure** — close all 14 remaining QuickFIX/J-parity gaps from a
-2026-07-01 audit of `docs/todo-gap-analysis.md` (post-002), covering all three priority tiers (P0+P1+P2)
-plus two suitable QuickFIX/J-only extras. Built on **001-fix-engine-parity** (layered cargo workspace) and
-**002-qfj-parity-completion** (config-driven start, session-owned resend infra, group parsing, typed
-callback outcomes, all-message codegen, TLS-from-config, metrics, SQL PG/MySQL/SQLite). 003 adds:
-session-owned durable resend completion, field-order + extra validation toggles, 12 remaining session
-config switches, dictionary `component` model, runtime dictionary loading/extend, Data/UtcDateOnly/
-UtcTimeOnly field types, FIX Latest support (via FIX Orchestra), extended application hooks
-(logon predicate docs, pre-reset hook, `SessionStatus`), AT scenario coverage to 73 scenarios + 3
-special suites across all versions, session benchmark, network hardening (PROXY protocol w/
-trusted-upstream, SOCKS4/5+HTTP CONNECT, inline PEM, cipher suites, sync writes), a `truefix-dict` CLI,
-inbound backpressure (admin/application dual-channel), and MSSQL (+ deferred-pending-license-review
-Oracle) SQL backends. Spec: `specs/003-qfj-full-parity-closure/spec.md` (14 US, 21 FR, 5-question
-Clarifications session). Governing constitution: `.specify/memory/constitution.md` (v2.0.0). One pass,
-internally staged G1–G14 (AT coverage split across G1a/G1b) with per-stage checkpoints; AT suite is the
-release gate. Unlike 002, this feature introduces **no breaking API changes**. (001/002 spec/plan remain
-the baseline that 003's FR-IDs reference.)
+Active feature: **004-engine-wiring-extra-backends** — close 6 remaining gaps from a 2026-07-02
+code-vs-code comparison (`docs/todo-gap-analysis.md`'s GAP-01–GAP-06), none of them protocol-correctness
+defects. Built on **001-fix-engine-parity** (layered cargo workspace), **002-qfj-parity-completion**
+(config-driven start, session-owned resend infra, group parsing, typed callback outcomes, all-message
+codegen, TLS-from-config, metrics, SQL PG/MySQL/SQLite), and **003-qfj-full-parity-closure** (full
+QuickFIX/J parity: durable resend completion, validation toggles, remaining session switches,
+dictionary components + runtime loading, field types, FIX Latest, extended app hooks, 353/353-scenario
+AT suite across 9 versions, session benchmark, network hardening, `truefix-dict` CLI, inbound
+backpressure, MSSQL backend). 004 adds: initiator failover wired into `Engine::start` (previously
+unused `failover_addresses`, plus a new TLS-aware reconnecting connector), `.cfg`-only dictionary/
+validator wiring (`UseDataDictionary`/`ValidationOptions` reaching `Services.validator` with zero Rust
+code), `.cfg`-only SQL backend selection via `JdbcURL` (scheme-dispatched, not JDBC-driver-class-based),
+`ContinueInitializationOnError` (multi-session startup fault tolerance), and two new optional storage
+backends — `RedbStore`/`RedbLog` (embedded transactional KV via `redb`, replacing QuickFIX/J's obsolete
+`SleepycatStore`) and `MongoStore`/`MongoLog` (matching QuickFIX/Go's MongoDB option, a deliberate
+reversal of 003's own MongoDB deferral). Spec: `specs/004-engine-wiring-extra-backends/spec.md` (6 US,
+10 FR, 0-question — no clarifications needed). Governing constitution: `.specify/memory/constitution.md`
+(v2.0.0). One pass, internally staged W1–W6 with per-stage checkpoints. This feature touches no
+session-state-machine/codec/protocol behavior — **no new AT scenarios**; the existing 353/353-scenario
+suite staying green and unmodified is itself the release gate (FR-010). No breaking API changes (one
+disclosed, grep-confirmed-non-breaking-in-practice addition of new members to `ResolvedSession`/
+`ConfigError`). (001/002/003 spec/plan remain the baseline that 004's FR-IDs reference.)
 <!-- SPECKIT END -->

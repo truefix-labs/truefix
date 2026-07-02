@@ -32,11 +32,13 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"]
 tracing = "0.1"
 metrics = "0.24"
 async-trait = "0.1"
-quick-xml = "0.36"
+quick-xml = "0.41"
 ppp = "2"
 tokio-socks = "0.5"
 tiberius = { version = "0.12", default-features = false, features = ["rustls", "tds73"] }
 tokio-util = { version = "0.7", features = ["compat"] }
+redb = "4"
+mongodb = "3"
 truefix-core = { path = "crates/truefix-core" }
 truefix-dict = { path = "crates/truefix-dict" }
 truefix-session = { path = "crates/truefix-session" }

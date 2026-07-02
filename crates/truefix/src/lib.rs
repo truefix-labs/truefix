@@ -35,9 +35,10 @@ use tokio::task::JoinHandle;
 
 use truefix_config::{ConnectionType, ProxyKind, ProxySpec, SessionSettings, SocketOptionsSpec};
 use truefix_transport::{
-    build_client_config, build_server_config, connect_initiator_tls, connect_initiator_via_proxy,
-    connect_initiator_via_proxy_tls, connect_initiator_with, ProxyConfig, ProxyType, Services,
-    SocketOptions,
+    build_client_config, build_server_config, connect_initiator_reconnecting_multi,
+    connect_initiator_reconnecting_multi_tls, connect_initiator_tls, connect_initiator_via_proxy,
+    connect_initiator_via_proxy_tls, connect_initiator_with, ProxyConfig, ProxyType,
+    ReconnectHandle, Services, SocketOptions,
 };
 
 fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {
@@ -128,6 +129,95 @@ fn build_log(
     )))
 }
 
+/// Build a `SqlLog`/`MssqlLog` from a `.cfg`-resolved `SqlLogSpec` (US3, feature 004, FR-003),
+/// dispatched by `url`'s scheme — the same scheme-sniffing `resolve_store`/`resolve_log` already do
+/// in `truefix-config`, duplicated here rather than shared, since these are small, crate-local
+/// checks (same accepted-duplication pattern `truefix-log::mssql`'s `parse_url` already uses versus
+/// `truefix-store::mssql`'s, given `truefix-log` doesn't depend on `truefix-store`).
+async fn build_sql_log(
+    spec: &truefix_config::SqlLogSpec,
+    session_id: &str,
+) -> Result<Arc<dyn truefix_log::Log>, EngineError> {
+    let url = &spec.url;
+    let is_sql = url.starts_with("postgres://")
+        || url.starts_with("postgresql://")
+        || url.starts_with("mysql://")
+        || url.starts_with("sqlite:");
+    let is_mssql = url.starts_with("mssql://") || url.starts_with("sqlserver://");
+    if is_sql {
+        connect_sql_log(spec, session_id).await
+    } else if is_mssql {
+        connect_mssql_log(spec, session_id).await
+    } else {
+        Err(EngineError::Log(format!(
+            "unsupported JdbcURL scheme in {url:?}"
+        )))
+    }
+}
+
+#[cfg(feature = "sql")]
+async fn connect_sql_log(
+    spec: &truefix_config::SqlLogSpec,
+    session_id: &str,
+) -> Result<Arc<dyn truefix_log::Log>, EngineError> {
+    let log = truefix_log::SqlLog::connect_with_config(truefix_log::SqlLogConfig {
+        url: spec.url.clone(),
+        incoming_table: spec.incoming_table.clone(),
+        outgoing_table: spec.outgoing_table.clone(),
+        event_table: spec.event_table.clone(),
+        include_heartbeats: spec.include_heartbeats,
+        pool: truefix_log::SqlLogPoolOptions::default(),
+    })
+    .await
+    .map_err(|e| EngineError::Log(e.to_string()))?;
+    Ok(Arc::new(truefix_log::SessionPrefixLog::new(
+        session_id.to_owned(),
+        log,
+    )))
+}
+
+#[cfg(not(feature = "sql"))]
+async fn connect_sql_log(
+    spec: &truefix_config::SqlLogSpec,
+    _session_id: &str,
+) -> Result<Arc<dyn truefix_log::Log>, EngineError> {
+    Err(EngineError::Log(format!(
+        "JdbcURL {:?} names a SQL backend, but the `sql` feature isn't compiled in",
+        spec.url
+    )))
+}
+
+#[cfg(feature = "mssql")]
+async fn connect_mssql_log(
+    spec: &truefix_config::SqlLogSpec,
+    session_id: &str,
+) -> Result<Arc<dyn truefix_log::Log>, EngineError> {
+    let log = truefix_log::MssqlLog::connect_with_config(truefix_log::MssqlLogConfig {
+        url: spec.url.clone(),
+        incoming_table: spec.incoming_table.clone(),
+        outgoing_table: spec.outgoing_table.clone(),
+        event_table: spec.event_table.clone(),
+        include_heartbeats: spec.include_heartbeats,
+    })
+    .await
+    .map_err(|e| EngineError::Log(e.to_string()))?;
+    Ok(Arc::new(truefix_log::SessionPrefixLog::new(
+        session_id.to_owned(),
+        log,
+    )))
+}
+
+#[cfg(not(feature = "mssql"))]
+async fn connect_mssql_log(
+    spec: &truefix_config::SqlLogSpec,
+    _session_id: &str,
+) -> Result<Arc<dyn truefix_log::Log>, EngineError> {
+    Err(EngineError::Log(format!(
+        "JdbcURL {:?} names an MSSQL backend, but the `mssql` feature isn't compiled in",
+        spec.url
+    )))
+}
+
 /// A running engine: the started acceptor listeners and initiator sessions (FR-013/014).
 ///
 /// Built from a [`SessionSettings`] via [`Engine::start`]; each `[SESSION]` is routed by its
@@ -135,6 +225,12 @@ fn build_log(
 pub struct Engine {
     acceptors: Vec<JoinHandle<()>>,
     initiators: Vec<SessionHandle>,
+    /// Initiators configured with one or more failover (backup) endpoints (US1, feature 004,
+    /// FR-001) — kept separate from `initiators` because the underlying reconnecting connector
+    /// returns a different handle type (`ReconnectHandle`, which lacks `SessionHandle`'s
+    /// `logout()`/`send()`), so this is purely additive rather than changing `initiators()`'s
+    /// existing type.
+    failover_initiators: Vec<ReconnectHandle>,
 }
 
 impl Engine {
@@ -148,122 +244,221 @@ impl Engine {
         settings: &SessionSettings,
         app: Arc<A>,
     ) -> Result<Self, EngineError> {
-        let resolved = settings.resolve()?;
+        // US4 (feature 004, FR-005): a resolution failure is also tolerated per-session via
+        // `resolve_lenient` when that session's own `ContinueInitializationOnError=Y` — the flag
+        // is read from the session's raw `.cfg` map (never fails to parse), since the session
+        // itself may not have resolved far enough to have a `SessionConfig` to read it from
+        // otherwise.
+        let (resolved, skipped) = settings.resolve_lenient()?;
+        for (session, err) in &skipped {
+            tracing::error!(
+                session = %session,
+                error = %err,
+                "skipping session after a configuration-resolution error (ContinueInitializationOnError=Y)"
+            );
+        }
         let mut acceptors = Vec::new();
         let mut initiators = Vec::new();
+        let mut failover_initiators = Vec::new();
         for rs in resolved {
-            let store = truefix_store::build_store(&rs.store)
-                .await
-                .map_err(|e| EngineError::Store(e.to_string()))?;
+            let continue_on_error = rs.session.continue_initialization_on_error;
             let session_id = format!(
                 "{}:{}->{}",
                 rs.session.begin_string, rs.session.sender_comp_id, rs.session.target_comp_id
             );
-            let log = rs
-                .log
-                .as_ref()
-                .map(|spec| build_log(spec, &session_id))
-                .transpose()?;
-            let services = Services {
-                store: Some(Arc::from(store)),
-                socket_options: to_transport_socket_options(rs.socket_options),
-                log,
-                trusted_proxy_addresses: rs.trusted_proxy_addresses.clone(),
-                sync_write_timeout: rs.sync_write_timeout,
-                ..Services::default()
-            };
-            match rs.connection {
-                ConnectionType::Acceptor => {
-                    let mut acc =
-                        Acceptor::bind_with(rs.address, rs.session, app.clone(), services)
-                            .await
-                            .map_err(|e| EngineError::Io(e.to_string()))?;
-                    if let Some(tls) = &rs.tls {
-                        let server_cfg = build_server_config(tls)
-                            .map_err(|e| EngineError::Tls(e.to_string()))?;
-                        acc = acc.with_tls(server_cfg);
+            // The actual per-session startup work (store/log/bind/connect), isolated in its own
+            // future so a failure here can also be tolerated when `continue_on_error` is set —
+            // matching the resolution-time tolerance above, but for *runtime* startup failures
+            // (e.g. a port already in use), which only surface once resolution has already
+            // succeeded for this session.
+            let result: Result<(), EngineError> = async {
+                let store = truefix_store::build_store(&rs.store)
+                    .await
+                    .map_err(|e| EngineError::Store(e.to_string()))?;
+                let log = if let Some(spec) = &rs.sql_log {
+                    Some(build_sql_log(spec, &session_id).await?)
+                } else if let Some(spec) = &rs.log {
+                    Some(build_log(spec, &session_id)?)
+                } else {
+                    None
+                };
+                let services = Services {
+                    store: Some(Arc::from(store)),
+                    socket_options: to_transport_socket_options(rs.socket_options),
+                    log,
+                    trusted_proxy_addresses: rs.trusted_proxy_addresses.clone(),
+                    sync_write_timeout: rs.sync_write_timeout,
+                    validator: rs.validator.clone(),
+                    ..Services::default()
+                };
+                match rs.connection {
+                    ConnectionType::Acceptor => {
+                        let mut acc =
+                            Acceptor::bind_with(rs.address, rs.session, app.clone(), services)
+                                .await
+                                .map_err(|e| EngineError::Io(e.to_string()))?;
+                        if let Some(tls) = &rs.tls {
+                            let server_cfg = build_server_config(tls)
+                                .map_err(|e| EngineError::Tls(e.to_string()))?;
+                            acc = acc.with_tls(server_cfg);
+                        }
+                        acceptors.push(acc.serve());
                     }
-                    acceptors.push(acc.serve());
-                }
-                ConnectionType::Initiator => {
-                    let proxy = rs
-                        .proxy
-                        .as_ref()
-                        .map(to_transport_proxy_config)
-                        .transpose()
-                        .map_err(|e| EngineError::Proxy(e.to_string()))?;
-                    let handle = match (&rs.tls, &proxy) {
-                        (Some(tls), Some(proxy)) => {
-                            let client_cfg = build_client_config(tls)
-                                .map_err(|e| EngineError::Tls(e.to_string()))?;
-                            let host = tls.server_name.clone().unwrap_or_default();
-                            let server_name = rustls::pki_types::ServerName::try_from(host)
-                                .map_err(|e| EngineError::Tls(e.to_string()))?;
-                            connect_initiator_via_proxy_tls(
+                    ConnectionType::Initiator => {
+                        let proxy = rs
+                            .proxy
+                            .as_ref()
+                            .map(to_transport_proxy_config)
+                            .transpose()
+                            .map_err(|e| EngineError::Proxy(e.to_string()))?;
+
+                        // US1 (feature 004, FR-001): route to the failover-capable reconnecting
+                        // connector when backup endpoints are configured. Proxy+failover is out of
+                        // scope (no reconnecting-multi-via-proxy connector exists) — a session with
+                        // both takes the existing proxy path and its failover addresses are
+                        // ignored, logged rather than silently dropped.
+                        if !rs.failover_addresses.is_empty() {
+                            if proxy.is_some() {
+                                tracing::warn!(
+                                    session = %session_id,
+                                    "failover addresses configured alongside a proxy are ignored \
+                                     (proxy+failover is not supported); using the proxy connection only"
+                                );
+                            } else {
+                                let mut addrs =
+                                    Vec::with_capacity(1 + rs.failover_addresses.len());
+                                addrs.push(rs.address);
+                                addrs.extend(rs.failover_addresses.iter().copied());
+                                let handle = if let Some(tls) = &rs.tls {
+                                    let client_cfg = build_client_config(tls)
+                                        .map_err(|e| EngineError::Tls(e.to_string()))?;
+                                    let host = tls.server_name.clone().unwrap_or_default();
+                                    let server_name =
+                                        rustls::pki_types::ServerName::try_from(host)
+                                            .map_err(|e| EngineError::Tls(e.to_string()))?;
+                                    connect_initiator_reconnecting_multi_tls(
+                                        addrs,
+                                        rs.session,
+                                        app.clone(),
+                                        services,
+                                        client_cfg,
+                                        server_name,
+                                    )
+                                } else {
+                                    connect_initiator_reconnecting_multi(
+                                        addrs,
+                                        rs.session,
+                                        app.clone(),
+                                        services,
+                                    )
+                                };
+                                failover_initiators.push(handle);
+                                return Ok(());
+                            }
+                        }
+
+                        let handle = match (&rs.tls, &proxy) {
+                            (Some(tls), Some(proxy)) => {
+                                let client_cfg = build_client_config(tls)
+                                    .map_err(|e| EngineError::Tls(e.to_string()))?;
+                                let host = tls.server_name.clone().unwrap_or_default();
+                                let server_name = rustls::pki_types::ServerName::try_from(host)
+                                    .map_err(|e| EngineError::Tls(e.to_string()))?;
+                                connect_initiator_via_proxy_tls(
+                                    proxy,
+                                    &rs.address.ip().to_string(),
+                                    rs.address.port(),
+                                    rs.session,
+                                    app.clone(),
+                                    services,
+                                    client_cfg,
+                                    server_name,
+                                )
+                                .await
+                                .map_err(|e| EngineError::Proxy(e.to_string()))?
+                            }
+                            (None, Some(proxy)) => connect_initiator_via_proxy(
                                 proxy,
                                 &rs.address.ip().to_string(),
                                 rs.address.port(),
                                 rs.session,
                                 app.clone(),
                                 services,
-                                client_cfg,
-                                server_name,
                             )
                             .await
-                            .map_err(|e| EngineError::Proxy(e.to_string()))?
-                        }
-                        (None, Some(proxy)) => connect_initiator_via_proxy(
-                            proxy,
-                            &rs.address.ip().to_string(),
-                            rs.address.port(),
-                            rs.session,
-                            app.clone(),
-                            services,
-                        )
-                        .await
-                        .map_err(|e| EngineError::Proxy(e.to_string()))?,
-                        (Some(tls), None) => {
-                            let client_cfg = build_client_config(tls)
-                                .map_err(|e| EngineError::Tls(e.to_string()))?;
-                            let host = tls.server_name.clone().unwrap_or_default();
-                            let server_name = rustls::pki_types::ServerName::try_from(host)
-                                .map_err(|e| EngineError::Tls(e.to_string()))?;
-                            connect_initiator_tls(
+                            .map_err(|e| EngineError::Proxy(e.to_string()))?,
+                            (Some(tls), None) => {
+                                let client_cfg = build_client_config(tls)
+                                    .map_err(|e| EngineError::Tls(e.to_string()))?;
+                                let host = tls.server_name.clone().unwrap_or_default();
+                                let server_name = rustls::pki_types::ServerName::try_from(host)
+                                    .map_err(|e| EngineError::Tls(e.to_string()))?;
+                                connect_initiator_tls(
+                                    rs.address,
+                                    rs.session,
+                                    app.clone(),
+                                    services,
+                                    client_cfg,
+                                    server_name,
+                                )
+                                .await
+                                .map_err(|e| EngineError::Io(e.to_string()))?
+                            }
+                            (None, None) => connect_initiator_with(
                                 rs.address,
                                 rs.session,
                                 app.clone(),
                                 services,
-                                client_cfg,
-                                server_name,
                             )
                             .await
-                            .map_err(|e| EngineError::Io(e.to_string()))?
-                        }
-                        (None, None) => {
-                            connect_initiator_with(rs.address, rs.session, app.clone(), services)
-                                .await
-                                .map_err(|e| EngineError::Io(e.to_string()))?
-                        }
-                    };
-                    initiators.push(handle);
+                            .map_err(|e| EngineError::Io(e.to_string()))?,
+                        };
+                        initiators.push(handle);
+                    }
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                if continue_on_error {
+                    tracing::error!(
+                        session = %session_id,
+                        error = %e,
+                        "skipping session after a startup error (ContinueInitializationOnError=Y)"
+                    );
+                } else {
+                    return Err(e);
                 }
             }
         }
         Ok(Self {
             acceptors,
             initiators,
+            failover_initiators,
         })
     }
 
-    /// The started initiator session handles (for logout/join).
+    /// The started initiator session handles (for logout/join) — single-endpoint initiators only;
+    /// see [`Engine::failover_initiators`] for initiators configured with backup endpoints (US1,
+    /// feature 004).
     pub fn initiators(&self) -> &[SessionHandle] {
         &self.initiators
     }
 
-    /// Abort all acceptor listeners.
+    /// The started initiators configured with one or more failover (backup) endpoints (US1,
+    /// feature 004, FR-001). A new, additive accessor — [`Engine::initiators`]'s existing shape is
+    /// unchanged.
+    pub fn failover_initiators(&self) -> &[ReconnectHandle] {
+        &self.failover_initiators
+    }
+
+    /// Abort all acceptor listeners and stop all failover-initiator reconnect loops.
     pub fn shutdown(&self) {
         for acceptor in &self.acceptors {
             acceptor.abort();
+        }
+        for initiator in &self.failover_initiators {
+            initiator.stop();
         }
     }
 }

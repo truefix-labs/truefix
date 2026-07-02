@@ -19,6 +19,7 @@ truefix-dict.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 rustls.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -28,6 +29,14 @@ ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
 pkcs8 = "0.10"
 base64 = "0.22"
 webpki-roots = "0.26"
+
+[features]
+# `.cfg`-driven SQL/MSSQL backend selection (US3, feature 004, FR-003) needs the matching feature
+# active across the whole chain `Engine::start` touches: `truefix-config` (to construct
+# `StoreConfig::Sql`/`Mssql` while resolving `JdbcURL`), `truefix-store` (`build_store`'s dispatch
+# arm), and `truefix-log` (`SqlLog`/`MssqlLog` construction for the matching log side).
+sql = ["truefix-config/sql", "truefix-store/sql", "truefix-log/sql"]
+mssql = ["truefix-config/mssql", "truefix-store/mssql", "truefix-log/mssql"]
 
 [lints]
 workspace = true
