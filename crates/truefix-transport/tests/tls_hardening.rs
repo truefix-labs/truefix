@@ -151,6 +151,30 @@ async fn matching_restricted_cipher_suites_still_handshake() {
     );
 }
 
+// --- T055 (US6, feature 006): unrecognized CipherSuites is a config-time error (GAP-53) ---
+
+#[tokio::test]
+async fn a_cipher_suites_typo_matching_nothing_is_a_clean_config_error() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let (server_combined, _server_cert_only) = identity_bytes("localhost");
+
+    let mut server_spec = base_spec();
+    server_spec.key_store_bytes = Some(server_combined);
+    server_spec.cipher_suites = vec!["TLS13_NOT_A_REAL_SUITE".to_owned()];
+
+    let err = match build_server_config(&server_spec) {
+        Ok(_) => panic!(
+            "expected a config-time error for a CipherSuites name matching no recognized suite, \
+             not a silently-empty (non-functional) suite set"
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err}").contains("TLS13_NOT_A_REAL_SUITE"),
+        "expected the error to name the unrecognized suite, got: {err}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disjoint_cipher_suites_fail_the_handshake() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();

@@ -11,13 +11,30 @@ use crate::tags::{
 };
 use crate::time_util::{now_utc_timestamp, now_utc_timestamp_prec};
 
-/// Build a message with the standard header (8/35/49/56/34/52).
+/// Build a message with the standard header (8/35/49/56/34/52, plus 50/142/57/143 when
+/// configured).
 fn base(config: &SessionConfig, msg_type: &str, seq: u64) -> Message {
     let mut m = Message::new();
     m.header.set(Field::string(8, &config.begin_string));
     m.header.set(Field::string(35, msg_type));
     m.header.set(Field::string(49, &config.sender_comp_id));
+    // BUG-07/FR-010 (feature 006): stamp SenderSubID/SenderLocationID/TargetSubID/
+    // TargetLocationID (tags 50/142/57/143) when configured, so a SubID/LocationID-distinguished
+    // session's own outbound messages actually carry the identity the counterparty's routing
+    // lookup needs to see — without this, the fields exist only in config, never on the wire.
+    if let Some(v) = &config.sender_sub_id {
+        m.header.set(Field::string(50, v));
+    }
+    if let Some(v) = &config.sender_location_id {
+        m.header.set(Field::string(142, v));
+    }
     m.header.set(Field::string(56, &config.target_comp_id));
+    if let Some(v) = &config.target_sub_id {
+        m.header.set(Field::string(57, v));
+    }
+    if let Some(v) = &config.target_location_id {
+        m.header.set(Field::string(143, v));
+    }
     m.header.set(Field::int(34, seq as i64));
     m.header.set(Field::string(
         52,
@@ -41,7 +58,7 @@ pub(crate) fn logon(config: &SessionConfig, seq: u64, next_expected: Option<u64>
     if let Some(n) = next_expected {
         m.body.set(Field::int(NEXT_EXPECTED_MSG_SEQ_NUM, n as i64));
     }
-    if let Some((tag, value)) = &config.logon_tag {
+    for (tag, value) in &config.logon_tags {
         m.body.set(Field::string(*tag, value));
     }
     m

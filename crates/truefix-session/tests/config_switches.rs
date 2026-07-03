@@ -212,19 +212,42 @@ fn without_disconnect_on_error_a_validation_reject_does_not_disconnect() {
 #[test]
 fn logon_tag_is_appended_to_outbound_logon() {
     let mut cfg = acc_cfg();
-    cfg.logon_tag = Some((9001, "HOUSE-ID".to_owned()));
+    cfg.logon_tags = vec![(9001, "HOUSE-ID".to_owned())];
     let mut s = Session::new(cfg);
     let actions = s.handle(Event::Connected); // acceptor sends nothing yet; use initiator instead
     assert!(sends(actions).is_empty());
 
     let mut init_cfg = SessionConfig::new("FIX.4.4", "CLIENT", "SERVER", Role::Initiator);
-    init_cfg.logon_tag = Some((9001, "HOUSE-ID".to_owned()));
+    init_cfg.logon_tags = vec![(9001, "HOUSE-ID".to_owned())];
     let mut init = Session::new(init_cfg);
     let sent = sends(init.handle(Event::Connected));
     assert_eq!(sent.len(), 1);
     assert_eq!(
         sent[0].body.get(9001).unwrap().as_str().unwrap(),
         "HOUSE-ID"
+    );
+}
+
+#[test]
+fn multiple_logon_tags_are_all_appended_in_order() {
+    // T077 (US8, feature 006): GAP-12, `logon_tags` supports more than one `(tag, value)` pair.
+    let mut init_cfg = SessionConfig::new("FIX.4.4", "CLIENT", "SERVER", Role::Initiator);
+    init_cfg.logon_tags = vec![
+        (9001, "HOUSE-ID".to_owned()),
+        (9002, "DESK-ID".to_owned()),
+        (9003, "TRADER-ID".to_owned()),
+    ];
+    let mut init = Session::new(init_cfg);
+    let sent = sends(init.handle(Event::Connected));
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].body.get(9001).unwrap().as_str().unwrap(),
+        "HOUSE-ID"
+    );
+    assert_eq!(sent[0].body.get(9002).unwrap().as_str().unwrap(), "DESK-ID");
+    assert_eq!(
+        sent[0].body.get(9003).unwrap().as_str().unwrap(),
+        "TRADER-ID"
     );
 }
 

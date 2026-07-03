@@ -38,8 +38,9 @@ the automated tests that verify them. All run under `cargo test --workspace` unl
 
 ## Current gate status
 
-- Workspace tests: **green** (`cargo test --workspace --all-features`: 92/92 test binaries passing, 0
-  failures — grown across feature 005; see the "005" section below for what drove the growth).
+- Workspace tests: **green** (`cargo test --workspace --all-features`: 118/118 test binaries passing
+  (578 individual tests), 0 failures — grown across features 005 and 006; see the "005"/"006"
+  sections below for what drove the growth).
 - SQL feature tests: **green** (`cargo test -p truefix-store -p truefix-log --features sql`; SQLite
   cases run unconditionally, PostgreSQL/MySQL cases run when `DATABASE_URL_PG`/`DATABASE_URL_MYSQL`
   are set — CI's `sql` job provides both via service containers, see `.github/workflows/ci.yml`).
@@ -55,10 +56,12 @@ the automated tests that verify them. All run under `cargo test --workspace` unl
   Orchestra XML → normalized-`.fixdict` conversion tool, off by default — CI's `dict-tooling` job).
 - `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`: **clean** (default,
   `--features sql`/`mssql`/`redb`/`mongodb`/`dict-tooling`).
-- AT conformance suite: **green** (`cargo test -p truefix-at --test conformance`; 373/373 scenario
+- AT conformance suite: **green** (`cargo test -p truefix-at --test conformance`; 405/405 scenario
   runs across all 9 targeted versions, plus 3 independently-gated special-category suites and a
-  regression-floor test — see corpus below, the "003" section's US1-closeout entry, and the "005"
-  section for the 353→373 growth).
+  regression-floor test — see corpus below, the "003" section's US1-closeout entry, the "005"
+  section for the 353→373 growth, and the "006" section for the 373→403→405 growth).
+- `cargo deny check`: **clean** (advisories/bans/licenses/sources all `ok` — covers the "006"
+  section's new `time-tz` dependency).
 - Benchmarks (observation/regression tools; no numeric gate is enforced — Constitution scope, per
   Clarifications):
   - `cargo bench -p truefix-core` (codec encode/decode throughput).
@@ -416,12 +419,162 @@ citations (struck through) and `specs/005-engine-gap-remediation/tasks.md` for f
   conformance` confirms 373/373 scenario runs; `cargo test -p truefix-at --test coverage` confirms the
   floor bump is intentional and disclosed; `cargo deny check` clean.
 
+## 006 — Audit remediation
+
+Closes every P0/P1 item from the 2026-07-02/03 pre-production audit (`docs/todo/003.md`), produced
+by 5 parallel deep-dive reviews (session/state-machine, transport+config, codec/dictionary,
+store/log, Engine facade+AT harness) plus a supplementary Chinese-language pass (`B1`-`B30`). Six
+fresh P0 bugs, six P1 bugs, five "closed-but-incomplete" re-openings from 005, seven of the twelve
+P1 feature-completeness gaps carried forward from `002.md`, eleven P2 minor bugs/tooling gaps, two
+AT-harness follow-ups, and every cited `B##` supplementary finding. Like 005, this feature touches
+session-state-machine/codec/protocol behavior, so the AT suite grew rather than staying unmodified.
+See `docs/todo/003.md` for the audit's own citations and `specs/006-audit-remediation/tasks.md`
+(T001-T093) for full per-task disclosure, including test names and live-verification notes.
+
+- **Session anti-replay/desync holes (US1, `BUG-05`/`BUG-06`/`BUG-22`/`B3`/`B5`/`B7`,
+  FR-001–009)**: `on_logon` now rejects a Logon whose own `MsgSeqNum` is below `next_in_seq` with no
+  PossDup justification (Logout+disconnect, before any state mutation); plain-mode `SequenceReset`
+  now rejects a decreasing `NewSeqNo` and a missing `NewSeqNo`; `ResendRequest` missing
+  `BeginSeqNo`/`EndSeqNo` now draws `RequiredTagMissing` (distinct from the retained
+  begin>end silent no-op); an initiator with `ResetOnLogon` now performs its own reset proactively
+  on connect instead of relying on a race with the acceptor's reply; a message drained from the
+  out-of-order queue after a gap-fill is now validated identically to an in-order message; a
+  dictionary-validation-failure disconnect now sends Logout first; an unparseable `SendingTime` now
+  fails the latency check instead of silently passing. AT suite grew 8 new scenario families across
+  `SUITE_VERSIONS` (373 → 403 runs).
+- **Multi-session acceptor routing (US2, `BUG-07`, FR-010/011/012)**: `route_and_run`'s live-routing
+  lookup key now extracts SubID/LocationID (tags 50/142/57/143) from the inbound Logon, not just the
+  3 required fields — a session registered with those fields populated (005's `GAP-47`) was
+  previously permanently unroutable. A grouped acceptor with a `SessionQualifier` collision is now
+  rejected at config-resolve time; each statically-registered session in a group now gets its own
+  independent `MessageStore` (discovered mid-implementation: sharing one store across concurrently
+  connected sessions in a group corrupted each session's own sequence bookkeeping — a regression
+  this fix's own bisection surfaced and closed). `AcceptorBuilder::bind` now always enables
+  `SO_REUSEADDR`.
+- **Silent store failures and spurious mid-window resets (US3, `BUG-08`/`BUG-09`/`BUG-14`/`BUG-15`/
+  `GAP-39`/`GAP-48`/`GAP-49`, FR-013–017)**: every previously-swallowed store-operation failure in
+  `truefix-transport` now routes through the log as an operator-visible event; a process restart
+  landing inside an already-active schedule window now consults the store's persisted creation time
+  instead of hardcoding "not yet in session," closing a spurious full-reset-on-every-restart bug;
+  `FileStore`/`CachedFileStore` now override `save_and_advance_sender` with real seq-first-then-body
+  atomicity (the two file-backed stores 005's `GAP-39` fix never reached); `BodyLog::reset()` now
+  syncs when `FileStoreSync=Y`; `MssqlStore` now validates table identifiers before use, matching
+  its SQL-store sibling.
+- **QuickFIX/J JDBC URL grammar (US4, `BUG-10`/`GAP-55`, FR-018–020)**: `jdbc:h2:` is now a typed
+  `UnsupportedBackend` error (never silently misrouted to a SQLite file named after the raw scheme
+  string); `MssqlStore::parse_url` gained a second accepted grammar for real semicolon-delimited
+  QuickFIX/J MSSQL URLs, additive to the existing path-based form (disclosed public-API surface
+  growth); `JdbcUser`/`JdbcPassword` values are now percent-encoded before splicing into a URL.
+- **Engine lifecycle (US5, `BUG-11`/`BUG-16`/`BUG-21`, FR-021–023)**: a partial multi-session
+  `Engine::start` failure now cleanly stops every already-started acceptor/initiator instead of
+  leaving them orphaned and running uncontrollably; a grouped acceptor's conflicting
+  `ContinueInitializationOnError` values now resolve by strictest-member-wins (any `N` fails the
+  whole group), not just the first member's flag; `Engine::shutdown()`'s doc comment now accurately
+  discloses it doesn't touch plain (non-failover) initiators.
+- **Network hardening (US6, `BUG-13`/`BUG-19`/`GAP-53`/`GAP-54`/`B14`/`B30`, FR-024–029)**: inbound
+  frame assembly is now bounded (`MAX_BODY_LEN`, 16 MiB) instead of buffering an attacker-declared
+  `BodyLength` unboundedly; a proxy connect attempt that never completes its handshake now times
+  out (previously only plain/TLS direct-connects had a timeout); a `CipherSuites` value matching
+  zero recognized suites is now a clean config-time error instead of an opaque handshake failure; a
+  trusted-source PROXY-header peek now times out instead of hanging the connection indefinitely; a
+  malformed/non-FIX prefix now discards only itself, not the legitimate message that followed it
+  (previously cleared the whole buffer); the transport crate's own duplicate `framing.rs` was
+  deleted in favor of the shared `truefix-core` implementation.
+- **Dictionary/codec correctness (US7, `BUG-12`/`GAP-26`/`GAP-27`/`GAP-33`/`GAP-56`, FR-030–034)**:
+  `FieldType::value_ok` now format-checks `UtcTimeOnly`/`UtcDate`; `tags.rs` gained the real header
+  tags (627/628/629/630, `NoHops`'s group — the audit's own citation of 504 was independently
+  verified wrong against the shipped dictionary and corrected) and 6 missing `EncodedXxxLen`↔`EncodedXxx`
+  pairs (the audit's citations of 620→621/1039→1040 were also independently verified wrong and
+  corrected); codegen now honors a message's declared `fieldOrder` on the real production encode
+  path (previously parsed but never applied — `GAP-27`, entirely dormant); the production decode
+  path now wires header/trailer repeating-group decode via a new `HeaderTrailerGroupsOnly` adapter
+  (previously `decode_with_groups` was never called from any production path — `GAP-26`, entirely
+  dormant; wiring it in surfaced and fixed a real pre-existing gap in the primitive itself, which
+  never tracked `fields_out_of_order`); all 8 legacy `.fixdict` provenance headers now name the
+  current `fix_repository.rs` tool instead of the deleted `qfj_xml.rs` (`GAP-56`/`GAP-33`'s stale
+  citation).
+- **Carried-forward feature-completeness gaps (US8, `GAP-10`/`11`/`12`/`18c`/`19`/`21`/`44`,
+  FR-035–041)**: recurring daily `ResetSeqTime`/`EnableResetSeqTime` sequence reset, independent of
+  Enter/Exit window transitions; `LogonTag`/`LogonTag1`/`LogonTag2`/… multi-tag support (was exactly
+  one pair); inbound Logon's `DefaultApplVerID` (tag 1137) auto-extraction plus a real
+  `FixtDictionaries` transport/application split reachable from `.cfg` (previously aliased to one
+  dictionary) and selected per-message via tag 1128, falling back to the negotiated tag 1137, falling
+  back to the dictionary's own default; dynamic-session templates now carry SubID/LocationID through
+  from the inbound Logon, not just BeginString/SenderCompID/TargetCompID; `.cfg`-selectable
+  `ScreenLog`/`TracingLog`/`CompositeLog` via a new `Log` key; IANA timezone names for `TimeZone`
+  (new `time-tz` dependency, BSD-3-Clause, license-checked via `cargo deny`), DST-aware unlike the
+  pre-existing fixed-offset form; `${var}` interpolation now falls back to environment variables.
+- **AT harness coverage (US9, `BUG-17`, FR-042/043)**: a new `MinQty` (tag 110) scenario across
+  FIX.4.2/FIX.4.4 proves the field — previously absent from every bundled dictionary, now present
+  since 005's dictionary-coverage work — is accepted, not rejected as undefined; the regression
+  floor was bumped twice (373 → 403 at US1 closeout, 403 → 405 at US9 closeout) to track the true
+  count exactly at each stage rather than drifting stale again.
+- **Tooling / latent-risk hygiene (US10, `GAP-50`/`BUG-18`/`GAP-51`/`BUG-20`, FR-044–046)**:
+  `flatten_members` gained a depth-16 recursion guard matching its sibling `resolve_entries`
+  (previously unbounded — latent, not live against the 9 real vendored sources, but a genuine risk
+  for a future/different Repository edition); `parse_messages`'s doc comment corrected to describe
+  its actual behavior (it never registered a synthetic `id_by_name`/`by_id` entry as previously
+  claimed — the adjacent panicking-index concern the audit raised was independently traced and
+  found provably safe by construction, requiring no code change); `BodyLog::append`'s offset
+  determination now happens inside the same lock as the write and index-insert, closing a TOCTOU
+  race between concurrent writers (verified as a genuine regression: reverting the fix reproduced
+  concrete data corruption under 64 concurrent writers before being re-applied).
+- **Gate status**: `cargo fmt --check` clean; `cargo clippy --workspace --all-targets --all-features
+  -- -D warnings` clean; `cargo test --workspace --all-features` green (578 tests passed, 0
+  failures — grown across feature 006); `cargo test -p truefix-at --test conformance` confirms
+  405/405 scenario runs, including the new `MinQty` scenario; `cargo test -p truefix-at --test
+  coverage` confirms the floor exactly matches; `cargo deny check` clean (covers the new `time-tz`
+  dependency's full transitive license tree).
+
+## Not addressed by 006 — disclosed, not silently dropped
+
+Per Constitution Principle VII (inventory-based completeness), the following items `docs/todo/003.md`
+raised are **not** closed by this feature, called out explicitly rather than left to be discovered by
+a future reader assuming "006 closed everything the audit found":
+
+- **`GAP-28`/`GAP-32`** (dictionary version metadata / BeginString-match validation — "mechanism
+  correct, but orphaned from real data"): zero shipped `.fixdict` files declare a `version-meta`
+  directive, so the already-implemented validation logic never fires against any dictionary TrueFix
+  actually ships. This did not end up covered by any of `spec.md`'s 46 FRs or US8's 7-item
+  acceptance-scenario enumeration — an omission during specification, not a deliberate deferral with
+  a stated reason (unlike the items below). Flagged here for a future feature to pick up: either add
+  `version-meta` directives to the shipped `.fixdict` sources, or reconfirm whether the check itself
+  still earns its keep with zero live callers.
+- Explicitly low-priority/deferred-with-reason in `docs/todo/003.md` itself, not reconfirmed as
+  requiring a fix: `GAP-13` (QFJ-only `RejectReason::code()` refinement), `GAP-17` (`AllowedRemoteAddresses`
+  union-not-per-session — reconfirmed as intentional/documented behavior, not a defect), `GAP-20`
+  (transport routing key scope — its unroutability *consequence* was `BUG-07`, now closed; the key's
+  own scope is unchanged), `GAP-31` (timestamp precision truncation, confirmed numerically-safe),
+  `GAP-34` (no `toXML` diagnostic dump), `GAP-35`/`GAP-46` (QuickFIX/Go-only optional behaviors),
+  `GAP-36` (no offline FIX log-file batch parser), `GAP-37` (`MessageStore` lifecycle hooks,
+  reconfirmed non-issue given TrueFix's sans-IO single-owner architecture), `GAP-40` (full `Log`
+  trait severity-level support — the narrower, higher-priority slice of this concern that blocked
+  `BUG-08` was closed by routing store-failure signals through the existing `on_event`, without the
+  full trait change), `GAP-42` (unbounded `mpsc` channels in 4 background-writer log backends),
+  `GAP-45` (`SessionSettings` immutability — architectural, not recommended as near-term work),
+  `GAP-52` (O(fields × enums) enum-emission, build-time only, informational).
+- AT-harness scenarios still blocked on harness limitations, not feature gaps: `1c_InvalidSenderCompID`/
+  `1c_InvalidTargetCompID`/`1d_InvalidLogonWrongBeginString` (dynamic-template acceptor adopts
+  whatever identity the first Logon claims); `1b_DuplicateIdentity`/`20_SimultaneousResendRequest`
+  (the runner drives exactly one `TcpStream` per scenario, no multi-connection `Step` primitive).
+  Note `1d_InvalidLogonNoDefaultApplVerID` is now *technically* unblockable-no-longer — US8's T079
+  wired a real `FixtDictionaries` split reachable from `.cfg` — but no scenario was authored for it
+  in this pass (US9's own scope was `MinQty` only); a real, actionable follow-up for a future
+  iteration.
+- Two purely-cosmetic documentation-accuracy notes from `docs/todo/003.md`'s own closing section
+  (a `002.md` addendum pointing at `docs/todo/003.md` for the `GAP-33` citation; a doc-comment on
+  `MongoStore` explaining its intentional `save_and_advance_sender` non-override) were not applied —
+  low-value, no behavioral stakes either way.
+
 ## Outstanding before a v1 release claim
 
 - Broaden the corpus from one representative scenario per behavior class toward the full Appendix B
   enumeration (additional permutations within already-covered classes).
-- Per-session (not acceptor-group-union) `AllowedRemoteAddresses` enforcement (`GAP-17`, partially
-  addressed by 005's `AcceptorBuilder` wiring — see `docs/todo/002.md`).
-- The remaining open items in `docs/todo/002.md` not closed by 005: `GAP-10`/`12`/`13`/
-  `18c`/`19`/`20`/`21`/`31`/`34`/`35`/`36`/`37`/`40`/`42`/`44`/`45`/`46` (each individually low-priority
-  or explicitly deferred per that document's own recommendation).
+- `GAP-28`/`GAP-32` (dictionary version-meta validation orphaned from real data — see "Not addressed
+  by 006" above; the one item from `docs/todo/003.md` that fell through specification, not a
+  deliberate deferral).
+- The remaining low-priority/deferred-with-reason items from `docs/todo/003.md` not closed by 006:
+  `GAP-13`/`17`/`20`/`31`/`34`/`35`/`36`/`37`/`40`/`42`/`45`/`46`/`52` (see "Not addressed by 006"
+  above for why each is deferred, not overlooked).
+- AT scenario authoring for `1d_InvalidLogonNoDefaultApplVerID` (unblocked by 006's US8 FIXT work,
+  not yet written) and the harness-limited scenarios needing a multi-connection `Step` primitive.

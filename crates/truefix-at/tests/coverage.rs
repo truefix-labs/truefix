@@ -38,10 +38,12 @@ fn server_suite_scenario_run_count_does_not_regress() {
     let scenarios = server_suite();
     let total_runs: usize = scenarios.iter().map(|s| s.versions.len()).sum();
     assert!(
-        total_runs >= 353,
-        "server_suite() produced {total_runs} scenario runs, below the 353-run floor established \
-         at US1 closeout (003) — a drop usually means a scenario or version was accidentally \
-         dropped rather than intentionally deferred (deferrals are tracked in \
+        total_runs >= 405,
+        "server_suite() produced {total_runs} scenario runs, below the 405-run floor established \
+         at 006 US9 closeout (T084's MinQty scenario, tag 110, +2 runs — FIX.4.2 and FIX.4.4 — on \
+         top of the 403-run floor from US1 closeout: session protocol-correctness fixes BUG-06/\
+         BUG-22/B3/B5/B7, up from 373 at 005 closeout) — a drop usually means a scenario or version \
+         was accidentally dropped rather than intentionally deferred (deferrals are tracked in \
          docs/todo/001.md's TODO-01, not by shrinking this suite)"
     );
 }

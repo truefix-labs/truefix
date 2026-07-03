@@ -38,7 +38,7 @@ fn defaults_match_session_config_new() {
         c.force_resend_when_corrupted_store,
         d.force_resend_when_corrupted_store
     );
-    assert_eq!(c.logon_tag, d.logon_tag);
+    assert_eq!(c.logon_tags, d.logon_tags);
 }
 
 #[test]
@@ -73,12 +73,47 @@ fn requires_orig_sending_time_y_sets_the_session_level_switch() {
 #[test]
 fn logon_tag_maps_tag_and_value() {
     let c = resolved(&base("LogonTag=9001=HOUSE-ID\n"));
-    assert_eq!(c.logon_tag, Some((9001, "HOUSE-ID".to_owned())));
+    assert_eq!(c.logon_tags, vec![(9001, "HOUSE-ID".to_owned())]);
 }
 
 #[test]
 fn malformed_logon_tag_is_a_typed_error() {
     let err = SessionSettings::parse(&base("LogonTag=not-a-tag\n"))
+        .unwrap()
+        .resolve()
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        truefix_config::ConfigError::InvalidValue { .. }
+    ));
+}
+
+#[test]
+fn numbered_logon_tags_are_all_parsed_in_order() {
+    // T077 (US8, feature 006): GAP-12, `LogonTag`/`LogonTag1`/`LogonTag2`/… all map in, in
+    // ascending numeric-suffix order (`LogonTag` itself sorts first).
+    let c = resolved(&base(
+        "LogonTag=9001=HOUSE-ID\nLogonTag1=9002=DESK-ID\nLogonTag2=9003=TRADER-ID\n",
+    ));
+    assert_eq!(
+        c.logon_tags,
+        vec![
+            (9001, "HOUSE-ID".to_owned()),
+            (9002, "DESK-ID".to_owned()),
+            (9003, "TRADER-ID".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn logon_tag1_alone_without_bare_logon_tag_still_parses() {
+    let c = resolved(&base("LogonTag1=9002=DESK-ID\n"));
+    assert_eq!(c.logon_tags, vec![(9002, "DESK-ID".to_owned())]);
+}
+
+#[test]
+fn malformed_numbered_logon_tag_is_a_typed_error() {
+    let err = SessionSettings::parse(&base("LogonTag1=not-a-tag\n"))
         .unwrap()
         .resolve()
         .unwrap_err();

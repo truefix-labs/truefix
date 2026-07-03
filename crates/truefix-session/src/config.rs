@@ -93,8 +93,9 @@ pub struct SessionConfig {
     /// typed-error architecture (Constitution Principle I: no panics on critical paths) has no
     /// unhandled-exception class this would apply to — accepted but intentionally a no-op.
     pub reject_message_on_unhandled_exception: bool,
-    /// An optional custom `(tag, value)` pair appended to every outbound Logon (LogonTag).
-    pub logon_tag: Option<(u32, String)>,
+    /// Custom `(tag, value)` pairs appended to every outbound Logon (`LogonTag`, `LogonTag1`,
+    /// `LogonTag2`, … — GAP-12), in ascending numeric-suffix order.
+    pub logon_tags: Vec<(u32, String)>,
     /// Recognised for QuickFIX/J config-key parity (MaxScheduledWriteRequests). TrueFix's session
     /// state machine returns actions synchronously for the transport to write immediately — there
     /// is no internal outbound write queue for this to bound — accepted but intentionally a no-op.
@@ -203,7 +204,7 @@ impl SessionConfig {
             disconnect_on_error: false,
             disable_heart_beat_check: false,
             reject_message_on_unhandled_exception: false,
-            logon_tag: None,
+            logon_tags: Vec::new(),
             max_scheduled_write_requests: None,
             continue_initialization_on_error: false,
             force_resend_when_corrupted_store: false,

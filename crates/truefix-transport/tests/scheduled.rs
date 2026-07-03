@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use time::Time;
 use truefix_session::{Application, Role, Schedule, SessionConfig, SessionId};
+use truefix_store::{FileStore, MessageStore};
 use truefix_transport::{run_scheduled_initiator, AcceptorBuilder, Services};
 
 struct FlagApp {
@@ -71,6 +72,76 @@ async fn connects_when_in_session() {
     );
     handle.stop();
     handle.join().await;
+}
+
+// --- T030 (US3, feature 006): restart mid-window preserves state (BUG-09/GAP-48/FR-014) ---
+
+fn unique_store_dir() -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "truefix-scheduled-restart-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_with_a_store_whose_creation_time_is_already_in_the_active_window_does_not_reset() {
+    let dir = unique_store_dir();
+    let store = FileStore::open(&dir).unwrap();
+    let original_creation_time = store.creation_time().await.unwrap();
+    let store: std::sync::Arc<dyn MessageStore> = std::sync::Arc::new(store);
+
+    let addr = start_acceptor().await;
+    let flag = Arc::new(AtomicBool::new(false));
+    // Schedule::non_stop() would never exercise decide_schedule_action's Enter/Exit transitions
+    // at all -- use a real, currently-active daily window instead so the seeded `was_in_session`
+    // value actually matters (a restart landing inside this window should be indistinguishable
+    // from "already running", not treated as a fresh entry).
+    let now = time::OffsetDateTime::now_utc();
+    let start = (now - Duration::from_secs(3600)).time();
+    let end = (now + Duration::from_secs(3600)).time();
+    let schedule = Schedule::daily(start, end);
+
+    // ResetOnLogon defaults to true (SessionConfig::default), which would itself force a fresh
+    // store reset on every connect via the session-level fix from US1 (T017, Action::ResetStore)
+    // -- unrelated to the schedule-level fix under test here. Disable it so only the
+    // schedule/store-driven reset path (or lack thereof) can affect the store's creation time.
+    let mut cfg = initiator_cfg();
+    cfg.reset_on_logon = false;
+
+    let handle = run_scheduled_initiator(
+        addr,
+        cfg,
+        Arc::new(FlagApp { on: flag.clone() }),
+        Services {
+            store: Some(store.clone()),
+            ..Services::default()
+        },
+        schedule,
+    );
+    assert!(
+        wait_until(|| flag.load(Ordering::SeqCst), Duration::from_secs(5)).await,
+        "scheduled initiator should still connect and log on inside the active window"
+    );
+    handle.stop();
+    handle.join().await;
+
+    // `reset()` always stamps a fresh creation time (GAP-38, feature 005); an unchanged creation
+    // time is direct proof no reset occurred, regardless of how far sequence numbers legitimately
+    // advanced from the Logon exchange itself.
+    assert_eq!(
+        store.creation_time().await.unwrap(),
+        original_creation_time,
+        "a restart landing inside an already-active schedule window must not spuriously reset \
+         the store (which would stamp a fresh creation time)"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

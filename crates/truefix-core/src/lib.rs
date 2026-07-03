@@ -36,7 +36,7 @@ pub use error::{BusinessReject, DecodeError, DoNotSend, FieldError, Reject};
 pub use factory::MessageFactory;
 pub use field::Field;
 pub use field_map::FieldMap;
-pub use framing::frame_length;
+pub use framing::{frame_length, MAX_BODY_LEN};
 pub use group::{Group, GroupSpec};
 pub use message::Message;
 pub use tags::SOH;

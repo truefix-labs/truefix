@@ -107,6 +107,13 @@ impl BodyLog {
     }
 
     fn append(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
+        // T088/BUG-20 (feature 006): the offset-determining `fs::metadata` read must happen
+        // inside the same critical section as the write and index-insert below, not before it —
+        // otherwise two concurrent `append` callers could both read the file's length before
+        // either has written, racing to record the *same* (now-wrong-for-one-of-them) offset in
+        // the index. Holding `self.lock()` across the whole body (all synchronous std calls, no
+        // `.await` inside) serializes appends entirely, closing that window.
+        let mut guard = self.lock()?;
         let offset = fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
         let mut f = OpenOptions::new()
             .create(true)
@@ -121,7 +128,7 @@ impl BodyLog {
         if self.sync {
             f.sync_data().map_err(io_err)?;
         }
-        self.lock()?.insert(seq, (offset, len));
+        guard.insert(seq, (offset, len));
         Ok(())
     }
 
@@ -159,7 +166,21 @@ impl BodyLog {
     }
 
     fn reset(&self) -> Result<(), StoreError> {
-        fs::write(&self.path, []).map_err(io_err)?;
+        // BUG-15/FR-016 (feature 006): sync when `FileStoreSync=Y`, matching `append()`'s
+        // existing discipline — previously this never synced regardless of the option, so a
+        // crash immediately after `fs::write` truncated the body file, but before the OS
+        // actually flushed that truncation to disk, could leave a stale pre-reset body on disk
+        // after restart even though the in-memory index (and, if this ran second per the
+        // ordering below, the seqnums file) already reflect the reset.
+        let f = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&self.path)
+            .map_err(io_err)?;
+        if self.sync {
+            f.sync_data().map_err(io_err)?;
+        }
         self.lock()?.clear();
         Ok(())
     }
@@ -288,17 +309,38 @@ impl MessageStore for FileStore {
         self.body.range(begin, end)
     }
     async fn reset(&self) -> Result<(), StoreError> {
+        // B17/FR-016 (feature 006): reset `seq` (the durability anchor, per
+        // `save_and_advance_sender`'s ordering rationale above) *before* `body` — a crash
+        // mid-reset then leaves `seqnums` already at the post-reset `(1,1)` with `body` still
+        // holding harmless, unindexed pre-reset data, never the reverse (which was previously
+        // possible and unrecoverable: `body` empty but `seqnums` still reporting the old,
+        // advanced values, with no way to serve a resend for messages the old sequence numbers
+        // claimed existed).
+        self.seq.reset()?;
         self.body.reset()?;
         self.corrupted.store(false, Ordering::SeqCst);
         let now = reset_creation_time_file(&self.creation_time_path)?;
         *self.creation_time.lock().map_err(|_| poisoned())? = now;
-        self.seq.reset()
+        Ok(())
     }
     fn was_corrupted(&self) -> bool {
         self.was_corrupted()
     }
     async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
         Ok(Some(*self.creation_time.lock().map_err(|_| poisoned())?))
+    }
+    async fn save_and_advance_sender(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
+        // GAP-49/FR-015 (feature 006): unlike the SQL/MSSQL/Redb overrides (feature 005), a
+        // two-separate-file backend has no cross-file transaction to make this fully atomic.
+        // The safest achievable ordering advances the durable sequence-number record FIRST: if a
+        // crash occurs before the body write completes, `next_out_seq()` on restart already
+        // reflects this message as sent (matching what the counterparty may already have
+        // received over the wire), and the missing body is safely recoverable via the existing
+        // gap-fill path (`build_resend` already treats a missing stored message as a gap to
+        // fill) — the reverse order would instead risk generating a brand-new, differently-
+        // content message under an already-transmitted sequence number on restart.
+        self.seq.set_sender(seq + 1)?;
+        self.body.append(seq, message)
     }
 }
 
@@ -436,18 +478,34 @@ impl MessageStore for CachedFileStore {
         Ok(out)
     }
     async fn reset(&self) -> Result<(), StoreError> {
+        // B17/FR-016 (feature 006): see FileStore's identical override for the ordering
+        // rationale (sequence-number-first, matching `save_and_advance_sender`'s durability
+        // anchor).
+        self.seq.reset()?;
         self.body.reset()?;
         self.corrupted.store(false, Ordering::SeqCst);
         self.cache.lock().map_err(|_| poisoned())?.clear();
         let now = reset_creation_time_file(&self.creation_time_path)?;
         *self.creation_time.lock().map_err(|_| poisoned())? = now;
-        self.seq.reset()
+        Ok(())
     }
     fn was_corrupted(&self) -> bool {
         self.was_corrupted()
     }
     async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
         Ok(Some(*self.creation_time.lock().map_err(|_| poisoned())?))
+    }
+    async fn save_and_advance_sender(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
+        // GAP-49/FR-015 (feature 006): see FileStore's identical override for the ordering
+        // rationale (sequence-number-first, safest achievable ordering for a non-transactional
+        // two-file backend).
+        self.seq.set_sender(seq + 1)?;
+        self.body.append(seq, message)?;
+        self.cache
+            .lock()
+            .map_err(|_| poisoned())?
+            .insert(seq, message.to_vec());
+        Ok(())
     }
 }
 

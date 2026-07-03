@@ -1,9 +1,10 @@
 //! T064 — session scheduling (daily window, weekdays, NonStop).
 //! T056 (US8) — weekly StartDay/EndDay windows across day boundaries (FR-018/FR-E1).
+//! T076 (US8) — recurring daily sequence reset (`ResetSeqTime`/`EnableResetSeqTime`, GAP-11).
 
-use time::macros::{datetime, time};
+use time::macros::{date, datetime, time};
 use time::{Time, Weekday};
-use truefix_session::Schedule;
+use truefix_session::{decide_recurring_reset, Schedule};
 
 #[test]
 fn non_stop_is_always_in_session() {
@@ -80,4 +81,37 @@ fn weekly_window_wrapping_the_week_boundary_across_integration() {
     let s = Schedule::weekly(Weekday::Friday, time!(18:00), Weekday::Monday, time!(8:00));
     assert!(s.is_in_session(datetime!(2026-06-27 10:00 UTC))); // Saturday, inside
     assert!(!s.is_in_session(datetime!(2026-07-01 12:00 UTC))); // Wednesday, outside
+}
+
+#[test]
+fn recurring_reset_time_fires_once_per_day_regardless_of_window_state() {
+    // T076 (US8): a non-stop session with a `ResetSeqTime` of 00:00 still gets a recurring daily
+    // reset, even though non_stop schedules never produce Enter/Exit boundary transitions.
+    let s = Schedule::non_stop().with_reset_seq_time(Time::from_hms(0, 0, 0).unwrap());
+    assert_eq!(
+        decide_recurring_reset(
+            &s,
+            Some(date!(2026 - 06 - 29)),
+            datetime!(2026-06-30 00:05 UTC)
+        ),
+        Some(date!(2026 - 06 - 30))
+    );
+    // Same calendar day, already fired: no second reset.
+    assert_eq!(
+        decide_recurring_reset(
+            &s,
+            Some(date!(2026 - 06 - 30)),
+            datetime!(2026-06-30 12:00 UTC)
+        ),
+        None
+    );
+}
+
+#[test]
+fn recurring_reset_time_unset_never_fires() {
+    let s = Schedule::non_stop();
+    assert_eq!(
+        decide_recurring_reset(&s, None, datetime!(2026-06-30 12:00 UTC)),
+        None
+    );
 }

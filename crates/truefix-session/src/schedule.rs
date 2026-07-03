@@ -2,10 +2,11 @@
 //!
 //! Supports 24×7 (NonStopSession), daily windows (StartTime/EndTime), a weekday filter, a weekly
 //! window (StartDay/EndDay, spanning potentially several days — e.g. "open Sunday 18:00, close
-//! Friday 17:00"), and a fixed UTC offset (TimeZone, simplified to a whole-second offset). Named
-//! time zones can extend this later.
+//! Friday 17:00"), and either a fixed UTC offset or a named IANA time zone (`TimeZone`, GAP-10) —
+//! the latter resolves to a DST-aware offset that varies by date, unlike the fixed form.
 
 use time::{OffsetDateTime, Time, UtcOffset, Weekday};
+use time_tz::{Offset, TimeZone as _};
 
 /// A session activity schedule.
 #[derive(Debug, Clone, Default)]
@@ -18,14 +19,27 @@ pub struct Schedule {
     pub end_time: Option<Time>,
     /// Allowed weekdays; `None` means every day.
     pub weekdays: Option<Vec<Weekday>>,
-    /// Local time-zone offset from UTC, in whole seconds.
+    /// Local time-zone offset from UTC, in whole seconds. Ignored when [`named_time_zone`] is
+    /// set (GAP-10).
+    ///
+    /// [`named_time_zone`]: Self::named_time_zone
     pub utc_offset_seconds: i32,
+    /// A named IANA time zone (`TimeZone=America/New_York`, GAP-10), taking precedence over
+    /// [`utc_offset_seconds`] when set — its offset is resolved dynamically per date (DST-aware),
+    /// unlike the fixed-offset form.
+    ///
+    /// [`utc_offset_seconds`]: Self::utc_offset_seconds
+    pub named_time_zone: Option<&'static time_tz::Tz>,
     /// Weekly window start day (StartDay), paired with `start_time`. When set together with
     /// `end_day`, the window spans from this day/time to `end_day`/`end_time`, potentially
     /// crossing several days (e.g. Sunday evening to Friday evening).
     pub start_day: Option<Weekday>,
     /// Weekly window end day (EndDay), paired with `end_time`.
     pub end_day: Option<Weekday>,
+    /// `ResetSeqTime`/`EnableResetSeqTime` (GAP-11): a daily local time-of-day at which sequence
+    /// numbers are reset once per day, independent of any Enter/Exit window transition (and
+    /// independent of `non_stop`, since a 24x7 session still wants a recurring daily reset).
+    pub reset_seq_time: Option<Time>,
 }
 
 impl Schedule {
@@ -70,13 +84,35 @@ impl Schedule {
         self
     }
 
+    /// Set a named IANA time zone (`TimeZone=America/New_York`, GAP-10), taking precedence over
+    /// [`Self::with_utc_offset_seconds`].
+    pub fn with_named_time_zone(mut self, tz: &'static time_tz::Tz) -> Self {
+        self.named_time_zone = Some(tz);
+        self
+    }
+
+    /// Set the recurring daily sequence-reset time (`ResetSeqTime`, GAP-11).
+    pub fn with_reset_seq_time(mut self, t: Time) -> Self {
+        self.reset_seq_time = Some(t);
+        self
+    }
+
+    /// The local UTC offset to apply at `now_utc` — the named zone's DST-aware offset for that
+    /// instant when [`Self::named_time_zone`] is set (GAP-10), else the fixed
+    /// [`Self::utc_offset_seconds`].
+    pub(crate) fn effective_offset(&self, now_utc: OffsetDateTime) -> UtcOffset {
+        if let Some(tz) = self.named_time_zone {
+            return tz.get_offset_utc(&now_utc).to_utc();
+        }
+        UtcOffset::from_whole_seconds(self.utc_offset_seconds).unwrap_or(UtcOffset::UTC)
+    }
+
     /// Whether `now_utc` falls within the schedule.
     pub fn is_in_session(&self, now_utc: OffsetDateTime) -> bool {
         if self.non_stop {
             return true;
         }
-        let offset =
-            UtcOffset::from_whole_seconds(self.utc_offset_seconds).unwrap_or(UtcOffset::UTC);
+        let offset = self.effective_offset(now_utc);
         let local = now_utc.to_offset(offset);
 
         if let (Some(start_day), Some(end_day)) = (self.start_day, self.end_day) {
@@ -140,6 +176,23 @@ fn in_weekly_window(
 mod tests {
     use super::*;
     use time::macros::{datetime, time};
+
+    #[test]
+    fn named_time_zone_is_dst_aware_unlike_a_fixed_offset() {
+        // T082 (US8, feature 006): GAP-10. America/New_York is EST (UTC-5) in January and EDT
+        // (UTC-4) in July -- a fixed offset could only ever get one of these two dates right.
+        let tz = time_tz::timezones::db::america::NEW_YORK;
+        let s = Schedule::daily(time!(9:00), time!(17:00)).with_named_time_zone(tz);
+
+        // Winter (EST, UTC-5): 09:00 local == 14:00 UTC.
+        assert!(s.is_in_session(datetime!(2026-01-15 14:00 UTC)));
+        assert!(!s.is_in_session(datetime!(2026-01-15 13:00 UTC))); // 08:00 local, before open
+
+        // Summer (EDT, UTC-4): 09:00 local == 13:00 UTC -- one hour earlier in UTC than winter,
+        // proving the offset actually shifts with the date rather than staying fixed.
+        assert!(s.is_in_session(datetime!(2026-07-15 13:00 UTC)));
+        assert!(!s.is_in_session(datetime!(2026-07-15 12:00 UTC))); // 08:00 local, before open
+    }
 
     #[test]
     fn weekly_window_within_same_week() {

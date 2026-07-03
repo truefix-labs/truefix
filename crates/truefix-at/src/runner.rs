@@ -70,6 +70,9 @@ pub struct SessionTweaks {
     pub reject_garbled: bool,
     /// Enable `ValidateFieldsOutOfOrder` on the acceptor's dictionary validator (FR-006).
     pub validate_fields_out_of_order: bool,
+    /// Disconnect (in addition to rejecting) on an inbound dictionary-validation failure
+    /// (006/US1, B5/FR-008).
+    pub disconnect_on_error: bool,
 }
 
 /// A scripted acceptance-test scenario.
@@ -158,6 +161,7 @@ pub async fn start_acceptor(
     template.enable_last_msg_seq_num_processed = tweaks.enable_last_processed;
     template.resend_request_chunk_size = tweaks.resend_chunk_size;
     template.reject_garbled_message = tweaks.reject_garbled;
+    template.disconnect_on_error = tweaks.disconnect_on_error;
 
     // Enable dictionary validation so field-level reject scenarios produce Reject messages.
     let validation_opts = truefix_dict::ValidationOptions {

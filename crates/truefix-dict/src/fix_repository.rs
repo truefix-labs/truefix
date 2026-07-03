@@ -89,6 +89,14 @@ pub enum FixRepositoryError {
         /// The ComponentID where the guard tripped.
         component_id: u32,
     },
+    /// `flatten_members`' own nesting guard (T086/GAP-50/BUG-18, feature 006), tripped after
+    /// `resolve_entries` has already turned each `Member::Component` into a name rather than an
+    /// id — so this names the component by name, not id, unlike [`Self::TooDeep`] above.
+    #[error("member flattening nesting exceeded depth 16 (component name {component_name:?})")]
+    FlattenTooDeep {
+        /// The component name where the guard tripped.
+        component_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,9 +253,10 @@ fn parse_enums(xml: &str) -> Result<BTreeMap<(u32, String), String>, FixReposito
     Ok(enums)
 }
 
-fn parse_components(
-    xml: &str,
-) -> Result<(BTreeMap<u32, RawComponent>, BTreeMap<String, u32>), FixRepositoryError> {
+/// Components keyed by ID, plus a name-to-ID lookup.
+type ParsedComponents = (BTreeMap<u32, RawComponent>, BTreeMap<String, u32>);
+
+fn parse_components(xml: &str) -> Result<ParsedComponents, FixRepositoryError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut by_id = BTreeMap::new();
@@ -299,9 +308,15 @@ fn parse_components(
     Ok((by_id, id_by_name))
 }
 
-/// Also registers each message's own `ComponentID` as a synthetic entry in `id_by_name`/`by_id`
-/// (`repeating: false`) so the same by-name resolution path used for component references also
-/// works uniformly — not strictly required by callers today, but keeps the two catalogs coherent.
+/// Parses `Messages.xml` into one [`RawMessageMeta`] per `<Message>` element (its `ComponentID`,
+/// `MsgType`, and `Name`). Unlike [`parse_components`], this does **not** register anything into
+/// `id_by_name`/`by_id` — those two catalogs are built exclusively from `Components.xml`
+/// (T087/GAP-51, feature 006: this doc comment previously claimed a synthetic `id_by_name`/`by_id`
+/// registration for each message's `ComponentID` that the implementation never performed).
+/// `resolve_entries`' `&components_by_id[&ref_id]` index (which this might look like it protects)
+/// is safe regardless: `ref_id` there is always obtained via `components_by_name.get(...)` first,
+/// and `parse_components` only ever inserts into `id_by_name`/`by_id` together, in the same match
+/// arm — so any name lookup that succeeds guarantees the paired id lookup succeeds too.
 fn parse_messages(xml: &str) -> Result<Vec<RawMessageMeta>, FixRepositoryError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -544,19 +559,32 @@ fn map_type(type_name: &str) -> Option<&'static str> {
     })
 }
 
-fn flatten_members(members: &[Member], components: &BTreeMap<String, Vec<Member>>) -> Vec<u32> {
+/// Flatten `members` to a plain tag list, inlining nested components. `depth` starts at 0 from
+/// the public call sites and increments on each `Member::Component` recursion; guarded at 16
+/// (T086/GAP-50/BUG-18, feature 006 — matching sibling `resolve_entries`' own guard) to error
+/// instead of recursing unboundedly on a cyclic component reference in malformed input.
+fn flatten_members(
+    members: &[Member],
+    components: &BTreeMap<String, Vec<Member>>,
+    depth: u32,
+) -> Result<Vec<u32>, FixRepositoryError> {
     let mut out = Vec::new();
     for m in members {
         match m {
             Member::Field(t) => out.push(*t),
             Member::Component(name) => {
                 if let Some(sub) = components.get(name) {
-                    out.extend(flatten_members(sub, components));
+                    if depth > 16 {
+                        return Err(FixRepositoryError::FlattenTooDeep {
+                            component_name: name.clone(),
+                        });
+                    }
+                    out.extend(flatten_members(sub, components, depth + 1)?);
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
 
 fn member_token(m: &Member) -> String {
@@ -662,8 +690,8 @@ pub fn convert(src: &RepositorySource<'_>, version: &str) -> Result<String, FixR
     .into_iter()
     .map(|(m, _)| m)
     .collect();
-    let header_tags = flatten_members(&header_members, &component_member_map);
-    let trailer_tags = flatten_members(&trailer_members, &component_member_map);
+    let header_tags = flatten_members(&header_members, &component_member_map, 0)?;
+    let trailer_tags = flatten_members(&trailer_members, &component_member_map, 0)?;
 
     let mut messages: Vec<RawMessage> = Vec::new();
     for meta in &messages_meta {
@@ -816,5 +844,43 @@ fn local_name_bytes(bytes: &[u8]) -> String {
     match name.rsplit_once(':') {
         Some((_, local)) => local.to_owned(),
         None => name.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T086 (US10, feature 006): `flatten_members` had no recursion-depth guard at all (unlike its
+    /// sibling `resolve_entries`, which already bounds at depth 16) — a self-referencing component
+    /// chain in malformed input would recurse unboundedly instead of failing cleanly.
+    #[test]
+    fn a_self_referencing_component_chain_fails_instead_of_recursing_unboundedly() {
+        let mut components: BTreeMap<String, Vec<Member>> = BTreeMap::new();
+        // "A" contains "A" -- a direct self-reference.
+        components.insert("A".to_owned(), vec![Member::Component("A".to_owned())]);
+        let members = vec![Member::Component("A".to_owned())];
+
+        let result = flatten_members(&members, &components, 0);
+        match result {
+            Err(FixRepositoryError::FlattenTooDeep { component_name }) => {
+                assert_eq!(component_name, "A");
+            }
+            other => panic!("expected FlattenTooDeep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_normal_non_cyclic_component_chain_still_flattens_correctly() {
+        let mut components: BTreeMap<String, Vec<Member>> = BTreeMap::new();
+        components.insert("Inner".to_owned(), vec![Member::Field(2)]);
+        components.insert(
+            "Outer".to_owned(),
+            vec![Member::Field(1), Member::Component("Inner".to_owned())],
+        );
+        let members = vec![Member::Component("Outer".to_owned())];
+
+        let tags = flatten_members(&members, &components, 0).unwrap();
+        assert_eq!(tags, vec![1, 2]);
     }
 }

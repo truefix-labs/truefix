@@ -101,6 +101,42 @@ fn acceptor_logon_reports_seq_state_after_consuming_logon() {
     assert_eq!(reply.header.get(369).unwrap().as_str().unwrap(), "1");
 }
 
+// --- T003 (US1, feature 006): low-seq Logon rejection (BUG-05/FR-001) ---
+
+#[test]
+fn logon_with_seq_below_expected_and_no_possdup_is_rejected() {
+    let mut s = Session::new(cfg(Role::Acceptor));
+    s.seed_sequences(1, 5); // expect next inbound seq = 5
+    s.handle(Event::Connected);
+    assert_eq!(s.state(), SessionState::AwaitingLogon);
+
+    // seq 2 < expected 5, no PossDupFlag.
+    let actions = s.handle(Event::Received(inbound("A", 2, Some(1), None)));
+    assert_eq!(
+        s.state(),
+        SessionState::Disconnected,
+        "a too-low-seq Logon without PossDup must be rejected (logout + disconnect), not accepted"
+    );
+    assert_eq!(
+        s.next_in_seq(),
+        5,
+        "a rejected too-low-seq Logon must not advance next_in_seq"
+    );
+    assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::Send(m) if m.msg_type() == Some("5"))),
+        "expected a Logout"
+    );
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::Send(m) if m.msg_type() == Some("A"))),
+        "must not send a Logon reply for a rejected too-low-seq Logon"
+    );
+}
+
 #[test]
 fn test_request_is_answered_with_heartbeat() {
     let mut s = logged_on_acceptor();
@@ -162,4 +198,52 @@ fn logged_on_acceptor() -> Session {
     s.handle(Event::Received(inbound("A", 1, Some(1), None)));
     assert_eq!(s.state(), SessionState::LoggedOn);
     s
+}
+
+// --- T078 (US8, feature 006): inbound DefaultApplVerID (tag 1137, Logon-only body field, per
+// `FIXT11.fixdict`'s own message definition) auto-extraction (GAP-18c part 1) ---
+
+fn inbound_with_appl_ver_id(seq: i64, hb: Option<i64>, appl_ver_id: &str) -> Message {
+    let mut m = inbound("A", seq, hb, None);
+    m.body.set(Field::string(1137, appl_ver_id));
+    m
+}
+
+#[test]
+fn logon_carrying_appl_ver_id_is_negotiated() {
+    let mut s = Session::new(cfg(Role::Acceptor));
+    s.handle(Event::Connected);
+    assert_eq!(s.negotiated_appl_ver_id(), None);
+    s.handle(Event::Received(inbound_with_appl_ver_id(1, Some(1), "9")));
+    assert_eq!(s.negotiated_appl_ver_id(), Some("9"));
+}
+
+#[test]
+fn logon_without_appl_ver_id_leaves_it_unnegotiated() {
+    let mut s = Session::new(cfg(Role::Acceptor));
+    s.handle(Event::Connected);
+    s.handle(Event::Received(inbound("A", 1, Some(1), None)));
+    assert_eq!(s.negotiated_appl_ver_id(), None);
+}
+
+#[test]
+fn a_later_logon_renegotiates_appl_ver_id() {
+    // A relogon (e.g. after a disconnect/reconnect cycle) with a different ApplVerID replaces the
+    // previously negotiated value.
+    let mut s = Session::new(cfg(Role::Acceptor));
+    s.handle(Event::Connected);
+    s.handle(Event::Received(inbound_with_appl_ver_id(1, Some(1), "8")));
+    assert_eq!(s.negotiated_appl_ver_id(), Some("8"));
+
+    // No explicit "Disconnected" event exists in this sans-IO state machine (the transport
+    // layer just drops the TCP connection); `Event::Connected` unconditionally resets back to
+    // `AwaitingLogon` regardless of prior state, which is how a reconnect is simulated here.
+    s.handle(Event::Connected);
+    // seq=2, not 1: the state machine's inbound sequence expectation (next_in_seq) already
+    // advanced past 1 from the first Logon and isn't reset by `Event::Connected` alone (only a
+    // real `ResetSeqNumFlag=Y` Logon or `Session::reset()` would do that) -- a stale seq=1 here
+    // would hit the too-low-MsgSeqNum rejection path before ever reaching the ApplVerID
+    // extraction, producing a misleading false negative rather than exercising renegotiation.
+    s.handle(Event::Received(inbound_with_appl_ver_id(2, Some(1), "9")));
+    assert_eq!(s.negotiated_appl_ver_id(), Some("9"));
 }

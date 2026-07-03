@@ -57,6 +57,30 @@ async fn file_store_survives_restart() {
     cleanup(&dir);
 }
 
+// --- T031 (US3, feature 006): FileStore/CachedFileStore save_and_advance_sender (GAP-49/FR-015) ---
+
+#[tokio::test]
+async fn file_store_save_and_advance_sender_is_atomic_like_the_other_backends() {
+    let dir = unique_dir();
+    let s = FileStore::open(&dir).unwrap();
+    s.set_next_sender_seq(5).await.unwrap();
+    s.save_and_advance_sender(5, b"atomic").await.unwrap();
+    assert_eq!(s.next_sender_seq().await.unwrap(), 6);
+    assert_eq!(s.get(5, 5).await.unwrap(), vec![(5, b"atomic".to_vec())]);
+    cleanup(&dir);
+}
+
+#[tokio::test]
+async fn cached_file_store_save_and_advance_sender_is_atomic_like_the_other_backends() {
+    let dir = unique_dir();
+    let s = CachedFileStore::open(&dir).unwrap();
+    s.set_next_sender_seq(5).await.unwrap();
+    s.save_and_advance_sender(5, b"atomic").await.unwrap();
+    assert_eq!(s.next_sender_seq().await.unwrap(), 6);
+    assert_eq!(s.get(5, 5).await.unwrap(), vec![(5, b"atomic".to_vec())]);
+    cleanup(&dir);
+}
+
 #[tokio::test]
 async fn cached_file_store_survives_restart() {
     let dir = unique_dir();

@@ -27,6 +27,27 @@ fn backend<E: std::fmt::Display>(e: E) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+/// BUG-14/FR-017 (feature 006): ported from `sql.rs`'s identical function (duplicated, not
+/// shared — `sql`/`mssql` are independently feature-gated modules, so `mssql` can compile
+/// without the `sql` feature enabled). A conservative allowlist (ASCII alphanumeric/underscore,
+/// starting with a letter or underscore, max 64 chars) for a table identifier that will be
+/// interpolated directly into T-SQL via `format!`.
+fn valid_identifier(s: &str) -> Result<(), StoreError> {
+    let ok = !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(StoreError::Backend(format!(
+            "{s:?} is not a valid SQL table identifier"
+        )))
+    }
+}
+
 fn now_unix() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
@@ -45,6 +66,15 @@ fn parse_url(url: &str) -> Result<Config, StoreError> {
                 "expected an mssql:// or sqlserver:// URL, got {url:?}"
             ))
         })?;
+
+    // BUG-10/FR-019 (feature 006): the real QuickFIX/J MSSQL JDBC grammar is semicolon-delimited
+    // properties with no path segment (`host[:port][;databaseName=X;user=Y;password=Z;...]`),
+    // detected here by the presence of `;` — additive to, not a replacement for, the existing
+    // TrueFix-native `user:password@host[:port]/database` shorthand parsed below.
+    if rest.contains(';') {
+        return parse_semicolon_form(rest);
+    }
+
     let (userinfo, hostpart) = rest
         .split_once('@')
         .ok_or_else(|| backend("mssql URL must be user:password@host[:port]/database"))?;
@@ -54,20 +84,119 @@ fn parse_url(url: &str) -> Result<Config, StoreError> {
     let (hostport, database) = hostpart
         .split_once('/')
         .ok_or_else(|| backend("mssql URL must include /database"))?;
-    let (host, port) = match hostport.split_once(':') {
-        Some((h, p)) => (
+    let (host, port) = parse_host_port(hostport)?;
+
+    let mut config = Config::new();
+    config.host(host);
+    config.port(port);
+    config.database(database);
+    config.authentication(AuthMethod::sql_server(
+        percent_decode(user),
+        percent_decode(password),
+    ));
+    config.trust_cert();
+    Ok(config)
+}
+
+/// GAP-55/FR-020 (feature 006): decode the minimal set of reserved-character percent-escapes
+/// `splice_credentials` (`truefix-config`) may have applied to `JdbcUser`/`JdbcPassword` before
+/// splicing them into this URL — matching that function's encoder exactly (`%25`/`%40`/`%3A`/
+/// `%2F`), plus any other well-formed `%XX` escape, so a credential round-trips correctly rather
+/// than being passed to authentication as the literal escaped text.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
+        let escape = (b == b'%')
+            .then(|| bytes.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escape {
+            Some(byte) => {
+                out.push(byte);
+                i += 3;
+            }
+            None => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn parse_host_port(hostport: &str) -> Result<(&str, u16), StoreError> {
+    match hostport.split_once(':') {
+        Some((h, p)) => Ok((
             h,
             p.parse::<u16>()
                 .map_err(|_| backend(format!("invalid port {p:?}")))?,
-        ),
-        None => (hostport, 1433),
+        )),
+        None => Ok((hostport, 1433)),
+    }
+}
+
+/// The real QuickFIX/J MSSQL JDBC grammar: `host[:port][;databaseName=X;user=Y;password=Z;...]`,
+/// optionally still carrying `user:password@` ahead of the host (as `splice_credentials` would
+/// produce when `JdbcUser`/`JdbcPassword` are configured alongside a bare semicolon-form
+/// `JdbcURL`). Unrecognized properties (e.g. `encrypt=true`) are accepted and ignored.
+fn parse_semicolon_form(rest: &str) -> Result<Config, StoreError> {
+    let (authority, props_str) = rest
+        .split_once(';')
+        .ok_or_else(|| backend("expected `;`-delimited properties"))?;
+    let (userinfo, hostport) = match authority.split_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, authority),
+    };
+    let (host, port) = parse_host_port(hostport)?;
+
+    let mut database = None;
+    let mut prop_user = None;
+    let mut prop_password = None;
+    for prop in props_str.split(';') {
+        if prop.is_empty() {
+            continue;
+        }
+        let (k, v) = prop
+            .split_once('=')
+            .ok_or_else(|| backend(format!("malformed property {prop:?}")))?;
+        match k.trim().to_ascii_lowercase().as_str() {
+            "databasename" => database = Some(v.to_owned()),
+            "user" => prop_user = Some(v.to_owned()),
+            "password" => prop_password = Some(v.to_owned()),
+            _ => {} // ignore unrecognized properties
+        }
+    }
+    let database =
+        database.ok_or_else(|| backend("mssql URL must include a databaseName property"))?;
+    let (user, password) = match userinfo {
+        Some(ui) => {
+            let (u, p) = ui
+                .split_once(':')
+                .ok_or_else(|| backend("mssql URL must include user:password"))?;
+            (u.to_owned(), p.to_owned())
+        }
+        None => {
+            let u = prop_user.ok_or_else(|| {
+                backend("mssql URL must include a user property or user:password@")
+            })?;
+            let p = prop_password.ok_or_else(|| {
+                backend("mssql URL must include a password property or user:password@")
+            })?;
+            (u, p)
+        }
     };
 
     let mut config = Config::new();
     config.host(host);
     config.port(port);
     config.database(database);
-    config.authentication(AuthMethod::sql_server(user, password));
+    config.authentication(AuthMethod::sql_server(
+        percent_decode(&user),
+        percent_decode(&password),
+    ));
     config.trust_cert();
     Ok(config)
 }
@@ -132,6 +261,13 @@ impl MssqlStore {
 
     /// Connect using a full [`MssqlStoreConfig`].
     pub async fn connect_with_config(config: MssqlStoreConfig) -> Result<Self, StoreError> {
+        // BUG-14/FR-017 (feature 006): validate configuration-sourced table identifiers before
+        // any query interpolates them, matching the identifier validation `SqlStore`/`SqlLog`/
+        // `MssqlLog` already perform — `MssqlStore` was the one backend inconsistent with its
+        // siblings, producing a raw `tiberius` SQL-syntax error on a typo'd name instead of a
+        // clean, typed configuration error.
+        valid_identifier(&config.sessions_table)?;
+        valid_identifier(&config.messages_table)?;
         let tiberius_config = parse_url(&config.url)?;
         let client = connect_client(tiberius_config).await?;
         let store = Self {
@@ -373,5 +509,53 @@ impl MessageStore for MssqlStore {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- T042 (US4, feature 006): real QuickFIX/J MSSQL JDBC grammar (BUG-10/FR-019) ---
+
+    #[test]
+    fn semicolon_form_with_user_password_properties_parses() {
+        let config = parse_url(
+            "sqlserver://localhost:1433;databaseName=quickfixj;user=sa;password=Secret1!",
+        )
+        .expect("real QuickFIX/J semicolon-delimited MSSQL URL should parse");
+        // `tiberius::Config` doesn't expose getters for host/port/database/user directly, but a
+        // successful parse (vs. the pre-fix raw split_once('@') panic-adjacent Err) is itself the
+        // regression signal -- BUG-10 reported this exact URL shape failing to parse at all.
+        let _ = config;
+    }
+
+    #[test]
+    fn semicolon_form_without_port_defaults_to_1433() {
+        parse_url("sqlserver://localhost;databaseName=quickfixj;user=sa;password=Secret1!")
+            .expect("semicolon-form URL without an explicit port should default to 1433");
+    }
+
+    #[test]
+    fn semicolon_form_with_spliced_credentials_ahead_of_host_also_parses() {
+        // Matches what splice_credentials (truefix-config) produces when JdbcUser/JdbcPassword
+        // are configured alongside a bare semicolon-form JdbcURL.
+        parse_url("sqlserver://sa:Secret1!@localhost:1433;databaseName=quickfixj")
+            .expect("semicolon-form URL with spliced user:password@ should also parse");
+    }
+
+    #[test]
+    fn semicolon_form_missing_database_name_is_a_clean_error() {
+        let err = match parse_url("sqlserver://localhost;user=sa;password=Secret1!") {
+            Ok(_) => panic!("expected an error for a missing databaseName property"),
+            Err(e) => e,
+        };
+        assert!(format!("{err}").contains("databaseName"));
+    }
+
+    #[test]
+    fn path_based_shorthand_form_still_parses_unchanged() {
+        parse_url("sqlserver://sa:Secret1!@localhost:1433/quickfixj")
+            .expect("the existing TrueFix-native path-based shorthand must remain accepted");
     }
 }

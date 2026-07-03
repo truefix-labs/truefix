@@ -65,6 +65,25 @@ fn stale_sending_time_aborts_session() {
     assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
 }
 
+// --- T011 (US1, feature 006): unparseable SendingTime bypasses the latency check (B7/FR-009) ---
+
+#[test]
+fn unparseable_sending_time_fails_the_latency_check() {
+    let mut c = SessionConfig::new("FIX.4.4", "ME", "YOU", Role::Acceptor);
+    c.check_latency = true;
+    let mut s = Session::new(c);
+    s.handle(Event::Connected);
+    let mut m = logon("YOU", "ME", 1);
+    m.header.set(Field::string(52, "not-a-timestamp"));
+    let actions = s.handle(Event::Received(m));
+    assert_eq!(
+        s.state(),
+        SessionState::Disconnected,
+        "an unparseable SendingTime must fail the latency check, not silently pass it"
+    );
+    assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
+}
+
 #[test]
 fn current_sending_time_is_accepted() {
     let mut c = SessionConfig::new("FIX.4.4", "ME", "YOU", Role::Acceptor);

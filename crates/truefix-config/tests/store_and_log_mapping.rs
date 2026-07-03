@@ -2,7 +2,7 @@
 //! `FileLogPath`/its output switches map from a settings file into a runnable `ResolvedSession`
 //! (FR-025/FR-026).
 
-use truefix_config::{ResolvedSession, SessionSettings};
+use truefix_config::{LogKind, ResolvedSession, SessionSettings};
 use truefix_store::StoreConfig;
 
 fn resolved(cfg: &str) -> ResolvedSession {
@@ -124,6 +124,24 @@ fn an_unrecognized_jdbc_url_scheme_is_a_typed_unsupported_backend_error() {
             assert_eq!(scheme, "oracle")
         }
         other => panic!("expected UnsupportedBackend, got {other:?}"),
+    }
+}
+
+// --- T041 (US4, feature 006): jdbc:h2: rejected cleanly, never silently misrouted (BUG-10/FR-018) ---
+
+#[test]
+fn a_jdbc_h2_url_is_a_typed_unsupported_backend_error_not_a_silent_sqlite_misroute() {
+    let cfg = base("JdbcURL=jdbc:h2:mem:quickfixj\n");
+    let err = SessionSettings::parse(&cfg).unwrap().resolve().unwrap_err();
+    match err {
+        truefix_config::ConfigError::UnsupportedBackend { scheme, .. } => {
+            assert_eq!(scheme, "h2");
+        }
+        other => panic!(
+            "expected UnsupportedBackend for jdbc:h2:, got {other:?} -- a silent misroute to a \
+             SQLite file named after the raw scheme string would be far worse than this failing \
+             at all"
+        ),
     }
 }
 
@@ -281,6 +299,26 @@ fn an_already_credentialed_jdbc_url_is_not_double_spliced() {
     }
 }
 
+// --- T043 (US4, feature 006): credential percent-encoding (GAP-55/FR-020) ---
+
+#[cfg(feature = "sql")]
+#[test]
+fn jdbc_user_and_password_containing_reserved_characters_are_percent_encoded_when_spliced() {
+    let rs = resolved(&base(
+        "JdbcURL=jdbc:postgresql://localhost/db\nJdbcUser=ali@ce\nJdbcPassword=p:a/ss\n",
+    ));
+    match rs.store {
+        StoreConfig::Sql { url, .. } => {
+            assert_eq!(
+                url, "postgresql://ali%40ce:p%3Aa%2Fss@localhost/db",
+                "reserved characters in JdbcUser/JdbcPassword must be percent-encoded so they \
+                 don't corrupt the URL's own authority-delimiter structure"
+            );
+        }
+        other => panic!("expected StoreConfig::Sql, got {other:?}"),
+    }
+}
+
 // --- T090 (US8, feature 005): JDBC pool/table-name keys apply to StoreConfig::Sql/Mssql
 // (FR-020/021) ---
 
@@ -380,4 +418,49 @@ fn jdbc_table_name_keys_apply_to_the_mssql_store() {
         }
         other => panic!("expected StoreConfig::Mssql, got {other:?}"),
     }
+}
+
+// --- T081 (US8, feature 006): `.cfg`-selectable `ScreenLog`/`TracingLog`/`CompositeLog`
+// (GAP-21) ---
+
+#[test]
+fn log_key_absent_leaves_log_kind_none() {
+    let rs = resolved(&base(""));
+    assert_eq!(rs.log_kind, None);
+}
+
+#[test]
+fn log_screen_selects_screen_log_kind() {
+    let rs = resolved(&base("Log=Screen\n"));
+    assert_eq!(rs.log_kind, Some(LogKind::Screen));
+}
+
+#[test]
+fn log_tracing_selects_tracing_log_kind_case_insensitively() {
+    let rs = resolved(&base("Log=TRACING\n"));
+    assert_eq!(rs.log_kind, Some(LogKind::Tracing));
+}
+
+#[test]
+fn log_composite_selects_composite_log_kind() {
+    let rs = resolved(&base("Log=Composite\n"));
+    assert_eq!(rs.log_kind, Some(LogKind::Composite));
+}
+
+#[test]
+fn log_file_and_sql_are_accepted_as_a_no_op_synonym() {
+    assert_eq!(resolved(&base("Log=File\n")).log_kind, None);
+    assert_eq!(resolved(&base("Log=Sql\n")).log_kind, None);
+}
+
+#[test]
+fn log_unrecognized_value_is_a_typed_error() {
+    let err = SessionSettings::parse(&base("Log=Bogus\n"))
+        .unwrap()
+        .resolve()
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        truefix_config::ConfigError::InvalidValue { .. }
+    ));
 }

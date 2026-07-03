@@ -12,6 +12,7 @@ publish = false
 truefix-core.workspace = true
 truefix-dict.workspace = true
 time.workspace = true
+time-tz.workspace = true
 async-trait.workspace = true
 
 [[bench]]

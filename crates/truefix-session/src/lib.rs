@@ -29,6 +29,8 @@ mod time_util;
 pub use application::Application;
 pub use config::{Role, SessionConfig, TimeStampPrecision};
 pub use schedule::Schedule;
-pub use schedule_reset::{decide as decide_schedule_action, ScheduleAction};
+pub use schedule_reset::{
+    decide as decide_schedule_action, decide_recurring_reset, ScheduleAction,
+};
 pub use session_id::SessionId;
 pub use state::{Action, Event, Session, SessionState, SessionStatus};
