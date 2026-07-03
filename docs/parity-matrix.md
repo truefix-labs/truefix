@@ -496,7 +496,7 @@ Phase 4 (early) got AT coverage to 8 versions/318 runs; this closeout brings in 
 - Confirmed (T055) that US3's field-order scenarios (`2t_FirstThreeFieldsOutOfOrder`,
   `14g_HeaderBodyTrailerFieldsOutOfOrder`, `15_HeaderAndBodyFieldsOrderedDifferently`) and the
   `validateChecksum` suite were already folded into `server_suite()`/their own dedicated test —
-  `docs/todo-gap-analysis.md`'s TODO-01 checkboxes were stale (still marked "deferred until US3
+  `docs/todo/001.md`'s TODO-01 checkboxes were stale (still marked "deferred until US3
   lands") and have been corrected to reflect actual completion.
 
 **Honest scope framing, not a claimed "73/73"**: this project does not vendor or otherwise verify
@@ -505,7 +505,7 @@ so "100% of the 73 published server scenarios" is not something this codebase ca
 itself against. What *is* verifiable and enforced: every scenario this project has itself authored
 passes across every version it targets (353/353, CI-gated), the corpus cannot silently shrink
 (`coverage.rs`'s regression floor), and every individually-deferred scenario name is recorded with an
-explicit reason in `docs/todo-gap-analysis.md`'s TODO-01 (harness capability gaps, dictionary-content
+explicit reason in `docs/todo/001.md`'s TODO-01 (harness capability gaps, dictionary-content
 gaps, or genuinely ambiguous reference semantics this project won't guess at) rather than silently
 dropped.
 
@@ -705,11 +705,11 @@ scope to fix here).
 spec/data-model.md, both are library-level additions selectable only via `StoreConfig::Redb`/`Mongo`
 through the direct Rust API, matching `SqlLog`/`MssqlLog`'s precedent that not every store/log backend
 is `.cfg`-selectable (only `LogConfig::Screen`/`File`/`Tracing`/`Composite` are). See
-`docs/todo-gap-analysis.md`'s GAP-01–GAP-06 entries for the user-facing gap-closure summary.
+`docs/todo/001.md`'s GAP-01–GAP-06 entries for the user-facing gap-closure summary.
 
 ## Feature 005 — Stance Tracking Scaffold (T002) — final sweep (T099)
 
-Config keys this feature changes stance for (`docs/engine-comparison-gaps.md`'s BUG-03/BUG-04/
+Config keys this feature changes stance for (`docs/todo/002.md`'s BUG-03/BUG-04/
 doc-accuracy findings, FR-003/004/006/012/013/014/015/016/020/021), tracked here as each landed; see
 `crates/truefix-config/src/keys.rs` (`APPENDIX_A_KEYS`) for the authoritative per-key registry.
 
@@ -731,4 +731,4 @@ Also landed this feature, with no `.cfg`-key-stance change of their own (protoco
 config surface): `GAP-07`/`08`/`18a` (US3, session-state-machine safeguards), `GAP-09` (US4, chunked
 resend), `GAP-38`/`39`/`41` (US7, store/log hardening), and the entire US9 dictionary/codec cluster
 (`GAP-22`–`29`/`32`/`33`) — see `docs/acceptance-record.md`'s "005" section for the full narrative and
-`docs/engine-comparison-gaps.md` for the struck-through gap citations.
+`docs/todo/002.md` for the struck-through gap citations.

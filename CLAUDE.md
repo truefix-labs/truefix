@@ -4,7 +4,7 @@ shell commands, and other important information, read the current plan:
 `specs/005-engine-gap-remediation/plan.md`
 
 Active feature: **005-engine-gap-remediation** — remediate every gap found by a 2026-07-02 full-code
-audit against QuickFIX/J + QuickFIX/Go, recorded in `docs/engine-comparison-gaps.md` (which superseded
+audit against QuickFIX/J + QuickFIX/Go, recorded in `docs/todo/002.md` (which superseded
 two untracked scratch analyses and a full sweep of every `Recognized`-stance `.cfg` key). Built on
 **001-fix-engine-parity** (layered cargo workspace), **002-qfj-parity-completion** (config-driven
 start, session-owned resend infra, group parsing, typed callback outcomes, all-message codegen,

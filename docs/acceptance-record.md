@@ -118,7 +118,7 @@ before consuming the inbound Logon); see `truefix-session` `state_machine.rs`.
   plus the main `server_acceptance_suite_passes`). A new `crates/truefix-at/tests/coverage.rs`
   enforces a **regression floor** (9 versions present, ≥353 scenario runs, all 3 special suites
   non-empty with distinct names) as a permanent CI gate against silent corpus shrinkage.
-  `docs/todo-gap-analysis.md`'s TODO-01 remains the authoritative, item-by-item record of every
+  `docs/todo/001.md`'s TODO-01 remains the authoritative, item-by-item record of every
   individually-deferred scenario name and why (a harness capability this feature didn't build — a
   non-dynamic fixed-identity acceptor mode, predicate-based `ExpectMsg` for outbound
   timestamp-*format*-precision assertions [distinct from the `timestamps_suite()`'s
@@ -235,7 +235,7 @@ before consuming the inbound Logon); see `truefix-session` `state_machine.rs`.
 
 ## 004 — Engine wiring & extra backends
 
-Closes GAP-01–GAP-06 from the 2026-07-02 gap analysis (`docs/todo-gap-analysis.md`). None of the six
+Closes GAP-01–GAP-06 from the 2026-07-02 gap analysis (`docs/todo/001.md`). None of the six
 gaps were protocol-correctness defects — this feature touches no session-state-machine/codec/protocol
 behavior, and the existing 353/353-scenario AT suite staying green **and unmodified** is itself the
 release gate (FR-010), not a target for new scenarios.
@@ -318,12 +318,12 @@ release gate (FR-010), not a target for new scenarios.
 
 ## 005 — Engine gap remediation
 
-Closes every P0/P1 item from the 2026-07-02 full-code audit (`docs/engine-comparison-gaps.md`), spanning
+Closes every P0/P1 item from the 2026-07-02 full-code audit (`docs/todo/002.md`), spanning
 four real bugs, four session-state-machine protocol-correctness gaps, and a long tail of
 session/transport/store-log/dictionary-codec feature-completeness gaps — the largest being full parity
 with QuickFIX/J's bundled dictionary field/message coverage across all 9 targeted versions. Unlike 004,
 this feature touches session-state-machine/codec/protocol behavior, so the AT suite is expected to
-*grow*, not stay unmodified. See `docs/engine-comparison-gaps.md` for the closed `GAP-##`/`BUG-##`
+*grow*, not stay unmodified. See `docs/todo/002.md` for the closed `GAP-##`/`BUG-##`
 citations (struck through) and `specs/005-engine-gap-remediation/tasks.md` for full per-task disclosure.
 
 - **Correctness bugs: `#` truncation, Signature/93 mapping (US1, BUG-01/02, FR-001/002)**: `strip_comment`
@@ -421,7 +421,7 @@ citations (struck through) and `specs/005-engine-gap-remediation/tasks.md` for f
 - Broaden the corpus from one representative scenario per behavior class toward the full Appendix B
   enumeration (additional permutations within already-covered classes).
 - Per-session (not acceptor-group-union) `AllowedRemoteAddresses` enforcement (`GAP-17`, partially
-  addressed by 005's `AcceptorBuilder` wiring — see `docs/engine-comparison-gaps.md`).
-- The remaining open items in `docs/engine-comparison-gaps.md` not closed by 005: `GAP-10`/`12`/`13`/
+  addressed by 005's `AcceptorBuilder` wiring — see `docs/todo/002.md`).
+- The remaining open items in `docs/todo/002.md` not closed by 005: `GAP-10`/`12`/`13`/
   `18c`/`19`/`20`/`21`/`31`/`34`/`35`/`36`/`37`/`40`/`42`/`44`/`45`/`46` (each individually low-priority
   or explicitly deferred per that document's own recommendation).

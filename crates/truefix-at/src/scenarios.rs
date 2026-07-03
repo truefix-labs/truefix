@@ -1702,7 +1702,7 @@ pub fn validate_checksum_suite() -> Vec<Scenario> {
 /// assertions on *outbound* SendingTime — e.g. millisecond vs. second precision on a non-fixed,
 /// "now"-derived value — would need `ExpectMsg` to support predicate/format matching rather than
 /// only exact-value matching; a disclosed harness-capability gap, not a protocol gap, tracked in
-/// `docs/todo-gap-analysis.md`'s TODO-01). Reuses `check_latency_timestamps` as this suite's content.
+/// `docs/todo/001.md`'s TODO-01). Reuses `check_latency_timestamps` as this suite's content.
 pub fn timestamps_suite() -> Vec<Scenario> {
     vec![check_latency_timestamps("FIX.4.4")]
 }

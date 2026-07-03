@@ -1,6 +1,6 @@
 //! T056 (US1 closeout) — AT suite-completeness regression floor (SC-001).
 //!
-//! `docs/todo-gap-analysis.md`'s TODO-01 is the authoritative, item-by-item record of exactly
+//! `docs/todo/001.md`'s TODO-01 is the authoritative, item-by-item record of exactly
 //! which of QuickFIX/J's published scenarios are covered vs. explicitly deferred (with reasons —
 //! e.g. harness limitations, architectural mismatches, or ambiguous reference semantics this
 //! project won't guess at without copying QFJ source, per Principle III). This file does not
@@ -42,7 +42,7 @@ fn server_suite_scenario_run_count_does_not_regress() {
         "server_suite() produced {total_runs} scenario runs, below the 353-run floor established \
          at US1 closeout (003) — a drop usually means a scenario or version was accidentally \
          dropped rather than intentionally deferred (deferrals are tracked in \
-         docs/todo-gap-analysis.md's TODO-01, not by shrinking this suite)"
+         docs/todo/001.md's TODO-01, not by shrinking this suite)"
     );
 }
 
