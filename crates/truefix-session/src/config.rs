@@ -110,12 +110,45 @@ pub struct SessionConfig {
     /// action when local history can't be fully trusted, rather than resending possibly-incomplete
     /// data. Default `false`.
     pub force_resend_when_corrupted_store: bool,
+    /// Reject (Logout + disconnect) an inbound message with `MsgSeqNum` lower than expected and
+    /// `PossDupFlag=Y` when it's missing `OrigSendingTime` (US3, feature 005, GAP-08/FR-009) — in
+    /// addition to the unconditional check (always active regardless of this switch) that rejects
+    /// such a message when `OrigSendingTime` is present but later than the message's own
+    /// `SendingTime` (a replay/falsification signal). Default `false`, matching QuickFIX/J's
+    /// `RequiresOrigSendingTime` default.
+    pub requires_orig_sending_time_on_low_seq: bool,
     /// Bound the inbound *application*-message channel to at most this many pending messages
     /// (`InChanCapacity`; US14, FR-019). Administrative/session-level traffic (heartbeat,
     /// TestRequest, ResendRequest, Logon, Logout, garbled-frame handling) always travels on a
     /// separate, unbounded, priority-drained channel, so it is never starved by a full application
     /// queue. `None` (the default) preserves today's unbounded behavior for both.
     pub in_chan_capacity: Option<usize>,
+    /// Optional SenderSubID (GAP-47/FR-012, feature 005): part of the session identity, alongside
+    /// [`Self::sender_comp_id`].
+    pub sender_sub_id: Option<String>,
+    /// Optional SenderLocationID (GAP-47/FR-012, feature 005).
+    pub sender_location_id: Option<String>,
+    /// Optional TargetSubID (GAP-47/FR-012, feature 005).
+    pub target_sub_id: Option<String>,
+    /// Optional TargetLocationID (GAP-47/FR-012, feature 005).
+    pub target_location_id: Option<String>,
+    /// Optional session qualifier (GAP-47/FR-012/FR-013, feature 005): disambiguates two sessions
+    /// that otherwise share the same BeginString/SenderCompID/TargetCompID, letting both start as
+    /// distinct, independently addressable sessions.
+    pub session_qualifier: Option<String>,
+    /// Stepped reconnect-backoff delays, in seconds (GAP-14/FR-014, feature 005): the reconnect
+    /// loop indexes into this by attempt number, clamped (sticking) at the last element once
+    /// exhausted. Empty (the default) preserves the single-`reconnect_interval` behavior
+    /// unchanged (`ReconnectInterval` also accepts a space/comma-separated list, which populates
+    /// this field instead).
+    pub reconnect_interval_steps: Vec<u32>,
+    /// Local address an initiator binds before connecting out (GAP-15/FR-015, feature 005;
+    /// `SocketLocalHost`+`SocketLocalPort`). `None` (the default) preserves today's
+    /// OS-chosen-ephemeral-port behavior.
+    pub local_bind_addr: Option<std::net::SocketAddr>,
+    /// Bound an initiator's connect attempt (GAP-16/FR-016, feature 005; `SocketConnectTimeout`).
+    /// `None` (the default) preserves today's unbounded-wait behavior.
+    pub connect_timeout: Option<std::time::Duration>,
 }
 
 /// Sub-second precision of emitted SendingTime timestamps (TimeStampPrecision; FR-009).
@@ -174,16 +207,30 @@ impl SessionConfig {
             max_scheduled_write_requests: None,
             continue_initialization_on_error: false,
             force_resend_when_corrupted_store: false,
+            requires_orig_sending_time_on_low_seq: false,
             in_chan_capacity: None,
+            sender_sub_id: None,
+            sender_location_id: None,
+            target_sub_id: None,
+            target_location_id: None,
+            session_qualifier: None,
+            reconnect_interval_steps: Vec::new(),
+            local_bind_addr: None,
+            connect_timeout: None,
         }
     }
 
     /// The [`SessionId`] this configuration describes.
     pub fn session_id(&self) -> SessionId {
-        SessionId::new(
+        SessionId::new_full(
             self.begin_string.clone(),
             self.sender_comp_id.clone(),
+            self.sender_sub_id.clone(),
+            self.sender_location_id.clone(),
             self.target_comp_id.clone(),
+            self.target_sub_id.clone(),
+            self.target_location_id.clone(),
+            self.session_qualifier.clone(),
         )
     }
 }

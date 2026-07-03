@@ -67,10 +67,16 @@ pub struct SqlLogConfig {
     pub include_heartbeats: bool,
     /// Connection-pool settings.
     pub pool: SqlLogPoolOptions,
+    /// The session identity stamped onto every row's `session_id` column (GAP-41/FR-019,
+    /// feature 005), letting a row be audited/replayed on its own without an external join —
+    /// even though table *selection* already segregates sessions, this makes that fact explicit
+    /// per-row (and supports intentionally sharing one table across sessions in the future).
+    pub session_id: String,
 }
 
 impl SqlLogConfig {
-    /// A config using `url` with default table names and pool settings.
+    /// A config using `url` with default table names, pool settings, and `session_id`
+    /// `"default"`.
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -79,6 +85,7 @@ impl SqlLogConfig {
             event_table: "log_event".to_owned(),
             include_heartbeats: true,
             pool: SqlLogPoolOptions::default(),
+            session_id: "default".to_owned(),
         }
     }
 }
@@ -154,11 +161,14 @@ async fn connect_pool(url: &str, pool_cfg: &SqlLogPoolOptions) -> Result<Pool, L
 }
 
 async fn ensure_table(pool: &Pool, table: &str) -> Result<(), LogError> {
+    // GAP-41/FR-019 (feature 005): `logged_at` (Unix seconds) + `session_id` widen every row so
+    // it can be audited/replayed on its own, without an external join.
     match pool {
         Pool::Sqlite(p) => {
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "CREATE TABLE IF NOT EXISTS {table} (\
-                 id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL)"
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, \
+                 logged_at BIGINT, session_id TEXT)"
             )))
             .execute(p)
             .await
@@ -166,7 +176,8 @@ async fn ensure_table(pool: &Pool, table: &str) -> Result<(), LogError> {
         }
         Pool::Postgres(p) => {
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "CREATE TABLE IF NOT EXISTS {table} (id BIGSERIAL PRIMARY KEY, text TEXT NOT NULL)"
+                "CREATE TABLE IF NOT EXISTS {table} (id BIGSERIAL PRIMARY KEY, text TEXT NOT NULL, \
+                 logged_at BIGINT, session_id TEXT)"
             )))
             .execute(p)
             .await
@@ -175,42 +186,93 @@ async fn ensure_table(pool: &Pool, table: &str) -> Result<(), LogError> {
         Pool::MySql(p) => {
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "CREATE TABLE IF NOT EXISTS {table} (\
-                 id BIGINT AUTO_INCREMENT PRIMARY KEY, text TEXT NOT NULL)"
+                 id BIGINT AUTO_INCREMENT PRIMARY KEY, text TEXT NOT NULL, \
+                 logged_at BIGINT, session_id VARCHAR(255))"
             )))
             .execute(p)
             .await
             .map_err(io_err)?;
         }
     }
+    // Best-effort widening of a table created before these columns existed; errors (most
+    // commonly "column already exists") are intentionally swallowed.
+    match pool {
+        Pool::Sqlite(p) => {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN logged_at BIGINT"
+            )))
+            .execute(p)
+            .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN session_id TEXT"
+            )))
+            .execute(p)
+            .await;
+        }
+        Pool::Postgres(p) => {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS logged_at BIGINT"
+            )))
+            .execute(p)
+            .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS session_id TEXT"
+            )))
+            .execute(p)
+            .await;
+        }
+        Pool::MySql(p) => {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN logged_at BIGINT"
+            )))
+            .execute(p)
+            .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN session_id VARCHAR(255)"
+            )))
+            .execute(p)
+            .await;
+        }
+    }
     Ok(())
 }
 
-async fn insert_text(pool: &Pool, table: &str, text: &str) {
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+async fn insert_text(pool: &Pool, table: &str, session_id: &str, text: &str) {
     // Best-effort: a write failure drops the entry rather than failing the session (matches the
     // synchronous, infallible `Log` trait contract). Each backend's `execute` yields a distinct
     // concrete `QueryResult` type, so each arm discards its own result rather than unifying.
     match pool {
         Pool::Sqlite(p) => {
             let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "INSERT INTO {table} (text) VALUES (?)"
+                "INSERT INTO {table} (text, logged_at, session_id) VALUES (?, ?, ?)"
             )))
             .bind(text)
+            .bind(now_unix())
+            .bind(session_id)
             .execute(p)
             .await;
         }
         Pool::Postgres(p) => {
             let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "INSERT INTO {table} (text) VALUES ($1)"
+                "INSERT INTO {table} (text, logged_at, session_id) VALUES ($1, $2, $3)"
             )))
             .bind(text)
+            .bind(now_unix())
+            .bind(session_id)
             .execute(p)
             .await;
         }
         Pool::MySql(p) => {
             let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "INSERT INTO {table} (text) VALUES (?)"
+                "INSERT INTO {table} (text, logged_at, session_id) VALUES (?, ?, ?)"
             )))
             .bind(text)
+            .bind(now_unix())
+            .bind(session_id)
             .execute(p)
             .await;
         }
@@ -245,6 +307,7 @@ impl SqlLog {
         let incoming_table = config.incoming_table;
         let outgoing_table = config.outgoing_table;
         let event_table = config.event_table;
+        let session_id = config.session_id;
         tokio::spawn(async move {
             while let Some(entry) = rx.recv().await {
                 match entry {
@@ -254,10 +317,10 @@ impl SqlLog {
                         } else {
                             &outgoing_table
                         };
-                        insert_text(&pool, table, &text).await;
+                        insert_text(&pool, table, &session_id, &text).await;
                     }
                     Entry::Event { text } => {
-                        insert_text(&pool, &event_table, &text).await;
+                        insert_text(&pool, &event_table, &session_id, &text).await;
                     }
                 }
             }

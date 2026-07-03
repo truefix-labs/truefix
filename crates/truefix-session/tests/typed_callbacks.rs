@@ -42,7 +42,7 @@ fn sends(actions: &[Action]) -> Vec<&Message> {
     actions
         .iter()
         .filter_map(|a| match a {
-            Action::Send(m) => Some(m),
+            Action::Send(m) | Action::Resend(m, _) => Some(m),
             Action::Disconnect | Action::ResetStore => None,
         })
         .collect()
@@ -84,7 +84,9 @@ fn discarded_sent_message_gap_fills_instead_of_replaying() {
     order.body.set(Field::string(11, "SUPPRESSED"));
     let actions = s.send_app(order);
     let seq = match &actions[0] {
-        Action::Send(m) => m.header.get(34).and_then(|f| f.as_int().ok()).unwrap_or(0),
+        Action::Send(m) | Action::Resend(m, _) => {
+            m.header.get(34).and_then(|f| f.as_int().ok()).unwrap_or(0)
+        }
         Action::Disconnect | Action::ResetStore => 0,
     };
     assert_eq!(seq, 2);

@@ -24,6 +24,10 @@ fn backend<E: std::fmt::Display>(e: E) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
 /// Connection-pool settings (FR-024), matching the registered `Jdbc*Connection*` keys.
 #[derive(Debug, Clone, Copy)]
 pub struct SqlPoolOptions {
@@ -37,6 +41,12 @@ pub struct SqlPoolOptions {
     pub idle_timeout: Option<Duration>,
     /// `JdbcMaxConnectionLifeTime`: recycle a connection older than this regardless of use.
     pub max_lifetime: Option<Duration>,
+    /// `JdbcConnectionKeepaliveTime` (US8, feature 005, FR-021): parsed and stored for `.cfg`
+    /// drop-in compatibility, but intentionally not wired into `sqlx`'s pool — `sqlx` has no
+    /// keepalive-probe concept distinct from `idle_timeout`/`max_lifetime` (both already exposed
+    /// above), matching this project's existing precedent for QuickFIX/J config keys with no
+    /// underlying Rust mechanism to attach to (e.g. `SessionConfig::closed_resend_interval`).
+    pub keepalive: Option<Duration>,
 }
 
 impl Default for SqlPoolOptions {
@@ -47,6 +57,7 @@ impl Default for SqlPoolOptions {
             acquire_timeout: Duration::from_secs(30),
             idle_timeout: None,
             max_lifetime: None,
+            keepalive: None,
         }
     }
 }
@@ -152,7 +163,8 @@ impl SqlStore {
             Pool::Sqlite(pool) => {
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {sessions} (\
-                     session_id TEXT NOT NULL PRIMARY KEY, sender INTEGER NOT NULL, target INTEGER NOT NULL)"
+                     session_id TEXT NOT NULL PRIMARY KEY, sender INTEGER NOT NULL, target INTEGER NOT NULL, \
+                     creation_time BIGINT)"
                 )))
                 .execute(pool)
                 .await
@@ -166,9 +178,11 @@ impl SqlStore {
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "INSERT OR IGNORE INTO {sessions} (session_id, sender, target) VALUES (?, 1, 1)"
+                    "INSERT OR IGNORE INTO {sessions} (session_id, sender, target, creation_time) \
+                     VALUES (?, 1, 1, ?)"
                 )))
                 .bind(&self.session_id)
+                .bind(now_unix())
                 .execute(pool)
                 .await
                 .map_err(backend)?;
@@ -176,7 +190,8 @@ impl SqlStore {
             Pool::Postgres(pool) => {
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {sessions} (\
-                     session_id TEXT PRIMARY KEY, sender BIGINT NOT NULL, target BIGINT NOT NULL)"
+                     session_id TEXT PRIMARY KEY, sender BIGINT NOT NULL, target BIGINT NOT NULL, \
+                     creation_time BIGINT)"
                 )))
                 .execute(pool)
                 .await
@@ -190,10 +205,11 @@ impl SqlStore {
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "INSERT INTO {sessions} (session_id, sender, target) VALUES ($1, 1, 1) \
-                     ON CONFLICT (session_id) DO NOTHING"
+                    "INSERT INTO {sessions} (session_id, sender, target, creation_time) \
+                     VALUES ($1, 1, 1, $2) ON CONFLICT (session_id) DO NOTHING"
                 )))
                 .bind(&self.session_id)
+                .bind(now_unix())
                 .execute(pool)
                 .await
                 .map_err(backend)?;
@@ -201,7 +217,8 @@ impl SqlStore {
             Pool::MySql(pool) => {
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "CREATE TABLE IF NOT EXISTS {sessions} (\
-                     session_id VARCHAR(255) PRIMARY KEY, sender BIGINT NOT NULL, target BIGINT NOT NULL)"
+                     session_id VARCHAR(255) PRIMARY KEY, sender BIGINT NOT NULL, target BIGINT NOT NULL, \
+                     creation_time BIGINT)"
                 )))
                 .execute(pool)
                 .await
@@ -215,9 +232,50 @@ impl SqlStore {
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "INSERT IGNORE INTO {sessions} (session_id, sender, target) VALUES (?, 1, 1)"
+                    "INSERT IGNORE INTO {sessions} (session_id, sender, target, creation_time) \
+                     VALUES (?, 1, 1, ?)"
                 )))
                 .bind(&self.session_id)
+                .bind(now_unix())
+                .execute(pool)
+                .await
+                .map_err(backend)?;
+            }
+        }
+        // Existing tables created before this column existed won't have it; best-effort add it
+        // (ignored if it already exists) so upgrades don't require a manual migration.
+        let _ = self.add_creation_time_column_if_missing().await;
+        Ok(())
+    }
+
+    /// Best-effort `ALTER TABLE ... ADD COLUMN creation_time` for a sessions table that predates
+    /// this column (GAP-38/FR-017, feature 005). Errors (most commonly "column already exists")
+    /// are intentionally swallowed by the caller — this is a compatibility nicety, not a
+    /// correctness requirement (a freshly created table already has the column from
+    /// `CREATE TABLE`, above).
+    async fn add_creation_time_column_if_missing(&self) -> Result<(), StoreError> {
+        let sessions = &self.sessions_table;
+        match &self.pool {
+            Pool::Sqlite(pool) => {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "ALTER TABLE {sessions} ADD COLUMN creation_time BIGINT"
+                )))
+                .execute(pool)
+                .await
+                .map_err(backend)?;
+            }
+            Pool::Postgres(pool) => {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "ALTER TABLE {sessions} ADD COLUMN IF NOT EXISTS creation_time BIGINT"
+                )))
+                .execute(pool)
+                .await
+                .map_err(backend)?;
+            }
+            Pool::MySql(pool) => {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "ALTER TABLE {sessions} ADD COLUMN creation_time BIGINT"
+                )))
                 .execute(pool)
                 .await
                 .map_err(backend)?;
@@ -464,8 +522,9 @@ impl MessageStore for SqlStore {
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "UPDATE {sessions} SET sender = 1, target = 1 WHERE session_id = ?"
+                    "UPDATE {sessions} SET sender = 1, target = 1, creation_time = ? WHERE session_id = ?"
                 )))
+                .bind(now_unix())
                 .bind(&self.session_id)
                 .execute(pool)
                 .await
@@ -480,8 +539,9 @@ impl MessageStore for SqlStore {
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "UPDATE {sessions} SET sender = 1, target = 1 WHERE session_id = $1"
+                    "UPDATE {sessions} SET sender = 1, target = 1, creation_time = $1 WHERE session_id = $2"
                 )))
+                .bind(now_unix())
                 .bind(&self.session_id)
                 .execute(pool)
                 .await
@@ -496,12 +556,125 @@ impl MessageStore for SqlStore {
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "UPDATE {sessions} SET sender = 1, target = 1 WHERE session_id = ?"
+                    "UPDATE {sessions} SET sender = 1, target = 1, creation_time = ? WHERE session_id = ?"
                 )))
+                .bind(now_unix())
                 .bind(&self.session_id)
                 .execute(pool)
                 .await
                 .map_err(backend)?;
+            }
+        }
+        Ok(())
+    }
+    async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
+        let sessions = &self.sessions_table;
+        let secs: Option<i64> = match &self.pool {
+            Pool::Sqlite(pool) => {
+                let sql = format!("SELECT creation_time FROM {sessions} WHERE session_id = ?");
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(&self.session_id)
+                    .fetch_one(pool)
+                    .await
+                    .map_err(backend)?
+                    .try_get("creation_time")
+                    .map_err(backend)?
+            }
+            Pool::Postgres(pool) => {
+                let sql = format!("SELECT creation_time FROM {sessions} WHERE session_id = $1");
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(&self.session_id)
+                    .fetch_one(pool)
+                    .await
+                    .map_err(backend)?
+                    .try_get("creation_time")
+                    .map_err(backend)?
+            }
+            Pool::MySql(pool) => {
+                let sql = format!("SELECT creation_time FROM {sessions} WHERE session_id = ?");
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(&self.session_id)
+                    .fetch_one(pool)
+                    .await
+                    .map_err(backend)?
+                    .try_get("creation_time")
+                    .map_err(backend)?
+            }
+        };
+        Ok(secs.and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok()))
+    }
+    async fn save_and_advance_sender(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
+        // GAP-39/FR-018 (feature 005): a single transaction per dialect, closing the crash window
+        // between persisting the message and advancing the sender sequence.
+        let messages = &self.messages_table;
+        let sessions = &self.sessions_table;
+        let seq_i = seq as i64;
+        let next = seq_i + 1;
+        match &self.pool {
+            Pool::Sqlite(pool) => {
+                let mut tx = pool.begin().await.map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "INSERT OR REPLACE INTO {messages} (session_id, seq, data) VALUES (?, ?, ?)"
+                )))
+                .bind(&self.session_id)
+                .bind(seq_i)
+                .bind(message)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "UPDATE {sessions} SET sender = ? WHERE session_id = ?"
+                )))
+                .bind(next)
+                .bind(&self.session_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+                tx.commit().await.map_err(backend)?;
+            }
+            Pool::Postgres(pool) => {
+                let mut tx = pool.begin().await.map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "INSERT INTO {messages} (session_id, seq, data) VALUES ($1, $2, $3) \
+                     ON CONFLICT (session_id, seq) DO UPDATE SET data = EXCLUDED.data"
+                )))
+                .bind(&self.session_id)
+                .bind(seq_i)
+                .bind(message)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "UPDATE {sessions} SET sender = $1 WHERE session_id = $2"
+                )))
+                .bind(next)
+                .bind(&self.session_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+                tx.commit().await.map_err(backend)?;
+            }
+            Pool::MySql(pool) => {
+                let mut tx = pool.begin().await.map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "INSERT INTO {messages} (session_id, seq, data) VALUES (?, ?, ?) \
+                     ON DUPLICATE KEY UPDATE data = VALUES(data)"
+                )))
+                .bind(&self.session_id)
+                .bind(seq_i)
+                .bind(message)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "UPDATE {sessions} SET sender = ? WHERE session_id = ?"
+                )))
+                .bind(next)
+                .bind(&self.session_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+                tx.commit().await.map_err(backend)?;
             }
         }
         Ok(())

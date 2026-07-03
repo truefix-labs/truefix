@@ -38,10 +38,13 @@ fn valid_message_passes() {
 fn required_field_missing() {
     let mut m = nos();
     m.body = {
-        // rebuild body without Symbol(55)
+        // rebuild body without Side(54) — a directly-required NewOrderSingle field. Symbol(55) is
+        // no longer usable for this: it's a member of the `Instrument` component, which
+        // NewOrderSingle references as optional (US9, feature 005, FR-031/GAP-24 — a component's
+        // own individual fields are never unconditionally required in the real QFJ schema).
         let mut b = truefix_core::FieldMap::new();
         for f in nos().body.fields() {
-            if f.tag() != 55 {
+            if f.tag() != 54 {
                 b.set(Field::new(f.tag(), f.value_bytes().to_vec()));
             }
         }
@@ -85,7 +88,7 @@ fn user_defined_field_skipped_unless_validated() {
 #[test]
 fn bad_enum_value_is_incorrect() {
     let mut m = nos();
-    m.body.set(Field::string(54, "9")); // Side not in {1,2,5,6}
+    m.body.set(Field::string(54, "Z")); // not a real Side value
     let err = dict()
         .validate(&m, &ValidationOptions::default())
         .unwrap_err();

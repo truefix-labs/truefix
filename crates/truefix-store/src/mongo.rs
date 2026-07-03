@@ -17,11 +17,19 @@ fn backend<E: std::fmt::Display>(e: E) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionDoc {
     session_id: String,
     sender: i64,
     target: i64,
+    /// GAP-38/FR-017 (feature 005): Unix seconds. `Option` so documents written before this field
+    /// existed still deserialize (`None` rather than a hard decode error).
+    #[serde(default)]
+    creation_time: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,6 +117,7 @@ impl MongoStore {
                     session_id: self.session_id.clone(),
                     sender: 1,
                     target: 1,
+                    creation_time: Some(now_unix()),
                 })
                 .await
                 .map_err(backend)?;
@@ -195,11 +204,19 @@ impl MessageStore for MongoStore {
             .delete_many(filter.clone())
             .await
             .map_err(backend)?;
-        let update = doc! { "$set": { "sender": 1i64, "target": 1i64 } };
+        let update =
+            doc! { "$set": { "sender": 1i64, "target": 1i64, "creation_time": now_unix() } };
         self.sessions
             .update_one(filter, update)
             .await
             .map_err(backend)?;
         Ok(())
+    }
+    async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
+        let filter = doc! { "session_id": &self.session_id };
+        let row = self.sessions.find_one(filter).await.map_err(backend)?;
+        Ok(row
+            .and_then(|r| r.creation_time)
+            .and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok()))
     }
 }

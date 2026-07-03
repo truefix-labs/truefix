@@ -8,14 +8,28 @@ use std::time::Duration;
 use redb::{Database, ReadableDatabase, ReadableTableMetadata, TableDefinition};
 use truefix_log::{Log, RedbLog};
 
-const INCOMING: TableDefinition<u64, &str> = TableDefinition::new("log_incoming");
-const OUTGOING: TableDefinition<u64, &str> = TableDefinition::new("log_outgoing");
-const EVENT: TableDefinition<u64, &str> = TableDefinition::new("log_event");
+// T057 (US7, feature 005): widened value type — (logged_at, session_id, text) — GAP-41/FR-019.
+const INCOMING: TableDefinition<u64, (i64, &str, &str)> = TableDefinition::new("log_incoming");
+const OUTGOING: TableDefinition<u64, (i64, &str, &str)> = TableDefinition::new("log_outgoing");
+const EVENT: TableDefinition<u64, (i64, &str, &str)> = TableDefinition::new("log_event");
 
-fn count(db: &Database, table: TableDefinition<u64, &str>) -> u64 {
+fn count(db: &Database, table: TableDefinition<u64, (i64, &str, &str)>) -> u64 {
     let txn = db.begin_read().unwrap();
     let t = txn.open_table(table).unwrap();
     t.len().unwrap()
+}
+
+/// The `(logged_at, session_id, text)` value of the row at `key`.
+fn row(
+    db: &Database,
+    table: TableDefinition<u64, (i64, &str, &str)>,
+    key: u64,
+) -> (i64, String, String) {
+    let txn = db.begin_read().unwrap();
+    let t = txn.open_table(table).unwrap();
+    let guard = t.get(key).unwrap().unwrap();
+    let (logged_at, session_id, text) = guard.value();
+    (logged_at, session_id.to_owned(), text.to_owned())
 }
 
 /// `RedbLog`'s background writer task holds the `redb::Database`'s exclusive file lock until it
@@ -53,6 +67,35 @@ async fn redb_log_persists_messages_and_events() {
     assert_eq!(count(&db, INCOMING), 1, "one incoming message logged");
     assert_eq!(count(&db, OUTGOING), 1, "one outgoing message logged");
     assert_eq!(count(&db, EVENT), 1, "one event logged");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// T057 (US7, feature 005): every row carries a `logged_at` timestamp and `session_id`
+/// (GAP-41/FR-019), so it can be audited/replayed on its own without an external join.
+#[tokio::test]
+async fn redb_log_rows_carry_logged_at_and_session_id() {
+    let path = std::env::temp_dir().join(format!(
+        "truefix-redblog-widened-{}.redb",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    let log = RedbLog::connect_with_config(truefix_log::RedbLogConfig {
+        session_id: "SERVER->CLIENT".to_owned(),
+        ..truefix_log::RedbLogConfig::new(&path)
+    })
+    .await
+    .unwrap();
+    log.on_event("logged on");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop(log);
+
+    let db = open_with_retry(&path).await;
+    let (logged_at, session_id, text) = row(&db, EVENT, 0);
+    assert!(logged_at > 0, "expected a nonzero logged_at timestamp");
+    assert_eq!(session_id, "SERVER->CLIENT");
+    assert_eq!(text, "logged on");
 
     let _ = std::fs::remove_file(&path);
 }

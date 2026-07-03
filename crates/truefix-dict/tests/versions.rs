@@ -82,10 +82,19 @@ fn application_versions_define_newordersingle() {
 fn version_specific_differences() {
     let f40 = load_fix40().unwrap();
     let f44 = load_fix44().unwrap();
-    // FIX 4.4 NewOrderSingle requires more fields (e.g. HandlInst, TransactTime) than 4.0.
+    // FIX 4.4 defines far more fields/messages than 4.0 overall (US9, feature 005, FR-031: both
+    // are now sourced from QuickFIX's real bundled dictionary content, not a hand-picked subset —
+    // this is a much stronger, still-true version-progression signal than comparing
+    // NewOrderSingle's own *required*-tag count, which doesn't reliably grow version-to-version:
+    // 4.4 moves several fields FIX 4.0 declared directly required into optional components
+    // instead, matching the real QFJ schema's own semantics for those fields).
     assert!(
-        f44.message("D").unwrap().required.len() > f40.message("D").unwrap().required.len(),
-        "4.4 NewOrderSingle should require more fields than 4.0"
+        f44.field_count() > f40.field_count(),
+        "4.4 should define more fields than 4.0"
+    );
+    assert!(
+        f44.message_count() > f40.message_count(),
+        "4.4 should define more messages than 4.0"
     );
 
     // FIXT 1.1 defines DefaultApplVerID (1137); FIX 4.4 does not.

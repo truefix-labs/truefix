@@ -30,7 +30,7 @@ pub mod group;
 pub mod message;
 pub mod tags;
 
-pub use codec::{decode, decode_with_groups, encode};
+pub use codec::{decode, decode_with_groups, encode, encode_with_order};
 pub use cracker::MessageCracker;
 pub use error::{BusinessReject, DecodeError, DoNotSend, FieldError, Reject};
 pub use factory::MessageFactory;

@@ -22,7 +22,7 @@ fn dictionary_failure_is_session_level() {
     m.body.set(Field::string(11, "ORD1"));
     m.body.set(Field::string(21, "1"));
     m.body.set(Field::string(55, "AAPL"));
-    m.body.set(Field::string(54, "9")); // bad enum -> validation failure
+    m.body.set(Field::string(54, "Z")); // bad enum -> validation failure
     m.body.set(Field::string(60, "20240101-00:00:00"));
     m.body.set(Field::string(40, "2"));
     let err = d.validate(&m, &ValidationOptions::default()).unwrap_err();

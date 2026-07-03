@@ -59,6 +59,34 @@ async fn mongo_log_persists_messages_and_events_if_available() {
     assert_eq!(events, 1, "one event logged");
 }
 
+/// T058 (US7, feature 005): every document carries a `logged_at` timestamp and `session_id`
+/// (GAP-41/FR-019), so it can be audited/replayed on its own without an external join.
+#[tokio::test]
+async fn mongo_log_documents_carry_logged_at_and_session_id_if_available() {
+    let Ok(uri) = std::env::var("DATABASE_URL_MONGO") else {
+        eprintln!("skipping: DATABASE_URL_MONGO not set");
+        return;
+    };
+
+    let config = MongoLogConfig {
+        event_collection: "t058_log_event".to_owned(),
+        session_id: "SERVER->CLIENT".to_owned(),
+        ..MongoLogConfig::new(&uri)
+    };
+    let log = MongoLog::connect_with_config(config).await.unwrap();
+    log.on_event("logged on");
+
+    let client = Client::with_uri_str(&uri).await.unwrap();
+    let db = client.database("truefix");
+    let collection: Collection<Document> = db.collection("t058_log_event");
+    let _ = count_with_retry(&collection, Duration::from_secs(5)).await;
+    let doc = collection.find_one(doc! {}).await.unwrap().unwrap();
+    let logged_at = doc.get_i64("logged_at").unwrap();
+    let session_id = doc.get_str("session_id").unwrap();
+    assert!(logged_at > 0, "expected a nonzero logged_at timestamp");
+    assert_eq!(session_id, "SERVER->CLIENT");
+}
+
 #[tokio::test]
 async fn mongo_log_heartbeats_n_filters_heartbeats_if_available() {
     let Ok(uri) = std::env::var("DATABASE_URL_MONGO") else {

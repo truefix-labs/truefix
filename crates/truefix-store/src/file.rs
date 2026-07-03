@@ -26,6 +26,29 @@ use async_trait::async_trait;
 
 use crate::{MessageStore, StoreError};
 
+/// GAP-38/FR-017 (feature 005): read the creation-time sibling file (a single line, Unix
+/// seconds), writing it with `now` if it doesn't exist yet — the store's creation time is
+/// recorded once, on first `open()`, and never overwritten by later opens.
+fn creation_time_file(path: &Path) -> Result<time::OffsetDateTime, StoreError> {
+    match fs::read_to_string(path) {
+        Ok(s) => {
+            let secs: i64 = s.trim().parse().unwrap_or(0);
+            Ok(time::OffsetDateTime::from_unix_timestamp(secs)
+                .unwrap_or(time::OffsetDateTime::UNIX_EPOCH))
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => reset_creation_time_file(path),
+        Err(e) => Err(io_err(e)),
+    }
+}
+
+/// Overwrite the creation-time sibling file with the current time (used at first `open()` and on
+/// every `reset()`, matching QFJ/QFGo's "creation time updates on reset" semantics).
+fn reset_creation_time_file(path: &Path) -> Result<time::OffsetDateTime, StoreError> {
+    let now = time::OffsetDateTime::now_utc();
+    fs::write(path, now.unix_timestamp().to_string()).map_err(io_err)?;
+    Ok(now)
+}
+
 fn io_err(e: std::io::Error) -> StoreError {
     StoreError::Io(e.to_string())
 }
@@ -212,6 +235,8 @@ pub struct FileStore {
     seq: SeqFile,
     body: BodyLog,
     corrupted: AtomicBool,
+    creation_time_path: PathBuf,
+    creation_time: Mutex<time::OffsetDateTime>,
 }
 
 impl FileStore {
@@ -225,10 +250,14 @@ impl FileStore {
         fs::create_dir_all(dir).map_err(io_err)?;
         let seq = SeqFile::open(dir.join("seqnums"), options.sync)?;
         let (body, corrupted) = BodyLog::open(dir.join("body"), options.sync)?;
+        let creation_time_path = dir.join("session");
+        let creation_time = creation_time_file(&creation_time_path)?;
         Ok(Self {
             seq,
             body,
             corrupted: AtomicBool::new(corrupted),
+            creation_time_path,
+            creation_time: Mutex::new(creation_time),
         })
     }
 
@@ -261,10 +290,15 @@ impl MessageStore for FileStore {
     async fn reset(&self) -> Result<(), StoreError> {
         self.body.reset()?;
         self.corrupted.store(false, Ordering::SeqCst);
+        let now = reset_creation_time_file(&self.creation_time_path)?;
+        *self.creation_time.lock().map_err(|_| poisoned())? = now;
         self.seq.reset()
     }
     fn was_corrupted(&self) -> bool {
         self.was_corrupted()
+    }
+    async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
+        Ok(Some(*self.creation_time.lock().map_err(|_| poisoned())?))
     }
 }
 
@@ -312,6 +346,8 @@ pub struct CachedFileStore {
     body: BodyLog,
     corrupted: AtomicBool,
     cache: Mutex<CacheState>,
+    creation_time_path: PathBuf,
+    creation_time: Mutex<time::OffsetDateTime>,
 }
 
 impl CachedFileStore {
@@ -332,11 +368,15 @@ impl CachedFileStore {
         for (seq_no, bytes) in body.all()? {
             cache.insert(seq_no, bytes);
         }
+        let creation_time_path = dir.join("session");
+        let creation_time = creation_time_file(&creation_time_path)?;
         Ok(Self {
             seq,
             body,
             corrupted: AtomicBool::new(corrupted),
             cache: Mutex::new(cache),
+            creation_time_path,
+            creation_time: Mutex::new(creation_time),
         })
     }
 
@@ -399,10 +439,15 @@ impl MessageStore for CachedFileStore {
         self.body.reset()?;
         self.corrupted.store(false, Ordering::SeqCst);
         self.cache.lock().map_err(|_| poisoned())?.clear();
+        let now = reset_creation_time_file(&self.creation_time_path)?;
+        *self.creation_time.lock().map_err(|_| poisoned())? = now;
         self.seq.reset()
     }
     fn was_corrupted(&self) -> bool {
         self.was_corrupted()
+    }
+    async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
+        Ok(Some(*self.creation_time.lock().map_err(|_| poisoned())?))
     }
 }
 

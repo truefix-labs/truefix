@@ -47,9 +47,12 @@ fn validate_incoming_message_false_skips_all_checks() {
 fn validate_incoming_message_true_default_still_checks() {
     let mut m = nos();
     m.body = {
+        // Drop Side(54) — a directly-required NewOrderSingle field (US9, feature 005, FR-031:
+        // HandlInst(21), used here before the real-QFJ-data expansion, is optional in the real
+        // schema).
         let mut b = truefix_core::FieldMap::new();
         for f in nos().body.fields() {
-            if f.tag() != 21 {
+            if f.tag() != 54 {
                 b.set(Field::new(f.tag(), f.value_bytes().to_vec()));
             }
         }

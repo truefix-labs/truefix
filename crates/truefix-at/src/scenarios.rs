@@ -233,6 +233,43 @@ fn poss_dup_too_low(v: &str) -> Scenario {
     )
 }
 
+/// GAP-08 (US3, feature 005) — a PossDup message whose OrigSendingTime is later than its
+/// SendingTime (an anti-replay violation — the message claims to have originally been sent
+/// *after* the resend that is carrying it) draws a Logout and disconnect, not the silent ignore
+/// that `poss_dup_too_low` above exercises for a legitimate low-seq PossDup.
+fn poss_dup_orig_sending_time_after_sending_time(v: &str) -> Scenario {
+    let mut dup = client_message(v, "0", 1); // Heartbeat, seq too low
+    dup.header.set(Field::string(43, "Y")); // PossDupFlag
+    dup.header.set(Field::string(122, "20240101-00:00:05")); // OrigSendingTime > SendingTime(52)
+    scenario(
+        "GAP08_PossDupOrigSendingTimeAfterSendingTime",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(dup),
+            Step::Expect(ExpectMsg::of("5")), // Logout: anti-replay violation
+            Step::ExpectDisconnect,
+        ],
+    )
+}
+
+/// GAP-18a (US3, feature 005) — a second Logon received on an already-logged-on session is
+/// rejected (Logout + disconnect), not silently reprocessed as if it were the first.
+fn duplicate_logon_rejected(v: &str) -> Scenario {
+    scenario(
+        "GAP18a_DuplicateLogonRejected",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(logon(v, 2, false)),
+            Step::Expect(ExpectMsg::of("5")), // Logout: duplicate Logon
+            Step::ExpectDisconnect,
+        ],
+    )
+}
+
 /// 1d — with ResetOnLogon (default), the acceptor's Logon response carries ResetSeqNumFlag=Y.
 fn logon_response_carries_reset_flag(v: &str) -> Scenario {
     scenario(
@@ -531,8 +568,10 @@ fn new_order_single(seq: i64) -> Message {
 fn new_order_single_42(seq: i64) -> Message {
     let mut m = client_message("FIX.4.2", "D", seq);
     m.body.set(Field::string(11, "ORDER-42")); // ClOrdID
+    m.body.set(Field::string(21, "1")); // HandlInst
     m.body.set(Field::string(55, "AAPL")); // Symbol
     m.body.set(Field::string(54, "1")); // Side
+    m.body.set(Field::string(60, "20240101-00:00:00")); // TransactTime
     m.body.set(Field::int(38, 100)); // OrderQty
     m.body.set(Field::string(40, "2")); // OrdType
     m
@@ -619,13 +658,15 @@ fn valid_new_order_accepted_42() -> Scenario {
     )
 }
 
-/// 14b (FIX.4.2) — a NewOrderSingle missing required OrderQty(38) draws a session-level Reject.
+/// 14b (FIX.4.2) — a NewOrderSingle missing required HandlInst(21) draws a session-level Reject
+/// (US9, feature 005, FR-031: OrderQty(38) is optional in the real bundled FIX.4.2 dictionary —
+/// HandlInst/Side/TransactTime/OrdType are NewOrderSingle's actual directly-required fields).
 fn required_field_missing_42() -> Scenario {
     let mut order = new_order_single_42(2);
     order.body = {
         let mut b = truefix_core::FieldMap::new();
         for f in new_order_single_42(2).body.fields() {
-            if f.tag() != 38 {
+            if f.tag() != 21 {
                 b.set(Field::new(f.tag(), f.value_bytes().to_vec()));
             }
         }
@@ -643,10 +684,10 @@ fn required_field_missing_42() -> Scenario {
     )
 }
 
-/// 14e (FIX.4.2) — Side=9 is outside the 4.2 enumeration {1,2} and draws a session-level Reject.
+/// 14e (FIX.4.2) — an out-of-enumeration Side value draws a session-level Reject.
 fn incorrect_enum_value_42() -> Scenario {
     let mut order = new_order_single_42(2);
-    order.body.set(Field::string(54, "9")); // Side not in {1,2} for FIX.4.2
+    order.body.set(Field::string(54, "Z")); // not a real Side value
     scenario(
         "14e_IncorrectEnumValue_42",
         "FIX.4.2",
@@ -854,14 +895,46 @@ fn app_mixed_resend_gapfill_then_possdup(v: &str) -> Scenario {
     )
 }
 
-/// 14b — a NewOrderSingle missing a required field draws a session-level Reject.
+/// GAP-07 (US3, feature 005) — an application-vetoed resend is replaced by a
+/// SequenceReset-GapFill on the wire (FR-007), not replayed as a PossDup. Contrast with
+/// `app_message_resent_as_poss_dup` above: identical shape, except the executor app's
+/// "VETO-RESEND" sentinel ClOrdID (`runner::AtApp::to_app`) vetoes the resend specifically (the
+/// original live send, seq 2, still goes out and is acknowledged normally).
+fn app_resend_veto_produces_gap_fill(v: &str) -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.set(Field::string(11, "VETO-RESEND"));
+    let mut rr = client_message(v, "2", 3); // after logon(1) + order(2), this is seq 3
+    rr.body.set(Field::int(7, 2)); // BeginSeqNo = the ExecutionReport's outbound seq
+    rr.body.set(Field::int(16, 2)); // EndSeqNo = 2
+    scenario_with(
+        "GAP07_AppResendVetoProducesGapFill",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(ExpectMsg::of("8").field(34, "2")), // live send: not vetoed
+            Step::Send(rr),
+            // Vetoed resend: a GapFill covering exactly the vetoed sequence number, not a
+            // PossDup replay of the ExecutionReport.
+            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "3")),
+        ],
+        SessionTweaks {
+            executor_app: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// 14b — a NewOrderSingle missing required Side(54) draws a session-level Reject (US9, feature
+/// 005, FR-031: HandlInst(21) is optional in the real bundled FIX.4.4 dictionary — Side, along
+/// with ClOrdID/TransactTime/OrdType, is NewOrderSingle's actual directly-required field).
 fn required_field_missing(v: &str) -> Scenario {
     let mut order = new_order_single(2);
     order.body = {
-        // rebuild body without HandlInst(21)
         let mut b = truefix_core::FieldMap::new();
         for f in new_order_single(2).body.fields() {
-            if f.tag() != 21 {
+            if f.tag() != 54 {
                 b.set(Field::new(f.tag(), f.value_bytes().to_vec()));
             }
         }
@@ -882,7 +955,7 @@ fn required_field_missing(v: &str) -> Scenario {
 /// 14e — a field with an out-of-range enumerated value draws a session-level Reject.
 fn incorrect_enum_value(v: &str) -> Scenario {
     let mut order = new_order_single(2);
-    order.body.set(Field::string(54, "9")); // Side not in {1,2,5,6}
+    order.body.set(Field::string(54, "Z")); // not a real Side value
     scenario(
         "14e_IncorrectEnumValue",
         v,
@@ -1138,6 +1211,47 @@ fn resend_request_chunk_size(v: &str) -> Scenario {
     )
 }
 
+/// GAP-09 (US4, feature 005) — a chunked inbound resend spanning more than one chunk
+/// auto-continues without an external re-request: each GapFill that closes one chunk but not the
+/// full known gap immediately draws the next chunk's `ResendRequest` from TrueFix itself, since a
+/// well-behaved reference-engine counterparty never re-requests the remainder unprompted.
+fn chunked_resend_auto_continues(v: &str) -> Scenario {
+    let mut gf1 = client_message(v, "4", 2);
+    gf1.body.set(Field::string(123, "Y")); // GapFillFlag
+    gf1.body.set(Field::int(36, 5)); // NewSeqNo: closes chunk 1 (2..4)
+    let mut gf2 = client_message(v, "4", 3);
+    gf2.body.set(Field::string(123, "Y"));
+    gf2.body.set(Field::int(36, 8)); // closes chunk 2 (5..7)
+    let mut gf3 = client_message(v, "4", 4);
+    gf3.body.set(Field::string(123, "Y"));
+    gf3.body.set(Field::int(36, 11)); // closes chunk 3 (8..10); the full gap (target=10) is done
+    let mut tr = client_message(v, "1", 11); // matches next_in_seq after gf3's NewSeqNo=11
+    tr.body.set(Field::string(112, "SETTLED"));
+    scenario_with(
+        "GAP09_ChunkedResendAutoContinues",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(client_message(v, "0", 10)), // gap: expected 2, got 10
+            Step::Expect(ExpectMsg::of("2").field(7, "2").field(16, "4")), // chunk 1: 2..4
+            Step::Send(gf1),
+            // No external nudge: the next chunk's ResendRequest is auto-issued.
+            Step::Expect(ExpectMsg::of("2").field(7, "5").field(16, "7")), // chunk 2: 5..7
+            Step::Send(gf2),
+            Step::Expect(ExpectMsg::of("2").field(7, "8").field(16, "10")), // chunk 3: 8..10
+            Step::Send(gf3),
+            Step::Send(tr),
+            // A Heartbeat (not a fourth ResendRequest) proves the gap is now fully closed.
+            Step::Expect(ExpectMsg::of("0").field(112, "SETTLED")),
+        ],
+        SessionTweaks {
+            resend_chunk_size: 3,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 // --- 003 US1: identity/CompID/logon-integrity class (T012) ---
 //
 // NOTE: `1c_InvalidSenderCompID`/`1c_InvalidTargetCompID`/`1d_InvalidLogonWrongBeginString` (a
@@ -1296,11 +1410,11 @@ fn seq_reset_gap_fill_new_seq_no_equal(v: &str) -> Scenario {
 fn reject_resent_message() -> Scenario {
     let mut order = new_order_single(2);
     order.body = {
-        // rebuild body without HandlInst(21), the same required field `required_field_missing`
+        // rebuild body without Side(54), the same required field `required_field_missing`
         // demonstrates, so this exercises validation rather than a fresh failure mode.
         let mut b = truefix_core::FieldMap::new();
         for f in new_order_single(2).body.fields() {
-            if f.tag() != 21 {
+            if f.tag() != 54 {
                 b.set(Field::new(f.tag(), f.value_bytes().to_vec()));
             }
         }
@@ -1610,6 +1724,7 @@ pub fn resynch_suite() -> Vec<Scenario> {
         sequence_reset_gap_fill_advances("FIX.4.4"),
         sequence_reset_gap_fill_backward_ignored("FIX.4.4"),
         resend_request_chunk_size("FIX.4.4"),
+        chunked_resend_auto_continues("FIX.4.4"),
     ]
 }
 
@@ -1642,6 +1757,9 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(idle_heartbeat_emitted(v));
         out.push(test_request_on_silence(v));
         out.push(poss_dup_too_low(v));
+        // 005 US3: session-state-machine protocol-correctness safeguards (T021).
+        out.push(poss_dup_orig_sending_time_after_sending_time(v));
+        out.push(duplicate_logon_rejected(v));
         // 003 US1: identity/CompID/logon-integrity + sequence/PossDup classes (T012/T013).
         out.push(invalid_logon_bad_sending_time(v));
         out.push(qfj648_negative_heart_bt_int(v));
@@ -1673,6 +1791,8 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(app_message_resent_as_poss_dup("FIX.4.4"));
     out.push(app_mixed_resend_gapfill_then_possdup("FIX.4.4"));
     out.push(acceptor_initiated_logout("FIX.4.4"));
+    // 005 US3: resend-veto → GapFill (T021), single-version since it uses new_order_single.
+    out.push(app_resend_veto_produces_gap_fill("FIX.4.4"));
     out.push(required_field_missing("FIX.4.4"));
     out.push(incorrect_enum_value("FIX.4.4"));
     out.push(invalid_tag_number("FIX.4.4"));
@@ -1688,6 +1808,8 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(garbled_message_dropped("FIX.4.4"));
     out.push(garbled_message_rejected("FIX.4.4"));
     out.push(resend_request_chunk_size("FIX.4.4"));
+    // 005 US4: chunked-resend auto-continuation (T031, GAP-09/FR-011).
+    out.push(chunked_resend_auto_continues("FIX.4.4"));
     // 003 US3: field-order validation (T022).
     out.push(first_three_fields_out_of_order());
     out.push(header_body_trailer_fields_out_of_order());

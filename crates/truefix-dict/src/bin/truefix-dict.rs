@@ -93,8 +93,24 @@ fn generate_dict(args: &[String]) -> Result<(), String> {
     let source = required_flag(&flags, "source")?;
     let out = required_flag(&flags, "out")?;
     let xml = std::fs::read_to_string(source).map_err(|e| format!("reading {source}: {e}"))?;
-    let dict_text =
-        truefix_dict::orchestra::convert(&xml).map_err(|e| format!("converting {source}: {e}"))?;
+    // `--format qfj` (US9, feature 005, FR-031): the classic QuickFIX DTD-based dictionary
+    // schema, as opposed to the default `orchestra` (FIX Orchestra repository XML). Requires
+    // `--version` (the target `.fixdict` version directive, e.g. "FIX.4.4") since QuickFIX's XML
+    // carries major/minor/servicepack as separate attributes rather than one version string.
+    let dict_text = match flags.get("format").map(String::as_str) {
+        Some("qfj") => {
+            let version = required_flag(&flags, "version")?;
+            truefix_dict::qfj_xml::convert(&xml, version)
+                .map_err(|e| format!("converting {source}: {e}"))?
+        }
+        None | Some("orchestra") => truefix_dict::orchestra::convert(&xml)
+            .map_err(|e| format!("converting {source}: {e}"))?,
+        Some(other) => {
+            return Err(format!(
+                "unknown --format {other:?} (expected orchestra or qfj)"
+            ))
+        }
+    };
     std::fs::write(out, &dict_text).map_err(|e| format!("writing {out}: {e}"))?;
     println!("wrote {out} ({} bytes)", dict_text.len());
     Ok(())

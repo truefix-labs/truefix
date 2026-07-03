@@ -23,8 +23,19 @@ dictionary `component` model + runtime dictionary loading, additional field type
 FIX Orchestra, extended application hooks, the full 353/353-scenario AT suite across all 9 FIX
 versions, a session benchmark, network hardening (PROXY protocol, forward proxy, inline PEM, cipher
 suites, synchronous writes), the `truefix-dict` CLI, bounded inbound backpressure, and an MSSQL
-store/log backend). See [`MIGRATION.md`](MIGRATION.md) if upgrading past the typed-callback breaking
-change.
+store/log backend),
+[`specs/004-engine-wiring-extra-backends/`](specs/004-engine-wiring-extra-backends/) (initiator
+failover and `.cfg`-driven dictionary/SQL-backend selection wired into `Engine::start`,
+`ContinueInitializationOnError`, `RedbStore`/`RedbLog`, `MongoStore`/`MongoLog`), and
+[`specs/005-engine-gap-remediation/`](specs/005-engine-gap-remediation/) (session-state-machine
+resend veto + GapFill substitution, PossDup anti-replay, duplicate-Logon rejection, automatic
+inbound chunked-resend continuation, real multi-session `.cfg` acceptor wiring + JDBC-URL
+drop-in compatibility, `SessionQualifier`/sub-ID/location-ID identity, stepped reconnect backoff +
+local bind + connect timeout, store creation-time + atomic save, structured log timestamp/session-
+identity columns, and full dictionary/codec model completeness — 11 new field types, open enums,
+per-group child dictionaries, repeating-group CRUD, header/trailer groups, custom field order,
+dictionary version metadata, value labels, and QuickFIX/J-scale bundled dictionary content across
+all 9 FIX versions — the full 373/373-scenario AT suite).
 
 ## Why TrueFix
 
@@ -37,7 +48,7 @@ to be the first Rust FIX engine that is:
 - **Acceptor-first** — the sell-side/acceptor is a first-class citizen, on equal footing with the
   initiator (multi-session, dynamic sessions).
 - **Conformance-gated** — protocol correctness is verified by a ported FIX **Acceptance Test (AT)** suite
-  (353/353 scenario runs across all 9 targeted FIX versions), which is the hard release gate.
+  (373/373 scenario runs across all 9 targeted FIX versions), which is the hard release gate.
 
 ## Quick start
 
@@ -73,16 +84,33 @@ A `.cfg` with `SocketUseSSL=Y`/`SocketKeyStore=...` builds mTLS from PEM files (
 automatically reconnects through them on connection loss, no code required; `UseDataDictionary=Y` (plus
 `DataDictionary`/`AppDataDictionary`/`TransportDataDictionary`, a bundled version string like `FIX.4.4`
 or a file path) wires real dictionary validation into the session; `JdbcURL=postgres://...`/
-`mysql://...`/`sqlite:...`/`mssql://...` selects a SQL/MSSQL store and log by URL scheme alone (behind
-the `sql`/`mssql` features respectively); `ContinueInitializationOnError=Y` lets the rest of a
-multi-session engine start even if one session's config or connection fails; `FileLogPath` builds
-a working session log; `InChanCapacity=<n>` bounds the inbound application-message channel (admin/
-session traffic always travels on its own unbounded channel, so it's never starved by a full
-application channel) — no code beyond `Application` required for any of it
-(FR-001/002/003/004/013/014/017/019/026).
+`mysql://...`/`sqlite:...`/`mssql://...` **or a standard JDBC-style `jdbc:postgresql://...`/
+`jdbc:mysql://...`/`jdbc:sqlserver://...`/`jdbc:hsqldb:...` URL** (with credentials from separate
+`JdbcUser`/`JdbcPassword` keys, matching real QuickFIX/J `.cfg` files verbatim) selects a SQL/MSSQL
+store and log by URL scheme alone (behind the `sql`/`mssql` features respectively) — plus the JDBC
+connection-pool tuning keys (`JdbcMaxActiveConnection`, etc.) and store table-name overrides
+(`JdbcStoreMessagesTableName`/`JdbcStoreSessionsTableName`); `ContinueInitializationOnError=Y` lets the
+rest of a multi-session engine start even if one session's config or connection fails;
+`AllowedRemoteAddresses`/`DynamicSession`/`AcceptorTemplate` in `.cfg` sessions that share a
+`SocketAcceptPort` now build a real multi-session `AcceptorBuilder` — not just a single-session bind;
+`SessionQualifier` (with `SenderSubID`/`SenderLocationID`/`TargetSubID`/`TargetLocationID`) lets two
+sessions differing only by qualifier log on independently; `ReconnectInterval` accepts a stepped
+backoff array (sticking at the last value), and `SocketLocalHost`/`SocketLocalPort`/
+`SocketConnectTimeout` bind an initiator's outbound connection and bound its connect attempt;
+`FileLogPath` builds a working session log with creation-time persisted and restored across restarts;
+`InChanCapacity=<n>` bounds the inbound application-message channel (admin/session traffic always
+travels on its own unbounded channel, so it's never starved by a full application channel) — no code
+beyond `Application` required for any of it
+(FR-001/002/003/004/012/013/014/015/016/017/019/020/021/026).
 
-The `Application` trait's callbacks return typed outcomes rather than a bare `Result<(), String>`
-(see [`MIGRATION.md`](MIGRATION.md) for the breaking-change rationale and upgrade path):
+Session-state-machine correctness is enforced automatically, with no extra code: a stale
+application-message resend can be vetoed by returning `Err(DoNotSend)` from `to_app` (the session
+substitutes a `GapFill` instead of resending it); an inbound `PossDupFlag=Y` message with
+`OrigSendingTime` after its own `SendingTime` is rejected and the session disconnects; a duplicate
+Logon on an already-logged-on session is rejected rather than silently ignored; an inbound chunked
+resend automatically continues to the next chunk without waiting for the counterparty to re-request it.
+
+The `Application` trait's callbacks return typed outcomes rather than a bare `Result<(), String>`:
 
 ```rust
 use truefix::Message;
@@ -125,6 +153,10 @@ cargo run -p truefix-dict --features dict-tooling --bin truefix-dict -- <subcomm
 # Convert a FIX Orchestra XML source into the normalized `.fixdict` grammar.
 truefix-dict generate-dict --source orchestra.xml --out normalized.fixdict
 
+# Convert a classic QuickFIX-schema XML source (QuickFIX/J's own bundled dictionaries) instead —
+# requires --version since QuickFIX XML carries major/minor/servicepack as separate attributes.
+truefix-dict generate-dict --format qfj --source FIX44.xml --version FIX.4.4 --out FIX44.fixdict
+
 # Generate the same typed Rust code build.rs would (structs, field enums, group entries,
 # a MessageCracker-style crack_<name> dispatcher) from a `.fixdict`, standalone.
 truefix-dict generate-code --dict normalized.fixdict --out generated.rs [--name FIX44]
@@ -161,10 +193,19 @@ also aren't fully `.cfg`-selectable beyond `JdbcURL`'s scheme dispatch (only `Sc
 ### Dual-track data dictionary
 
 Both tracks derive from **one normalized dictionary** (built from the FIX Trading Community's
-Orchestra/Repository specs): build-time codegen gives compile-time-typed messages (structs, field-value
-enums, typed repeating-group entries, and a `crack_<version>` dispatcher), while the runtime
-`DataDictionary` gives version-agnostic validation, custom dictionaries, and user-defined fields — they
-cannot diverge because they share a single source (proven by an FNV-1a hash test).
+Orchestra/Repository specs, plus a QuickFIX-XML converter for the 8 non-Latest bundled versions —
+`crates/truefix-dict/src/qfj_xml.rs`, `--features dict-tooling`): build-time codegen gives
+compile-time-typed messages (structs, field-value enums, typed repeating-group entries, and a
+`crack_<version>` dispatcher), while the runtime `DataDictionary` gives version-agnostic validation,
+custom dictionaries, and user-defined fields — they cannot diverge because they share a single source
+(proven by an FNV-1a hash test). Field-type coverage matches QuickFIX/J: 27 `FieldType`s including
+`PriceOffset`/`LocalMktDate`/`DayOfMonth`/`UtcDate`/`Time`/`Currency`/`Exchange`/
+`MultipleValueString`/`MultipleStringValue`/`MultipleCharValue`/`Country`, open-enum fields, per-group
+child dictionaries (deep nested-group validation), header/trailer repeating groups, custom
+per-message field emission order, structured dictionary version metadata (validated against a
+message's `BeginString`), and value→label lookup. Every bundled dictionary (FIX 4.0 through
+5.0SP2, plus FIXT 1.1) now matches QuickFIX/J's real field/message scale (e.g. FIX 4.4: 953
+fields/92 messages; FIX 5.0SP2: 1610 fields/110 messages) rather than a documented subset.
 
 ## Roadmap
 
@@ -205,13 +246,27 @@ W1 Initiator failover wired into Engine ─▶ W2 .cfg dictionary/validator wiri
    (release gate: 353/353-scenario AT suite stays green and unmodified — no protocol behavior touched)
 ```
 
+005 (engine gap remediation; see [`plan.md`](specs/005-engine-gap-remediation/plan.md)):
+
+```
+G1 Correctness bugs (# truncation, Signature/93) ─▶ G2 .cfg keys that misrepresent behavior
+   (multi-session AcceptorBuilder, JDBC URLs) ─▶ G3 Session protocol-correctness safeguards
+   (resend veto+GapFill, PossDup anti-replay, duplicate-Logon) ─▶ G4 Inbound chunked-resend
+   continuation ─▶ G5 Session identity (SessionQualifier) ─▶ G6 Initiator connection robustness
+   (reconnect backoff, local bind, connect timeout) ─▶ G7 Store/log persistence hardening
+   ─▶ G9 Dictionary and codec model completeness (11 field types, open enums, child dictionaries,
+   group CRUD, header/trailer groups, field order, version metadata, QFJ-scale bundled content)
+   ─▶ G8 Config-key stance registry accuracy sweep
+   (release gate: 373/373-scenario AT suite — grew from 353, a deliberate disclosed floor bump)
+```
+
 ## Testing & conformance
 
 - Table-driven unit tests for the codec and session state machine.
 - Two-process integration tests (real initiator ↔ acceptor) for handshake, heartbeat, resend, TLS/mTLS,
   failover, restart-survivable persistence, and metrics export.
 - The **AT suite** (`truefix-at`) ports QuickFIX/QuickFIX-J acceptance scenarios as black-box behavior
-  contracts — **353/353 scenario runs** across all 9 targeted FIX versions (fix40/41/42/43/44/50/50SP1/
+  contracts — **373/373 scenario runs** across all 9 targeted FIX versions (fix40/41/42/43/44/50/50SP1/
   50SP2/fixLatest), plus 3 independently-gated special-category suites (`validateChecksum`,
   `timestamps`, `resynch`) and a CI-enforced coverage-regression floor — and is the hard release gate
   (`cargo test -p truefix-at --test conformance`).

@@ -27,7 +27,7 @@ fn inbound(msg_type: &str, seq: i64, hb: Option<i64>, test_req: Option<&str>) ->
 
 fn first_send(actions: &[Action]) -> Option<&Message> {
     actions.iter().find_map(|a| match a {
-        Action::Send(m) => Some(m),
+        Action::Send(m) | Action::Resend(m, _) => Some(m),
         Action::Disconnect | Action::ResetStore => None,
     })
 }
@@ -58,6 +58,30 @@ fn initiator_becomes_logged_on_when_logon_received() {
     let actions = s.handle(Event::Received(inbound("A", 1, Some(1), None)));
     assert_eq!(s.state(), SessionState::LoggedOn);
     assert!(actions.is_empty()); // initiator already sent its logon
+}
+
+// --- T019 (US3, feature 005): duplicate Logon rejection (GAP-18a/FR-010) ---
+
+#[test]
+fn a_second_logon_on_an_already_logged_on_session_is_rejected() {
+    let mut s = Session::new(cfg(Role::Acceptor));
+    s.handle(Event::Connected);
+    s.handle(Event::Received(inbound("A", 1, Some(1), None)));
+    assert_eq!(s.state(), SessionState::LoggedOn);
+
+    let actions = s.handle(Event::Received(inbound("A", 2, Some(1), None)));
+    assert_eq!(
+        s.state(),
+        SessionState::Disconnected,
+        "a duplicate Logon must be rejected (logout + disconnect), not silently ignored"
+    );
+    assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::Send(m) if m.msg_type() == Some("5"))),
+        "expected a Logout"
+    );
 }
 
 #[test]

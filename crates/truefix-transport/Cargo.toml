@@ -29,7 +29,7 @@ ppp.workspace = true
 tokio-socks.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 truefix-core.workspace = true
 truefix-session.workspace = true
 truefix-store.workspace = true

@@ -21,8 +21,8 @@ use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::{connect_initiator_with, AcceptorBuilder, Monitor, Services};
 
 /// The acceptor sends this once logged on: structurally valid, but `Side` (54) carries an enum
-/// value ("9") the FIX.4.4 dictionary doesn't recognize — the same malformed input
-/// `validation_hook.rs`'s `new_order("9", 2)` uses.
+/// value ("Z") the FIX.4.4 dictionary doesn't recognize — the same malformed input
+/// `validation_hook.rs`'s `new_order("Z", 2)` uses.
 fn bad_side_new_order(seq: i64) -> Message {
     let mut m = Message::new();
     m.header.set(Field::string(35, "D"));
@@ -31,7 +31,7 @@ fn bad_side_new_order(seq: i64) -> Message {
     m.body.set(Field::string(11, "ORD1"));
     m.body.set(Field::string(21, "1"));
     m.body.set(Field::string(55, "AAPL"));
-    m.body.set(Field::string(54, "9")); // Side: not a valid enum value
+    m.body.set(Field::string(54, "Z")); // Side: not a valid enum value
     m.body.set(Field::string(60, "20240101-00:00:00"));
     m.body.set(Field::string(40, "2"));
     m

@@ -469,78 +469,12 @@ CodegenError>`——build.rs 自身作为构建脚本继续在顶层 `main()` pa
 
 ---
 
-## 2026-07-02 深度代码对比 — 按层新增差距 (GAP-07+)
+## 2026-07-02 深度代码对比 — 按层新增差距 (GAP-07+) — 已迁移并核实
 
-> 以下基于对三个引擎源码的逐文件深度对比 (session/state、transport、codec/dict、store/log/config 四层)，
-> 已过滤不适合 Rust 生态项 (JMX/OSGi/SLF4J/反射/Sleepycat 等)、有等价替代项 (tracing/codegen/Monitor/
-> 有界 channel 等)、TrueFix 独有优势项，并去重 GAP-01–GAP-06 已覆盖项及 TODO 中已标记"有意 no-op"的项。
-> 每项标注 `file:line` 引用。
-
-### 会话/状态机层
-
-| # | 差距项 | 对比参照 | 说明 | 交叉引用 |
-|---|--------|---------|------|----------|
-| GAP-07 | **resend 时无 `to_app` 否决权** | QFJ `Session.java:1432` / QFGo `session.go:273` | `build_resend` (`state.rs:600`) 不调用 `to_app`，gap-fill 时应用层无法抑制陈旧订单重发；QFJ `resendApproved` 和 QFGo `session.resend` 都允许 app 拒绝并改发 gap-fill | — |
-| GAP-08 | **无 `OrigSendingTime > SendingTime` PossDup 校验** | QFJ `Session.java:2581` / QFGo `in_session.go:381` | 防陈旧重放安全校验；TF 在 `seq < expected` + `PossDupFlag=Y` 时直接静默丢弃 (`state.rs:512`)，不校验 OrigSendingTime 与 SendingTime 的时序 | — |
-| GAP-09 | **无 chunked-resend 自动续传** | QFJ `Session.java:1559` / QFGo `resend_state.go:50` | 一块满足后不自动发下一块；TF 仅出站分块 (`resend_request_chunk_size`)，入站端需手动触发后续 | — |
-| GAP-10 | **`TimeZone` 仅数字偏移，拒绝 IANA 名** | QFJ `java.util.TimeZone` / QFGo `time.LoadLocation` | `builder.rs:794-812` 只接受 `+08:00` 格式；DST/时区规则变更需手动改偏移。可用 `chrono-tz` 解决 | — |
-| GAP-11 | **无 `ResetSeqTime`** — 会话中不断连每日重置 | QFGo `session_state.go:158-180` 独有 | 在配置的每日时刻发送 `Logon(ResetSeqNumFlag=Y)` 重置序列号但保持连接；TF 必须断连+重连才能重置 | QF/Go 独有 line 395 |
-| GAP-12 | **`LogonTag` 仅单个** | QFJ `SETTING_LOGON_TAG` (列表) | `config.rs:97` 为 `Option<(u32,String)>`；QFJ 支持多个 Logon tag | TODO-04 已实现单 tag |
-| GAP-13 | **Reject `SessionRejectReason` 不按 FIX 版本裁剪** | QFJ `Session.java:1660-1679` | TF 总是 stamp reason code；QFJ 按 FIX 4.2/4.3/4.4 过滤掉该版本不支持的 reason 码 | — |
-
-### 传输/网络层
-
-| # | 差距项 | 对比参照 | 说明 | 交叉引用 |
-|---|--------|---------|------|----------|
-| GAP-14 | **无递增重连退避数组** | QFJ `AbstractSocketInitiator.java:252` | 仅固定 `reconnect_interval` (`lib.rs:1432`)；QFJ 支持 `int[]` 数组逐步升级，最后一个值粘滞 | — |
-| GAP-15 | **无 `SocketLocalHost/Port` 本地绑定** | QFJ `AbstractSocketInitiator.java:196-214` | initiator 无法指定本地出口地址 | `keys.rs:145-146` Recognized |
-| GAP-16 | **`SocketConnectTimeout` 未实际生效** | QFJ (default 60s) / QFGo `SocketTimeout` | `keys.rs:144` Recognized 但无代码消费此值 | — |
-| GAP-17 | **`AllowedRemoteAddresses` 仅 acceptor 级** | QFJ `Session.java:3112` (per-session) | TF `AcceptorBuilder::allow_remotes` (`lib.rs:1224`) 是全局的；QFJ 支持每会话独立 IP 白名单 | — |
-| GAP-18 | **Acceptor 层无多-logon 拒绝 + FIXT `DefaultApplVerID` 设置** | QFJ `AcceptorIoHandler.java:76-102` | TF 不在 acceptor 层拒绝重复 logon、不从 Logon 提取 HeartBtInt、不设置 FIXT DefaultApplVerID | — |
-| GAP-19 | **动态会话模板仅 compID 替换** | QFJ `DynamicAcceptorSessionProvider.java:50-184` | TF `dynamic_config` (`lib.rs:1366`) 只替换 SenderCompID/TargetCompID；QFJ 支持 SubID/LocID/LocationID 通配 `*` 模式 → templateID 映射 | — |
-| GAP-20 | **无 SubID/LocationID 路由** | QFGo `acceptor.go:284-325` | TF acceptor 按 BeginString/SenderCompID/TargetCompID 路由 (`lib.rs:1331`)；QFGo 还匹配 SubID/LocationID | — |
-| GAP-21 | **ScreenLog/TracingLog/CompositeLog 无法从 `.cfg` 选择** — `SqlLog` 部分已完成 | QFJ / QFGo | `builder.rs::resolve_log` 只从 `FileLogPath` 构造 `FileLog`；`ScreenLog*` 键 Recognized 未接线 (`keys.rs:234-238`)；`TracingLog`/`CompositeLog` 仍仅编程式可选。**004 会话 (GAP-05) 已解决 `SqlLog` 一侧**：`JdbcURL` 存在时 `resolve_log` 现在会返回一个新增的 `SqlLogSpec`，`Engine::start` 据此构造 `SqlLog`/`MssqlLog`；`ScreenLog`/`TracingLog`/`CompositeLog` 的 `.cfg` 选择仍未接线，剩余缺口范围收窄 | 类比 GAP-01；GAP-05 已部分覆盖 |
-
-### 编解码/字典层
-
-| # | 差距项 | 对比参照 | 说明 | 交叉引用 |
-|---|--------|---------|------|----------|
-| GAP-22 | **缺 11 个 `FieldType`** | QFJ `FieldType.java:38-59` | `PRICEOFFSET`/`LOCALMKTDATE`/`DAYOFMONTH`/`UTCDATE`/`TIME`/`CURRENCY`/`EXCHANGE`/`MULTIPLEVALUESTRING`/`MULTIPLESTRINGVALUE`/`MULTIPLECHARVALUE`/`COUNTRY` — TF 全当原始字符串处理 (`model.rs:8-44` 仅 16 变体) | TODO-08 |
-| GAP-23 | **无 `__ANY__`/`allowOtherValues` 开放枚举** | QFJ `DataDictionary.java:459-465` | QFJ 允许字段值不在枚举中时标记 `__ANY__` 跳过枚举校验；TF (`model.rs:102-104`) 只支持固定枚举 | — |
-| GAP-24 | **无 per-group 子字典** | QFJ `DataDictionary.java:1341-1349` | TF 仅扁平 `members: Vec<u32>` (`model.rs:370`)；QFJ 每组携带独立 `DataDictionary` 实现深度嵌套校验 | — |
-| GAP-25 | **Group API 仅 add-only** | QFJ `FieldMap.java:657-706` / QFGo `repeating_group.go:111-122` | 缺 `replace`/`remove`/`get-by-index`；TF 仅 `add_group` (`field_map.rs:64-67`) | — |
-| GAP-26 | **核心层无 header/trailer repeating groups** | QFJ `Message.java:250-312` / QFGo `tag.go:51` | TF `decode.rs:69-77` 保持 header/trailer 扁平；如 `NoHops` (tag 504) 无法在核心层解析 | — |
-| GAP-27 | **无 per-message 自定义 `fieldOrder`** | QFJ `FieldMap.java:52,116-132` | TF 用 `Vec<Member>` 插入序；QFJ 支持 `int[] fieldOrder` + `FieldOrderComparator` | — |
-| GAP-28 | **无版本元数据 (major/minor/SP/EP)** | QFJ `DataDictionary.java:90-96` / QFGo `datadictionary.go:16-17` | TF 仅有 `version` 字符串 (`model.rs:154`)；无法做版本匹配校验 (GAP-32) | — |
-| GAP-29 | **无 value→label 名称查找** | QFJ `valueNames` (`DataDictionary.java:107,245-258`) / QFGo `Enum.Description` | TF `FieldDef.values` (`model.rs:98`) 只存原始值，无人类可读描述 | — |
-| GAP-30 | **无 Signature (tag 89) 长度特殊处理** | QFJ `Message.java:950-952` | QFJ 把 tag 89 的长度字段映射到 93 (而非默认的 88)；TF `data_field_for_length` (`tags.rs:66-81`) 未覆盖 tag 89 | — |
-| GAP-31 | **无 picos 时间精度** | QFJ `UtcTimestampConverter.java:46` | TF 截断到纳秒 (`field.rs:195-208`)；QFJ 支持 picos (LENGTH=30)。实践罕见 | — |
-| GAP-32 | **无版本匹配校验 vs BeginString** | QFJ `DataDictionary.java:632-639` | QFJ 校验消息的 BeginString 与字典版本一致；TF/QFGo 都不做 | 依赖 GAP-28 |
-| GAP-33 | **字典只发子集** | QFJ / QFGo 均发完整 FIX spec | `FIX44.fixdict:1` 注释 "subset"；影响字段覆盖范围与 GAP-24/GAP-32 等联动 | TODO-05/TODO-10 |
-| GAP-34 | **无 `toXML` 诊断输出** | QFJ `Message.java:325-435` | 调试用 XML 格式化消息；TF 无等价物 | 优先级低 |
-| GAP-35 | **无 TZTIMEONLY/TZTIMESTAMP/LANGUAGE/XMLDATA 类型识别** | QFGo `validation.go:413-426` | QFGo 独有的 4 种类型；TF 不识别 | — |
-| GAP-36 | **无 FIX 离线文件批量解析** | QFJ `FIXMessageDecoder.extractMessages` (`:303-339`) | QFJ 支持 mmap 文件流式提取消息 (日志回放/审计场景)；TF `frame_length` 无状态、无流式 reader | — |
-
-### 存储/日志/配置层
-
-| # | 差距项 | 对比参照 | 说明 | 交叉引用 |
-|---|--------|---------|------|----------|
-| GAP-37 | **`MessageStore` trait 缺 `incr*`/`refresh`/`getCreationTime`/`close`** | QFJ `MessageStore.java` / QFGo `store.go` | TF `lib.rs:56-75` 缺 `incr*` (引擎自算 `seq+1`)、`refresh` (热备刷新)、`getCreationTime` (GAP-38)、`close` (资源清理) | — |
-| GAP-38 | **会话创建时间从不持久化** | QFJ `.session` 文件 / QFGo `.session` 文件 | TF file store 无 `.session` 文件 (`file.rs:226`)，SQL 表无 `creation_time` 列 (`sql.rs:154`)；QFJ/QFGo 均持久化且 reset 时更新 | 依赖 GAP-37 |
-| GAP-39 | **`SaveMessageAndIncr` 非事务** | QFGo `sql_store.go:358-391` (单事务) | TF 两条独立 SQL 语句；QFGo 包在单事务内。崩溃窗口内可能 seq 已增但消息未存 | — |
-| GAP-40 | **`Log` trait 缺 `clear()`/`onErrorEvent`/`onWarnEvent`** | QFJ `Log.java:30,58,66` | TF `lib.rs:63-65` 仅 `on_incoming`/`on_outgoing`/`on_event`；无严重级别区分、无清理 API | — |
-| GAP-41 | **SQL log 表仅 `(id, text)` — 无时间戳/会话归属** | QFJ `(time, <8 id cols>, text)` / QFGo 同 | TF `sql.rs:156-186` 三张表均为 `(id autoincrement, text)`；审计不可追溯哪条会话、何时产生 | — |
-| GAP-42 | **后台日志写无界 channel** | — | TF `SqlLog`/`MssqlLog` 用 `mpsc::unbounded_channel` (`sql.rs:244`); 背压下内存无限增长风险。可用 `tokio::sync::mpsc::channel(N)` 替换 | — |
-| GAP-43 | **配置 `#` 在值中截断值 (bug)** | QFJ/QFGo 均不在值中截断 | `lib.rs:167-172` 在 `key=value` split 前对整行剥注释，`Password=ab#cd` 变成 `Password=ab` | 应修 bug |
-| GAP-44 | **`${var}` 仅从 settings 自身解析，不接 env** | QFJ 从 `System.getProperties()` 解析 | TF `lib.rs:180-219` 只从配置自身插值；QFJ `.cfg` 用 `-D` 系统属性/env 的写法在 TF 不工作 | — |
-| GAP-45 | **配置为不变快照 — 无运行时增删会话** | QFJ `SessionSettings.setString`/`removeSection` | TF `SessionSettings` parse 后冻结 (`lib.rs:120-134`)；QFJ 支持运行时增删会话 section (动态 acceptor 模式) | — |
-
-**已从本轮深度对比中剔除的三大类**：
-- **有替代**：`SessionStateListener` (用 `SessionStatus`+`Monitor`)、`WatermarkTracker` (双通道背压)、`ConnectionValidator` (`fromAdmin` 拒绝)、`toRawString` (`Field` 存原始字节)、解析时重复 tag 检测 (校验时仍检测)、可插拔 `Validator` (`fromApp` 自定义)、`TracingLog` category (tracing subscriber)、`admin/app messageCategory` (静态 admin 集合)、流式解析器 (transport framing)、零拷贝 `TagValue` (纯性能)、`sendToTarget` registry (`Monitor::send_app`)、`setNextSenderMsgSeqNum` (`seed_sequences`)、`logon()/logout()` API (`Event::StartLogout`)、`EndpointIdentificationAlgorithm` (rustls WebPki 隐式)、`canLogon` (`from_admin` 复用, TODO line 409)、`MaxScheduledWriteRequests` (有意 no-op, TODO-04)、file/SQL 跨引擎格式兼容 (自兼容即可)
-- **不适合 Rust**：`VM_PIPE` (JVM 内)、JMX 计数器/操作、`KeyStoreType`/`KeyManagerFactoryAlgorithm`/`TrustManagerFactoryAlgorithm` (JSSE 专属)、`SingleThreadedEventHandlingStrategy` (tokio 调度器替代)、NTLM 代理 (basic auth 替代)、SLF4J (`tracing` 替代)、反射 `MessageCracker` (codegen 替代)、OSGi Bundle (无 OSGi)
-- **TrueFix 独有优势**：Sans-IO FSM、类型化回调结果、异步 `Application` trait、`Action::ResetStore`、`on_before_reset`、`SessionStatus` 快照、双通道入站背压、`discard_sent` API、解码器无条件 CheckSum+BodyLength 校验、二进制长度前缀字段处理、原始字节往返保真、两层 typed reject、字典 `extend()` 冲突检测、双轨内容哈希、组件循环检测、`truefix-dict` CLI、rustls inline PEM、TLS 1.3-only、cipher suite 过滤、PROXY 可信门控、HTTP CONNECT+TLS-over-proxy、metrics facade、Live Monitor、编译期 panic-free、显式键姿态注册表
-
-**与既有 GAP-01–GAP-06 的关系**：
-- GAP-01 (字典验证 `.cfg` 接线) 和 GAP-05 (SQL store `.cfg` 派发) 属于配置接线层，GAP-21 (log `.cfg` 选择) 是同类问题的 log 侧延伸
-- GAP-06 (`ContinueInitializationOnError`) 已覆盖 #15，不重复
-- GAP-03 (MongoDB) 已覆盖 #19 的 Mongo 部分，不重复
+> 本节原有的 GAP-07–GAP-46 逐条列表（session/transport/codec-dict/store-log-config 四层深度对比）已
+> **重新对照当前代码逐条核实**（不依赖 git 历史，直接读源码），发现并修正若干处：GAP-18 拆分为
+> 三个独立子项（其中一项在核实时发现其实已经实现）、GAP-08 与已实现的 `requires_orig_sending_time`
+> 开关的边界关系被理清、新发现三个真实 bug（含一个此前未被记录的"stance 登记高估"问题：
+> `AllowedRemoteAddresses`/`DynamicSession`/`AcceptorTemplate` 被标记 `Impl` 但实际上 `Engine::start`
+> 从未构造过 `AcceptorBuilder`，从 `.cfg` 完全不可达）。核实后的权威版本见
+> **[`docs/engine-comparison-gaps.md`](engine-comparison-gaps.md)**，本节不再重复维护，避免两处内容漂移。

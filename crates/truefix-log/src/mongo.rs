@@ -15,6 +15,10 @@ fn io_err<E: std::fmt::Display>(e: E) -> LogError {
     LogError::Io(e.to_string())
 }
 
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
 enum Entry {
     Message {
         direction: &'static str,
@@ -40,10 +44,13 @@ pub struct MongoLogConfig {
     pub event_collection: String,
     /// Whether Heartbeat (`35=0`) messages are persisted.
     pub include_heartbeats: bool,
+    /// The session identity stamped onto every document's `session_id` field (GAP-41/FR-019,
+    /// feature 005). See `truefix_log::SqlLogConfig::session_id`'s doc for the rationale.
+    pub session_id: String,
 }
 
 impl MongoLogConfig {
-    /// A config using `uri` with default database/collection names.
+    /// A config using `uri` with default database/collection names and `session_id` `"default"`.
     pub fn new(uri: impl Into<String>) -> Self {
         Self {
             uri: uri.into(),
@@ -52,6 +59,7 @@ impl MongoLogConfig {
             outgoing_collection: "log_outgoing".to_owned(),
             event_collection: "log_event".to_owned(),
             include_heartbeats: true,
+            session_id: "default".to_owned(),
         }
     }
 }
@@ -81,6 +89,7 @@ impl MongoLog {
         let event: Collection<mongodb::bson::Document> = db.collection(&config.event_collection);
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Entry>();
+        let session_id = config.session_id;
         tokio::spawn(async move {
             while let Some(entry) = rx.recv().await {
                 match entry {
@@ -90,10 +99,22 @@ impl MongoLog {
                         } else {
                             &outgoing
                         };
-                        let _ = collection.insert_one(doc! { "text": text }).await;
+                        let _ = collection
+                            .insert_one(doc! {
+                                "text": text,
+                                "logged_at": now_unix(),
+                                "session_id": &session_id,
+                            })
+                            .await;
                     }
                     Entry::Event { text } => {
-                        let _ = event.insert_one(doc! { "text": text }).await;
+                        let _ = event
+                            .insert_one(doc! {
+                                "text": text,
+                                "logged_at": now_unix(),
+                                "session_id": &session_id,
+                            })
+                            .await;
                     }
                 }
             }

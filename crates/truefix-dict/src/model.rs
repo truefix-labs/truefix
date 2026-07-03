@@ -41,6 +41,37 @@ pub enum FieldType {
     UtcDateOnly,
     /// Month-year.
     MonthYear,
+    /// Signed price offset (US9, feature 005, FR-022) — same wire format as [`Self::Price`].
+    PriceOffset,
+    /// Local-market date (US9, feature 005, FR-022) — same wire format as [`Self::UtcDateOnly`].
+    LocalMktDate,
+    /// Day of month, 1-31 (US9, feature 005, FR-022).
+    DayOfMonth,
+    /// UTC date-only (US9, feature 005, FR-022) — QFJ's other name for [`Self::UtcDateOnly`]-shaped
+    /// data; a distinct variant (not an alias) since QFJ's own dictionary source distinguishes them
+    /// by name even though the wire format and check are identical.
+    UtcDate,
+    /// Time-of-day (US9, feature 005, FR-022) — same wire format as [`Self::UtcTimestamp`].
+    Time,
+    /// ISO 4217 currency code (US9, feature 005, FR-022) — format-checked (3 uppercase letters),
+    /// not validated against a real currency-code list (matches QFJ's own format-only behavior).
+    Currency,
+    /// Market Identifier Code / exchange (US9, feature 005, FR-022) — format-checked (up to 4
+    /// uppercase alphanumeric characters), not validated against a real MIC list.
+    Exchange,
+    /// Space-separated list of enumerated string values (US9, feature 005, FR-022) — QFJ's
+    /// `MultipleValueString`; combines with [`FieldDef::open_enum`] (FR-023) for per-token
+    /// enum-membership checking.
+    MultipleValueString,
+    /// QFJ's other historical name for [`Self::MultipleValueString`]'s exact same
+    /// space-separated-enum semantics (US9, feature 005, FR-022) — a distinct variant since QFJ's
+    /// own dictionary source uses both names.
+    MultipleStringValue,
+    /// Space-separated list of single characters (US9, feature 005, FR-022).
+    MultipleCharValue,
+    /// ISO 3166 country code (US9, feature 005, FR-022) — format-checked (2 uppercase letters),
+    /// not validated against a real country-code list.
+    Country,
 }
 
 impl FieldType {
@@ -64,6 +95,17 @@ impl FieldType {
             "UTCTIMEONLY" => Self::UtcTimeOnly,
             "UTCDATEONLY" => Self::UtcDateOnly,
             "MONTHYEAR" => Self::MonthYear,
+            "PRICEOFFSET" => Self::PriceOffset,
+            "LOCALMKTDATE" => Self::LocalMktDate,
+            "DAYOFMONTH" => Self::DayOfMonth,
+            "UTCDATE" => Self::UtcDate,
+            "TIME" => Self::Time,
+            "CURRENCY" => Self::Currency,
+            "EXCHANGE" => Self::Exchange,
+            "MULTIPLEVALUESTRING" => Self::MultipleValueString,
+            "MULTIPLESTRINGVALUE" => Self::MultipleStringValue,
+            "MULTIPLECHARVALUE" => Self::MultipleCharValue,
+            "COUNTRY" => Self::Country,
             _ => return None,
         })
     }
@@ -71,17 +113,37 @@ impl FieldType {
     /// Whether `field`'s value is well-formed for this type.
     pub fn value_ok(self, field: &Field) -> bool {
         match self {
-            Self::Int | Self::Length | Self::SeqNum | Self::NumInGroup => field.as_int().is_ok(),
-            Self::Float | Self::Price | Self::Qty | Self::Amt | Self::Percentage => {
-                field.as_decimal().is_ok()
+            Self::Int | Self::Length | Self::SeqNum | Self::NumInGroup | Self::DayOfMonth => {
+                field.as_int().is_ok()
             }
+            Self::Float
+            | Self::Price
+            | Self::Qty
+            | Self::Amt
+            | Self::Percentage
+            | Self::PriceOffset => field.as_decimal().is_ok(),
             Self::Char => field.as_char().is_ok(),
+            Self::MultipleCharValue => field
+                .as_str()
+                .is_ok_and(|s| s.split(' ').all(|tok| tok.chars().count() == 1)),
             Self::Boolean => field.as_bool().is_ok(),
-            Self::UtcTimestamp => field.as_utc_timestamp().is_ok(),
-            // String/Data/date/time-only are accepted as-is at this layer.
+            Self::UtcTimestamp | Self::Time => field.as_utc_timestamp().is_ok(),
+            Self::Currency => field.as_str().is_ok_and(is_alpha_len(3)),
+            Self::Country => field.as_str().is_ok_and(is_alpha_len(2)),
+            Self::Exchange => field.as_str().is_ok_and(|s| {
+                (1..=4).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric())
+            }),
+            // String/Data/date/time-only/MultipleValueString/MultipleStringValue are accepted
+            // as-is at this layer (MultipleValueString/MultipleStringValue's per-token
+            // enum-membership check happens in validate.rs, alongside FieldDef::open_enum).
             _ => true,
         }
     }
+}
+
+/// `s` is `len` ASCII uppercase letters exactly (ISO 4217/3166-style fixed alpha codes).
+fn is_alpha_len(len: usize) -> impl Fn(&str) -> bool {
+    move |s: &str| s.len() == len && s.chars().all(|c| c.is_ascii_uppercase())
 }
 
 /// A field definition.
@@ -95,12 +157,38 @@ pub struct FieldDef {
     pub field_type: FieldType,
     /// Allowed enumerated values (empty = any value of the type).
     pub values: Vec<String>,
+    /// Open enum (US9, feature 005, FR-023): when `true`, enum-membership checking is skipped
+    /// unconditionally — a value outside `values` is still accepted. Default `false` (every
+    /// existing bundled/hand-written dictionary keeps today's closed-enum behavior unchanged).
+    /// For [`FieldType::MultipleValueString`]/[`FieldType::MultipleStringValue`] fields, this
+    /// applies per-token after the space-split (see `validate.rs`).
+    pub open_enum: bool,
+    /// Human-readable label for an enumerated value, keyed by the raw wire value (US9, feature
+    /// 005, FR-030). Only populated for values that declare one in the source dictionary; a value
+    /// with no entry here simply has no label (not an error).
+    pub value_labels: BTreeMap<String, String>,
 }
 
 impl FieldDef {
-    /// Whether `value` is allowed (always true when the field is not enumerated).
+    /// Whether `value` is allowed: always true when the field is not enumerated or is
+    /// [`Self::open_enum`] (FR-023); for [`FieldType::MultipleValueString`]/
+    /// [`FieldType::MultipleStringValue`], `value` is first split on spaces and each token
+    /// checked individually.
     pub fn allows(&self, value: &str) -> bool {
-        self.values.is_empty() || self.values.iter().any(|v| v == value)
+        if self.values.is_empty() || self.open_enum {
+            return true;
+        }
+        match self.field_type {
+            FieldType::MultipleValueString | FieldType::MultipleStringValue => value
+                .split(' ')
+                .all(|tok| self.values.iter().any(|v| v == tok)),
+            _ => self.values.iter().any(|v| v == value),
+        }
+    }
+
+    /// The human-readable label for `value`, if the dictionary declared one (FR-030).
+    pub fn label(&self, value: &str) -> Option<&str> {
+        self.value_labels.get(value).map(String::as_str)
     }
 }
 
@@ -118,6 +206,12 @@ pub struct MessageDef {
     /// All valid body tags, including transitively-nested repeating-group member tags. Computed by
     /// the parser once groups are known; used for the "tag defined for message type" check.
     pub member_tags: BTreeSet<u32>,
+    /// Custom body field emission order (US9, feature 005, FR-027), from the `ordered` directive
+    /// modifier on a `message` block. `None` (the default) preserves today's insertion-order
+    /// encoding. When present, `Message::encode` emits body fields present in this list in this
+    /// order, then any dictionary-unlisted/UDF fields afterward (matching QFJ's own
+    /// `FieldOrderComparator` "unspecified fields last" semantics).
+    pub field_order: Option<Vec<u32>>,
 }
 
 impl MessageDef {
@@ -148,7 +242,7 @@ pub struct ComponentDef {
 }
 
 /// A parsed FIX data dictionary for one version.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataDictionary {
     pub(crate) version: String,
     pub(crate) fields: BTreeMap<u32, FieldDef>,
@@ -159,12 +253,37 @@ pub struct DataDictionary {
     pub(crate) groups: BTreeMap<u32, GroupDef>,
     pub(crate) components: BTreeMap<String, ComponentDef>,
     pub(crate) hash: u64,
+    /// Structured version metadata (US9, feature 005, FR-028), from the optional `version-meta`
+    /// directive. `None` (the default) means no metadata was declared — the BeginString-match
+    /// check (FR-029) is then a no-op, matching spec.md's own recorded Edge Case.
+    pub(crate) version_meta: Option<VersionMeta>,
+}
+
+/// Structured FIX version metadata (US9, feature 005, FR-028): major/minor version, plus an
+/// optional service pack / extension pack, distinct pieces of information the plain
+/// `version: String` (e.g. `"FIX.5.0SP2"`) doesn't expose without re-parsing on every access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VersionMeta {
+    /// Major version (e.g. `4` for FIX.4.4, `5` for FIX.5.0SP2).
+    pub major: u8,
+    /// Minor version (e.g. `4` for FIX.4.4, `0` for FIX.5.0SP2).
+    pub minor: u8,
+    /// Service pack number, if any (e.g. `Some(2)` for FIX.5.0SP2).
+    pub service_pack: Option<u8>,
+    /// Extension pack number, if any.
+    pub extension_pack: Option<u8>,
 }
 
 impl DataDictionary {
     /// The dictionary version (BeginString).
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// Structured version metadata, if the source dictionary declared a `version-meta` directive
+    /// (US9, feature 005, FR-028). `None` for dictionaries without one.
+    pub fn version_meta(&self) -> Option<VersionMeta> {
+        self.version_meta
     }
 
     /// The content hash of the source this dictionary was parsed from.
@@ -368,6 +487,15 @@ pub struct GroupDef {
     pub delimiter: u32,
     /// The ordered member tags of each entry (including the delimiter first).
     pub members: Vec<u32>,
+    /// A nested dictionary scoped to just this group's own member fields (and, transitively,
+    /// nested groups' own child dictionaries) — US9, feature 005, FR-024. Built during
+    /// dictionary construction by projecting `members` into a minimal `DataDictionary` (reusing
+    /// the existing field definitions from the enclosing dictionary, not a separately-authored
+    /// source). Used by `validate.rs` to type/enum-check fields *within* a group entry, which the
+    /// top-level `validate()` field loop never reaches (`FieldMap::fields()` skips group members
+    /// by design). `None` only when a group somehow has no matching field definitions at all
+    /// (defensive; every well-formed dictionary source produces `Some`).
+    pub child: Option<Box<DataDictionary>>,
 }
 
 /// A validation failure.

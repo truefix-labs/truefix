@@ -16,8 +16,8 @@ use crate::admin;
 use crate::config::{Role, SessionConfig};
 use crate::session_id::SessionId;
 use crate::tags::{
-    GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM, POSS_DUP_FLAG,
-    RESET_SEQ_NUM_FLAG, SESSION_STATUS,
+    GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM,
+    ORIG_SENDING_TIME, POSS_DUP_FLAG, RESET_SEQ_NUM_FLAG, SENDING_TIME, SESSION_STATUS,
 };
 use crate::time_util::now_utc_timestamp_prec;
 
@@ -69,6 +69,13 @@ pub struct SessionStatus {
 pub enum Action {
     /// Send this message to the counterparty.
     Send(Message),
+    /// Resend a previously-sent application message during gap-fill resend, carrying its original
+    /// sequence number (US3, feature 005, GAP-07/FR-007). Distinct from [`Action::Send`] so the
+    /// transport can give `Application::to_app` a veto that — unlike a vetoed live send — must be
+    /// backed by a compensating `SequenceReset-GapFill` for the sequence number rather than a bare
+    /// discard, since a resend's sequence number was already promised to the counterparty in an
+    /// earlier connection. See [`Session::gap_fill_after_veto`].
+    Resend(Message, u64),
     /// Close the connection.
     Disconnect,
     /// A full sequence/message-history reset occurred in-engine (logon-time `ResetSeqNumFlag`, or
@@ -92,6 +99,13 @@ pub struct Session {
     test_request_outstanding: bool,
     logon_sent: bool,
     resend_requested: bool,
+    /// GAP-09/FR-011 (feature 005): the full known upper bound of an in-progress inbound gap,
+    /// tracked only while `resend_request_chunk_size > 0`. `None` when no chunked resend is
+    /// outstanding.
+    resend_target: Option<u64>,
+    /// GAP-09/FR-011 (feature 005): the end sequence number of the currently outstanding
+    /// chunked `ResendRequest`, paired with `resend_target`.
+    resend_chunk_end: Option<u64>,
     /// Sent messages, by sequence number, for resend.
     store: BTreeMap<u64, Message>,
     /// Received out-of-order messages (seq > expected), awaiting gap fill.
@@ -116,6 +130,8 @@ impl Session {
             test_request_outstanding: false,
             logon_sent: false,
             resend_requested: false,
+            resend_target: None,
+            resend_chunk_end: None,
             store: BTreeMap::new(),
             queue: BTreeMap::new(),
             validator: None,
@@ -206,6 +222,49 @@ impl Session {
     /// replaying content that was never actually transmitted (FR-016).
     pub fn discard_sent(&mut self, seq: u64) {
         self.store.remove(&seq);
+    }
+
+    /// PossDup anti-replay check (US3, feature 005, GAP-08/FR-008/FR-009): a stale-but-legitimate
+    /// resend's `OrigSendingTime` is never later than its own `SendingTime`. Returns `Some(reject)`
+    /// when `OrigSendingTime` is present and later than `SendingTime` (unconditional — a real
+    /// replay/falsification signal), or when it's missing and
+    /// `requires_orig_sending_time_on_low_seq` is set (FR-009); `None` otherwise (matches today's
+    /// silent-drop behavior).
+    fn poss_dup_anti_replay_violation(&self, msg: &Message) -> Option<truefix_core::Reject> {
+        let orig_sending_time = msg
+            .header
+            .get(ORIG_SENDING_TIME)
+            .and_then(|f| f.as_utc_timestamp().ok());
+        match orig_sending_time {
+            Some(orig) => {
+                let sending_time = msg
+                    .header
+                    .get(SENDING_TIME)
+                    .and_then(|f| f.as_utc_timestamp().ok());
+                if sending_time.is_some_and(|st| orig > st) {
+                    Some(truefix_core::Reject {
+                        reason: 5, // SessionRejectReason: Value is incorrect (out of range) for this tag
+                        ref_tag: Some(ORIG_SENDING_TIME),
+                        text: Some(
+                            "OrigSendingTime is later than SendingTime on a PossDup message"
+                                .to_owned(),
+                        ),
+                        session_status: None,
+                    })
+                } else {
+                    None
+                }
+            }
+            None if self.config.requires_orig_sending_time_on_low_seq => {
+                Some(truefix_core::Reject {
+                    reason: 1, // SessionRejectReason: Required tag missing
+                    ref_tag: Some(ORIG_SENDING_TIME),
+                    text: Some("OrigSendingTime is required on a PossDup message".to_owned()),
+                    session_status: None,
+                })
+            }
+            None => None,
+        }
     }
 
     /// Refuse the session in response to an admin/logon callback rejection
@@ -343,6 +402,25 @@ impl Session {
     fn send_raw(&mut self, msg: Message) -> Action {
         self.ticks_since_send = 0;
         Action::Send(msg)
+    }
+
+    /// Resend a previously-sent application message during gap-fill resend (US3, feature 005,
+    /// GAP-07/FR-007), carrying its original sequence number so the transport can substitute a
+    /// compensating `GapFill` (via [`Session::gap_fill_after_veto`]) if `Application::to_app` vetoes
+    /// it, instead of the bare discard a vetoed live [`Action::Send`] gets.
+    fn send_resend(&mut self, msg: Message, seq: u64) -> Action {
+        self.ticks_since_send = 0;
+        Action::Resend(msg, seq)
+    }
+
+    /// Build the compensating `SequenceReset-GapFill` for a single resend-originated message the
+    /// transport's `Application::to_app` callback vetoed (US3, feature 005, GAP-07/FR-007). Call
+    /// this instead of a bare `discard_sent` when the vetoed [`Action::Resend`] carried a real
+    /// sequence number that was already promised to the counterparty in an earlier connection — an
+    /// unfilled gap there (unlike a vetoed *live* send, which never promised anything) would leave
+    /// the counterparty's own sequence tracking permanently stuck.
+    pub fn gap_fill_after_veto(&mut self, seq: u64) -> Action {
+        self.gap_fill(seq, seq.saturating_add(1))
     }
 
     fn reset_sequences(&mut self, full: bool) {
@@ -500,6 +578,11 @@ impl Session {
             }
             Ordering::Greater => {
                 self.queue.insert(seq, msg);
+                // GAP-09/FR-011 (feature 005): track this arrival as (at least) the full known
+                // extent of the gap, so a chunked resend can auto-continue past its first chunk.
+                if self.config.resend_request_chunk_size > 0 {
+                    self.resend_target = Some(self.resend_target.map_or(seq, |t| t.max(seq)));
+                }
                 if self.resend_requested && !self.config.send_redundant_resend_requests {
                     Vec::new()
                 } else {
@@ -510,7 +593,20 @@ impl Session {
             }
             Ordering::Less => {
                 if poss_dup {
-                    Vec::new()
+                    // GAP-08/FR-008/FR-009 (feature 005): anti-replay check. A stale-but-legitimate
+                    // resend always carries an `OrigSendingTime` no later than its own `SendingTime`
+                    // — one later than the other indicates a replayed/falsified message. Distinct
+                    // from, and runs *before*, the dictionary-level `requires_orig_sending_time`
+                    // toggle (`ValidationOptions`, TODO-09) — that toggle only fires inside
+                    // `validate_app`, which this early-drop branch never reaches. Reuses
+                    // `reject_logon` (Logout + disconnect), the same severity as a duplicate Logon
+                    // (`on_logon`, below) — resolved via `/speckit-clarify`, not routed through
+                    // `Application::from_admin` since this is a purely session-internal protocol
+                    // violation.
+                    match self.poss_dup_anti_replay_violation(&msg) {
+                        Some(reject) => self.reject_logon(&reject),
+                        None => Vec::new(),
+                    }
                 } else {
                     let s = self.next_seq();
                     let lo = admin::logout(&self.config, s, Some("MsgSeqNum too low"));
@@ -582,14 +678,41 @@ impl Session {
         if self.queue.is_empty() {
             self.resend_requested = false;
         }
+        actions.extend(self.maybe_continue_chunked_resend());
         actions
+    }
+
+    /// GAP-09/FR-011 (feature 005): once `next_in_seq` has advanced past the currently
+    /// outstanding chunk's end (`resend_chunk_end`) but the full known gap (`resend_target`)
+    /// isn't closed yet, automatically issue the next chunk's `ResendRequest` — a well-behaved
+    /// reference-engine responder never re-requests the remainder unprompted, so the requester
+    /// must drive continuation itself (research.md §8). No-op when no chunked resend is
+    /// outstanding.
+    fn maybe_continue_chunked_resend(&mut self) -> Vec<Action> {
+        let Some(target) = self.resend_target else {
+            return Vec::new();
+        };
+        if self.next_in_seq > target {
+            self.resend_target = None;
+            self.resend_chunk_end = None;
+            return Vec::new();
+        }
+        match self.resend_chunk_end {
+            Some(chunk_end) if self.next_in_seq > chunk_end => {
+                vec![self.request_resend(self.next_in_seq)]
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn request_resend(&mut self, begin: u64) -> Action {
         let chunk = u64::from(self.config.resend_request_chunk_size);
         let end = if chunk > 0 {
-            begin + chunk - 1
+            let capped = begin + chunk - 1;
+            self.resend_chunk_end = Some(self.resend_target.map_or(capped, |t| t.min(capped)));
+            self.resend_chunk_end.unwrap_or(capped)
         } else {
+            self.resend_chunk_end = None;
             0 // 0 = to infinity
         };
         let seq = self.next_seq();
@@ -638,7 +761,7 @@ impl Session {
                 }
                 if let Some(m) = stored {
                     let resent = admin::prepare_resend(&m);
-                    actions.push(self.send_raw(resent));
+                    actions.push(self.send_resend(resent, seq));
                 }
             } else if gap_start.is_none() {
                 gap_start = Some(seq);
@@ -679,6 +802,20 @@ impl Session {
     }
 
     fn on_logon(&mut self, msg: Message) -> Vec<Action> {
+        // GAP-18a/FR-010 (feature 005): reject a duplicate Logon on an already-logged-on session
+        // (Logout + disconnect) instead of silently no-op'ing it — the same severity as the
+        // PossDup anti-replay violation above (resolved via `/speckit-clarify`). Checked first,
+        // before any of this function's reset/sequence-advancement side effects, so a spurious
+        // duplicate never partially mutates session state.
+        if self.state == SessionState::LoggedOn {
+            return self.reject_logon(&truefix_core::Reject {
+                reason: 0,
+                ref_tag: None,
+                text: Some("session is already logged on".to_owned()),
+                session_status: None,
+            });
+        }
+
         let mut store_reset = false;
         if msg
             .body
@@ -695,12 +832,13 @@ impl Session {
         // NextExpectedMsgSeqNum (789) and LastMsgSeqNumProcessed (369) on the response reflect
         // having consumed this Logon. The resulting actions (queue drain / ResendRequest) are
         // emitted *after* the Logon response below to preserve wire ordering.
-        let disposition = msg
+        let logon_seq = msg
             .header
             .get(MSG_SEQ_NUM)
             .and_then(|f| f.as_int().ok())
             .filter(|&s| s > 0)
-            .map(|s| (s as u64).cmp(&self.next_in_seq));
+            .map(|s| s as u64);
+        let disposition = logon_seq.map(|s| s.cmp(&self.next_in_seq));
         if disposition == Some(Ordering::Equal) {
             self.next_in_seq = self.next_in_seq.saturating_add(1);
         }
@@ -737,6 +875,11 @@ impl Session {
             Some(Ordering::Equal) => actions.extend(self.drain_queue()),
             Some(Ordering::Greater) if !self.resend_requested => {
                 self.resend_requested = true;
+                if self.config.resend_request_chunk_size > 0 {
+                    if let Some(s) = logon_seq {
+                        self.resend_target = Some(self.resend_target.map_or(s, |t| t.max(s)));
+                    }
+                }
                 let begin = self.next_in_seq;
                 actions.push(self.request_resend(begin));
             }

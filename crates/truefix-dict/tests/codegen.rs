@@ -10,22 +10,22 @@ fn typed_message_builds_with_named_accessors() {
     order
         .set_cl_ord_id("O1")
         .set_symbol("AAPL")
-        .set_side(Side::Buy)
-        .set_ord_type(OrdType::Market)
-        .set_handl_inst(HandlInst::AutomatedNoIntervention);
+        .set_side(Side::BUY)
+        .set_ord_type(OrdType::MARKET)
+        .set_handl_inst(HandlInst::AUTOEXECPRIV);
 
     assert_eq!(order.cl_ord_id(), Some("O1"));
     assert_eq!(order.symbol(), Some("AAPL"));
-    assert_eq!(order.side(), Some(Side::Buy));
-    assert_eq!(order.ord_type(), Some(OrdType::Market));
+    assert_eq!(order.side(), Some(Side::BUY));
+    assert_eq!(order.ord_type(), Some(OrdType::MARKET));
     assert_eq!(order.0.msg_type(), Some("D"));
 }
 
 #[test]
 fn field_value_enum_round_trips_the_wire_value() {
-    assert_eq!(Side::Buy.as_str(), "1");
-    assert_eq!(Side::parse("2"), Some(Side::Sell));
-    assert_eq!(Side::parse("9"), None);
+    assert_eq!(Side::BUY.as_str(), "1");
+    assert_eq!(Side::parse("2"), Some(Side::SELL));
+    assert_eq!(Side::parse("Z"), None); // not a real Side value
 }
 
 #[test]
