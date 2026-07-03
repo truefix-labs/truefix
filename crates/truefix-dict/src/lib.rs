@@ -22,14 +22,14 @@
 )]
 
 pub mod codegen;
+#[cfg(feature = "dict-tooling")]
+pub mod fix_repository;
 pub mod fixt;
 mod hash;
 pub mod model;
 #[cfg(feature = "dict-tooling")]
 pub mod orchestra;
 pub mod parser;
-#[cfg(feature = "dict-tooling")]
-pub mod qfj_xml;
 mod validate;
 
 pub use codegen::CodegenError;
