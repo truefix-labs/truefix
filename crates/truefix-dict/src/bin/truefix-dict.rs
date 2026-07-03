@@ -7,6 +7,8 @@
 //!
 //! ```text
 //! truefix-dict generate-dict --source <orchestra.xml> --out <normalized.fixdict>
+//! truefix-dict generate-dict --format fix-repository --source <repo-version-dir> \
+//!     --version <version> --out <normalized.fixdict>
 //! truefix-dict generate-code --dict <normalized.fixdict> --out <generated.rs> [--name <Name>]
 //! truefix-dict validate --dict <normalized.fixdict>
 //! ```
@@ -92,9 +94,47 @@ fn generate_dict(args: &[String]) -> Result<(), String> {
     let flags = parse_flags(args)?;
     let source = required_flag(&flags, "source")?;
     let out = required_flag(&flags, "out")?;
-    let xml = std::fs::read_to_string(source).map_err(|e| format!("reading {source}: {e}"))?;
-    let dict_text =
-        truefix_dict::orchestra::convert(&xml).map_err(|e| format!("converting {source}: {e}"))?;
+    // `--format fix-repository` (US9, feature 005, FR-031): the FIX Trading Community's official,
+    // Apache-2.0-licensed "Unified Repository" XML (see `dict-src/fix-repository/PROVENANCE.md`),
+    // as opposed to the default `orchestra` (FIX Orchestra repository XML). `--source` names the
+    // per-version directory holding its 5 relational files (`Fields.xml`/`Enums.xml`/
+    // `Components.xml`/`Messages.xml`/`MsgContents.xml`); requires `--version` (the target
+    // `.fixdict` version directive, e.g. "FIX.4.4") since the Repository XML carries no single
+    // version string of its own.
+    let dict_text = match flags.get("format").map(String::as_str) {
+        Some("fix-repository") => {
+            let version = required_flag(&flags, "version")?;
+            let read = |name: &str| {
+                let path = format!("{source}/{name}");
+                std::fs::read_to_string(&path).map_err(|e| format!("reading {path}: {e}"))
+            };
+            let fields_xml = read("Fields.xml")?;
+            let enums_xml = read("Enums.xml")?;
+            let components_xml = read("Components.xml")?;
+            let messages_xml = read("Messages.xml")?;
+            let msg_contents_xml = read("MsgContents.xml")?;
+            let repo_source = truefix_dict::fix_repository::RepositorySource {
+                fields_xml: &fields_xml,
+                enums_xml: &enums_xml,
+                components_xml: &components_xml,
+                messages_xml: &messages_xml,
+                msg_contents_xml: &msg_contents_xml,
+            };
+            truefix_dict::fix_repository::convert(&repo_source, version)
+                .map_err(|e| format!("converting {source}: {e}"))?
+        }
+        None | Some("orchestra") => {
+            let xml =
+                std::fs::read_to_string(source).map_err(|e| format!("reading {source}: {e}"))?;
+            truefix_dict::orchestra::convert(&xml)
+                .map_err(|e| format!("converting {source}: {e}"))?
+        }
+        Some(other) => {
+            return Err(format!(
+                "unknown --format {other:?} (expected orchestra or fix-repository)"
+            ))
+        }
+    };
     std::fs::write(out, &dict_text).map_err(|e| format!("writing {out}: {e}"))?;
     println!("wrote {out} ({} bytes)", dict_text.len());
     Ok(())

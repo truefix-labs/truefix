@@ -1,8 +1,7 @@
 //! The integrator callback surface.
 //!
-//! **Breaking change (feature 002 / FR-016)**: the fault-returning callbacks now return typed
-//! outcomes (`Reject`/`DoNotSend`/`BusinessReject`) instead of `Result<(), String>`. See
-//! `MIGRATION.md`.
+//! The fault-returning callbacks return typed outcomes (`Reject`/`DoNotSend`/`BusinessReject`)
+//! rather than `Result<(), String>`.
 
 use truefix_core::{BusinessReject, DoNotSend, Message, Reject};
 

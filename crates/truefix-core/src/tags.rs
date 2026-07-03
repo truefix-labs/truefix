@@ -77,6 +77,8 @@ pub fn data_field_for_length(tag: u32) -> Option<u32> {
         360 => 361, // EncodedAllocTextLen -> EncodedAllocText
         362 => 363, // EncodedUnderlyingIssuerLen -> EncodedUnderlyingIssuer
         364 => 365, // EncodedUnderlyingSecurityDescLen -> EncodedUnderlyingSecurityDesc
+        93 => 89,   // SignatureLength -> Signature (BUG-02, feature 005): the one documented
+        // exception to `lengthTag = dataTag - 1` (Signature's length field is 93, not 88).
         _ => return None,
     })
 }

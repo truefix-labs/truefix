@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::hash::fnv1a;
-use crate::model::{ComponentDef, DataDictionary, FieldDef, FieldType, GroupDef, MessageDef};
+use crate::model::{
+    ComponentDef, DataDictionary, FieldDef, FieldType, GroupDef, MessageDef, VersionMeta,
+};
 
 /// An error parsing a normalized dictionary.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -56,13 +58,15 @@ enum RawMember {
 /// Parse a normalized dictionary document.
 pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
     let mut version: Option<String> = None;
+    let mut version_meta: Option<VersionMeta> = None;
     let mut fields: BTreeMap<u32, FieldDef> = BTreeMap::new();
     let mut field_by_name: BTreeMap<String, u32> = BTreeMap::new();
     let mut header: BTreeSet<u32> = BTreeSet::new();
     let mut trailer: BTreeSet<u32> = BTreeSet::new();
 
-    // Raw (pre-component-resolution) forms, keyed the same way the final maps will be.
-    let mut messages_raw: BTreeMap<String, (String, Vec<RawMember>, Vec<RawMember>)> =
+    // Raw (pre-component-resolution) forms, keyed the same way the final maps will be. The final
+    // `bool` is the `ordered` modifier (US9, feature 005, FR-027).
+    let mut messages_raw: BTreeMap<String, (String, Vec<RawMember>, Vec<RawMember>, bool)> =
         BTreeMap::new();
     let mut groups_raw: BTreeMap<u32, (u32, Vec<RawMember>)> = BTreeMap::new();
     let mut components_raw: BTreeMap<String, Vec<RawMember>> = BTreeMap::new();
@@ -83,6 +87,37 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                 })?;
                 version = Some(v.to_owned());
             }
+            "version-meta" => {
+                let mut major = None;
+                let mut minor = None;
+                let mut sp = None;
+                let mut ep = None;
+                for t in tokens {
+                    if let Some(v) = t.strip_prefix("major=") {
+                        major = v.parse().ok();
+                    } else if let Some(v) = t.strip_prefix("minor=") {
+                        minor = v.parse().ok();
+                    } else if let Some(v) = t.strip_prefix("sp=") {
+                        sp = v.parse().ok();
+                    } else if let Some(v) = t.strip_prefix("ep=") {
+                        ep = v.parse().ok();
+                    }
+                }
+                let major = major.ok_or(ParseError::Malformed {
+                    line: line_no,
+                    reason: "version-meta requires major=N",
+                })?;
+                let minor = minor.ok_or(ParseError::Malformed {
+                    line: line_no,
+                    reason: "version-meta requires minor=N",
+                })?;
+                version_meta = Some(VersionMeta {
+                    major,
+                    minor,
+                    service_pack: sp,
+                    extension_pack: ep,
+                });
+            }
             "field" => {
                 let tag = parse_tag(tokens.next(), line_no)?;
                 let name = tokens.next().ok_or(ParseError::Malformed {
@@ -98,11 +133,29 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                         line: line_no,
                         token: type_token.to_owned(),
                     })?;
-                // Enum tokens may carry an optional `=Label` suffix for codegen's benefit (e.g.
-                // `1=Buy`); runtime validation only compares the raw wire value, so it is stripped.
-                let values: Vec<String> = tokens
-                    .map(|t| t.split('=').next().unwrap_or(t).to_owned())
-                    .collect();
+                // `open` (US9, feature 005, FR-023), when present, is a modifier immediately
+                // after the type and before any values — an additive grammar position that can't
+                // collide with a real enum value literally named "open" the way a bare filtered
+                // token anywhere in the list could.
+                let mut remaining: Vec<&str> = tokens.collect();
+                let open_enum = remaining.first() == Some(&"open");
+                if open_enum {
+                    remaining.remove(0);
+                }
+                // Enum tokens may carry an optional `=Label` suffix (e.g. `1=Buy`) — the raw wire
+                // value is used for both membership checking and as the `values` entry; the label
+                // (if present) is captured into `value_labels` (US9, feature 005, FR-030).
+                let mut values: Vec<String> = Vec::with_capacity(remaining.len());
+                let mut value_labels = BTreeMap::new();
+                for t in remaining {
+                    match t.split_once('=') {
+                        Some((v, label)) => {
+                            value_labels.insert(v.to_owned(), label.to_owned());
+                            values.push(v.to_owned());
+                        }
+                        None => values.push(t.to_owned()),
+                    }
+                }
                 fields.insert(
                     tag,
                     FieldDef {
@@ -110,6 +163,8 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                         name: name.to_owned(),
                         field_type,
                         values,
+                        open_enum,
+                        value_labels,
                     },
                 );
                 field_by_name.insert(name.to_owned(), tag);
@@ -135,14 +190,20 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                 })?;
                 let mut required = Vec::new();
                 let mut optional = Vec::new();
+                let mut ordered = false;
                 for token in tokens {
-                    if let Some(list) = token.strip_prefix("req:") {
+                    if token == "ordered" {
+                        ordered = true;
+                    } else if let Some(list) = token.strip_prefix("req:") {
                         required = parse_member_list(list, line_no)?;
                     } else if let Some(list) = token.strip_prefix("opt:") {
                         optional = parse_member_list(list, line_no)?;
                     }
                 }
-                messages_raw.insert(msg_type.to_owned(), (name.to_owned(), required, optional));
+                messages_raw.insert(
+                    msg_type.to_owned(),
+                    (name.to_owned(), required, optional, ordered),
+                );
             }
             "group" => {
                 let count_tag = parse_tag(tokens.next(), line_no)?;
@@ -186,23 +247,38 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
     // point on, decode/validate never need to know components exist (FR-009).
     let components = resolve_all_components(&components_raw)?;
 
-    let mut groups: BTreeMap<u32, GroupDef> = BTreeMap::new();
+    // Expand every group's member list first (component-resolved, but not yet carrying `child`
+    // dictionaries) so `build_child` (US9, feature 005, FR-024) can look up a nested group's own
+    // members by count_tag regardless of definition order.
+    let mut groups_expanded: BTreeMap<u32, (u32, Vec<u32>)> = BTreeMap::new();
     for (count_tag, (delimiter, raw_members)) in groups_raw {
         let members = expand_members(&raw_members, &components)?;
+        groups_expanded.insert(count_tag, (delimiter, members));
+    }
+
+    let mut groups: BTreeMap<u32, GroupDef> = BTreeMap::new();
+    for (&count_tag, (delimiter, members)) in &groups_expanded {
+        let child = build_child(members, &fields, &groups_expanded, 0);
         groups.insert(
             count_tag,
             GroupDef {
                 count_tag,
-                delimiter,
-                members,
+                delimiter: *delimiter,
+                members: members.clone(),
+                child,
             },
         );
     }
 
     let mut messages: BTreeMap<String, MessageDef> = BTreeMap::new();
-    for (msg_type, (name, req_raw, opt_raw)) in messages_raw {
+    for (msg_type, (name, req_raw, opt_raw, ordered)) in messages_raw {
         let required = expand_members(&req_raw, &components)?;
         let optional = expand_members(&opt_raw, &components)?;
+        // GAP-27/FR-027 (feature 005): the `ordered` modifier freezes emission order to exactly
+        // "required fields in listed order, then optional fields in listed order" — the same
+        // order `req:`/`opt:`'s own comma-separated lists already declare.
+        let field_order =
+            ordered.then(|| required.iter().chain(optional.iter()).copied().collect());
         messages.insert(
             msg_type.clone(),
             MessageDef {
@@ -211,6 +287,7 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                 required,
                 optional,
                 member_tags: BTreeSet::new(),
+                field_order,
             },
         );
     }
@@ -241,6 +318,7 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
         groups,
         components,
         hash: fnv1a(input.as_bytes()),
+        version_meta,
     })
 }
 
@@ -295,6 +373,61 @@ fn resolve_component(
         },
     );
     Ok(members)
+}
+
+/// Build a group's `child` dictionary (US9, feature 005, FR-024): a nested `DataDictionary`
+/// scoped to just `members`' own field definitions (projected from `fields`), plus, recursively,
+/// any nested group's own child. `depth` caps recursion (defensively; a well-formed dictionary
+/// never nests a group inside itself, directly or transitively). Returns `None` if none of
+/// `members` names a known field (defensive; doesn't happen for a well-formed dictionary).
+fn build_child(
+    members: &[u32],
+    fields: &BTreeMap<u32, FieldDef>,
+    groups_expanded: &BTreeMap<u32, (u32, Vec<u32>)>,
+    depth: usize,
+) -> Option<Box<DataDictionary>> {
+    const MAX_DEPTH: usize = 16;
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let child_fields: BTreeMap<u32, FieldDef> = members
+        .iter()
+        .filter_map(|t| fields.get(t).map(|f| (*t, f.clone())))
+        .collect();
+    if child_fields.is_empty() {
+        return None;
+    }
+    let child_field_by_name: BTreeMap<String, u32> = child_fields
+        .values()
+        .map(|f| (f.name.clone(), f.tag))
+        .collect();
+    let mut child_groups: BTreeMap<u32, GroupDef> = BTreeMap::new();
+    for &t in members {
+        if let Some((delimiter, nested_members)) = groups_expanded.get(&t) {
+            let nested_child = build_child(nested_members, fields, groups_expanded, depth + 1);
+            child_groups.insert(
+                t,
+                GroupDef {
+                    count_tag: t,
+                    delimiter: *delimiter,
+                    members: nested_members.clone(),
+                    child: nested_child,
+                },
+            );
+        }
+    }
+    Some(Box::new(DataDictionary {
+        version: String::new(),
+        fields: child_fields,
+        field_by_name: child_field_by_name,
+        messages: BTreeMap::new(),
+        header: BTreeSet::new(),
+        trailer: BTreeSet::new(),
+        groups: child_groups,
+        components: BTreeMap::new(),
+        hash: 0,
+        version_meta: None,
+    }))
 }
 
 /// Expand a message's/group's raw member list into a flat tag list, splicing in each referenced

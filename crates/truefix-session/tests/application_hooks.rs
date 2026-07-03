@@ -34,7 +34,7 @@ fn sends(actions: &[Action]) -> Vec<&Message> {
     actions
         .iter()
         .filter_map(|a| match a {
-            Action::Send(m) => Some(m),
+            Action::Send(m) | Action::Resend(m, _) => Some(m),
             Action::Disconnect | Action::ResetStore => None,
         })
         .collect()

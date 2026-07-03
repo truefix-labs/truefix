@@ -103,9 +103,52 @@ async fn exercise_session_isolation() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// T048/T049 (US7, feature 005): creation-time persistence (stable across restarts, updated on
+/// reset) and atomic save+advance-sender (GAP-38/GAP-39; FR-017/FR-018).
+async fn exercise_creation_time_and_atomic_save() {
+    let path = unique_path();
+    let first = {
+        let store = RedbStore::connect(&path).await.unwrap();
+        store.creation_time().await.unwrap().unwrap()
+    };
+    let second = {
+        let store = RedbStore::connect(&path).await.unwrap();
+        store.creation_time().await.unwrap().unwrap()
+    };
+    assert_eq!(
+        first.unix_timestamp(),
+        second.unix_timestamp(),
+        "reopening the same file must not change the recorded creation time"
+    );
+
+    let store = RedbStore::connect(&path).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    store.reset().await.unwrap();
+    let after_reset = store.creation_time().await.unwrap().unwrap();
+    assert!(
+        after_reset.unix_timestamp() > second.unix_timestamp(),
+        "reset() should advance the recorded creation time"
+    );
+
+    store.set_next_sender_seq(5).await.unwrap();
+    store.save_and_advance_sender(5, b"atomic").await.unwrap();
+    assert_eq!(store.next_sender_seq().await.unwrap(), 6);
+    assert_eq!(
+        store.get(5, 5).await.unwrap(),
+        vec![(5, b"atomic".to_vec())]
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
 #[tokio::test]
 async fn redb_full_contract() {
     exercise_full_contract().await;
+}
+
+#[tokio::test]
+async fn redb_creation_time_and_atomic_save() {
+    exercise_creation_time_and_atomic_save().await;
 }
 
 #[tokio::test]

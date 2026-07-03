@@ -148,17 +148,15 @@ async fn engine_builds_file_log_from_cfg() {
 /// numbers to the named SQL backend and survives a restart, with zero additional Rust code beyond
 /// `Application` (FR-003, SC-003).
 ///
-/// **Found while writing this test — a real, pre-existing (not newly introduced) gap**:
-/// `StoreConfig::Sql`/`Mssql` carry only a `url: String`, no `session_id` — `SqlStore::connect(url)`
-/// always defaults `session_id` to `"default"` (`SqlStoreConfig::new`'s own default). Two sessions
-/// sharing one `JdbcURL` therefore collide on the same store row today, with or without `.cfg`
-/// wiring — this predates feature 004 (already true for any two callers of the plain
-/// `StoreConfig::Sql { url }` variant) and matches `JdbcSessionIdDefaultPropertyValue`/
-/// `JdbcStoreSessionsTableName` still being `Recognized`, not `Implemented`, in
-/// `crates/truefix-config/src/keys.rs` — a documented, separate, pre-existing scope boundary this
-/// feature doesn't close. This test therefore gives the acceptor and initiator sessions their own
-/// SQLite file each, exactly how an operator configuring two sessions against one JdbcURL-selected
-/// backend must do today.
+/// **Historical note**: until US8 (feature 005, FR-021), `StoreConfig::Sql`/`Mssql` carried only a
+/// bare `url: String` — `JdbcSessionIdDefaultPropertyValue`/`JdbcStoreSessionsTableName` were
+/// `Recognized`, not `Implemented`, in `crates/truefix-config/src/keys.rs`, and two sessions sharing
+/// one `JdbcURL` collided on the same `"default"` store row. US8 closed this by threading
+/// `sessions_table`/`messages_table`/`session_id`/`pool` through as optional fields (see
+/// `store_and_log_mapping.rs`'s `jdbc_table_name_keys_apply_to_the_sql_store` for that coverage).
+/// This test still gives the acceptor and initiator sessions their own SQLite file each — a
+/// deliberately simpler setup than exercising the now-available `JdbcSessionIdDefaultPropertyValue`
+/// override, which is covered separately in `truefix-config`.
 #[cfg(feature = "sql")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cfg_only_session_with_jdbc_url_persists_sequence_numbers_across_a_restart() {
@@ -294,7 +292,7 @@ async fn cfg_only_acceptor_rejects_a_dictionary_invalid_message() {
     bad_order.body.set(Field::string(11, "ORD1"));
     bad_order.body.set(Field::string(21, "1"));
     bad_order.body.set(Field::string(55, "AAPL"));
-    bad_order.body.set(Field::string(54, "9")); // Side: not a valid enum value
+    bad_order.body.set(Field::string(54, "Z")); // Side: not a valid enum value
     bad_order.body.set(Field::string(60, "20240101-00:00:00"));
     bad_order.body.set(Field::string(40, "2"));
     stream.write_all(&bad_order.encode()).await.unwrap();

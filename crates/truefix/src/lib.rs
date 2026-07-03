@@ -29,16 +29,21 @@ pub use truefix_transport::{self as transport, connect_initiator, Acceptor, Sess
 pub use truefix_config as config;
 pub use truefix_dict as dict;
 
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use truefix_config::{ConnectionType, ProxyKind, ProxySpec, SessionSettings, SocketOptionsSpec};
+use truefix_config::{
+    ConfigError, ConnectionType, ProxyKind, ProxySpec, ResolvedSession, SessionSettings,
+    SocketOptionsSpec,
+};
 use truefix_transport::{
     build_client_config, build_server_config, connect_initiator_reconnecting_multi,
     connect_initiator_reconnecting_multi_tls, connect_initiator_tls, connect_initiator_via_proxy,
-    connect_initiator_via_proxy_tls, connect_initiator_with, ProxyConfig, ProxyType,
-    ReconnectHandle, Services, SocketOptions,
+    connect_initiator_via_proxy_tls, connect_initiator_with, AcceptorBuilder, ProxyConfig,
+    ProxyType, ReconnectHandle, Services, SocketOptions,
 };
 
 fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {
@@ -167,6 +172,7 @@ async fn connect_sql_log(
         event_table: spec.event_table.clone(),
         include_heartbeats: spec.include_heartbeats,
         pool: truefix_log::SqlLogPoolOptions::default(),
+        session_id: session_id.to_owned(),
     })
     .await
     .map_err(|e| EngineError::Log(e.to_string()))?;
@@ -198,6 +204,7 @@ async fn connect_mssql_log(
         outgoing_table: spec.outgoing_table.clone(),
         event_table: spec.event_table.clone(),
         include_heartbeats: spec.include_heartbeats,
+        session_id: session_id.to_owned(),
     })
     .await
     .map_err(|e| EngineError::Log(e.to_string()))?;
@@ -260,7 +267,135 @@ impl Engine {
         let mut acceptors = Vec::new();
         let mut initiators = Vec::new();
         let mut failover_initiators = Vec::new();
+
+        // US2 (feature 005, BUG-03): group resolved acceptor sessions by bind address so multiple
+        // `[SESSION]` blocks sharing one `SocketAcceptPort` are served by ONE listener. Before this,
+        // every acceptor session — however many shared an address — got its own independent
+        // `Acceptor::bind_with`, so a second bind on an already-bound address failed outright
+        // ("address already in use"), and `AllowedRemoteAddresses`/`DynamicSession`/
+        // `AcceptorTemplate` were parsed but never reached any code that could act on them. A
+        // session is "grouped" (routed through `AcceptorBuilder` instead of the single-session
+        // `Acceptor::bind_with` path) when its address is shared with another acceptor session, or
+        // it individually sets `AcceptorTemplate`/`DynamicSession`/`AllowedRemoteAddresses` — every
+        // other acceptor (the overwhelming common case: one session per port, no special keys) keeps
+        // today's exact single-session path, unchanged.
+        let mut acceptor_addr_counts: HashMap<SocketAddr, usize> = HashMap::new();
+        for rs in &resolved {
+            if rs.connection == ConnectionType::Acceptor {
+                *acceptor_addr_counts.entry(rs.address).or_insert(0) += 1;
+            }
+        }
+        let mut singles = Vec::new();
+        let mut acceptor_groups: HashMap<SocketAddr, Vec<ResolvedSession>> = HashMap::new();
         for rs in resolved {
+            let is_grouped = rs.connection == ConnectionType::Acceptor
+                && (acceptor_addr_counts.get(&rs.address).copied().unwrap_or(0) > 1
+                    || rs.acceptor_template
+                    || !rs.allowed_remote_addresses.is_empty());
+            if is_grouped {
+                acceptor_groups.entry(rs.address).or_default().push(rs);
+            } else {
+                singles.push(rs);
+            }
+        }
+
+        for (addr, members) in acceptor_groups {
+            // `AcceptorBuilder` shares one `Services` (store/log/validator/...) across every
+            // session it serves — a pre-existing constraint of the multi-session acceptor API, not
+            // introduced here. The first group member's store/log/socket-options/validator become
+            // the whole group's; a group whose members configure genuinely different stores has no
+            // way to honor that today (same class of limitation as feature 004's JdbcURL
+            // session_id-collision finding) — out of this feature's scope to lift.
+            let continue_on_error = members
+                .first()
+                .is_some_and(|m| m.session.continue_initialization_on_error);
+            let result: Result<(), EngineError> = async {
+                let template_count = members.iter().filter(|m| m.acceptor_template).count();
+                if template_count > 1 {
+                    return Err(EngineError::Config(
+                        ConfigError::AmbiguousAcceptorTemplate { addr },
+                    ));
+                }
+                let primary = members.first().ok_or_else(|| {
+                    EngineError::Io(format!("acceptor group at {addr} has no sessions"))
+                })?;
+                let session_id = format!(
+                    "{}:{}->{}",
+                    primary.session.begin_string,
+                    primary.session.sender_comp_id,
+                    primary.session.target_comp_id
+                );
+                let store = truefix_store::build_store(&primary.store)
+                    .await
+                    .map_err(|e| EngineError::Store(e.to_string()))?;
+                let log = if let Some(spec) = &primary.sql_log {
+                    Some(build_sql_log(spec, &session_id).await?)
+                } else if let Some(spec) = &primary.log {
+                    Some(build_log(spec, &session_id)?)
+                } else {
+                    None
+                };
+                let services = Services {
+                    store: Some(Arc::from(store)),
+                    socket_options: to_transport_socket_options(primary.socket_options),
+                    log,
+                    trusted_proxy_addresses: primary.trusted_proxy_addresses.clone(),
+                    sync_write_timeout: primary.sync_write_timeout,
+                    validator: primary.validator.clone(),
+                    ..Services::default()
+                };
+
+                let mut allow: Vec<IpAddr> = Vec::new();
+                for m in &members {
+                    for ip in &m.allowed_remote_addresses {
+                        if !allow.contains(ip) {
+                            allow.push(*ip);
+                        }
+                    }
+                }
+                // TLS is necessarily listener-scoped (one physical accept loop per group) — the
+                // first member that enables it wins; conflicting per-session TLS material within
+                // one group isn't independently validated here (same disclosed simplification as
+                // the shared-Services note above).
+                let tls_spec = members.iter().find_map(|m| m.tls.as_ref()).cloned();
+
+                let mut builder = AcceptorBuilder::bind(addr, app.clone())
+                    .await
+                    .map_err(|e| EngineError::Io(e.to_string()))?
+                    .with_services(services);
+                if !allow.is_empty() {
+                    builder = builder.allow_remotes(allow);
+                }
+                for m in members {
+                    if m.acceptor_template {
+                        builder = builder.with_dynamic_template(m.session);
+                    } else {
+                        builder = builder.with_session(m.session);
+                    }
+                }
+                if let Some(tls) = &tls_spec {
+                    let server_cfg =
+                        build_server_config(tls).map_err(|e| EngineError::Tls(e.to_string()))?;
+                    builder = builder.with_tls(server_cfg);
+                }
+                acceptors.push(builder.serve());
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                if continue_on_error {
+                    tracing::error!(
+                        addr = %addr,
+                        error = %e,
+                        "skipping acceptor group after a startup error (ContinueInitializationOnError=Y)"
+                    );
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+
+        for rs in singles {
             let continue_on_error = rs.session.continue_initialization_on_error;
             let session_id = format!(
                 "{}:{}->{}",

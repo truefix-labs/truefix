@@ -38,8 +38,8 @@ the automated tests that verify them. All run under `cargo test --workspace` unl
 
 ## Current gate status
 
-- Workspace tests: **green** (351 passing, default features — grown across feature 004; see the "004"
-  section below for what drove the growth).
+- Workspace tests: **green** (`cargo test --workspace --all-features`: 92/92 test binaries passing, 0
+  failures — grown across feature 005; see the "005" section below for what drove the growth).
 - SQL feature tests: **green** (`cargo test -p truefix-store -p truefix-log --features sql`; SQLite
   cases run unconditionally, PostgreSQL/MySQL cases run when `DATABASE_URL_PG`/`DATABASE_URL_MYSQL`
   are set — CI's `sql` job provides both via service containers, see `.github/workflows/ci.yml`).
@@ -55,9 +55,10 @@ the automated tests that verify them. All run under `cargo test --workspace` unl
   Orchestra XML → normalized-`.fixdict` conversion tool, off by default — CI's `dict-tooling` job).
 - `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`: **clean** (default,
   `--features sql`/`mssql`/`redb`/`mongodb`/`dict-tooling`).
-- AT conformance suite: **green** (`cargo test -p truefix-at --test conformance`; 353/353 scenario
+- AT conformance suite: **green** (`cargo test -p truefix-at --test conformance`; 373/373 scenario
   runs across all 9 targeted versions, plus 3 independently-gated special-category suites and a
-  regression-floor test — see corpus below and the "003" section's US1-closeout entry).
+  regression-floor test — see corpus below, the "003" section's US1-closeout entry, and the "005"
+  section for the 353→373 growth).
 - Benchmarks (observation/regression tools; no numeric gate is enforced — Constitution scope, per
   Clarifications):
   - `cargo bench -p truefix-core` (codec encode/decode throughput).
@@ -117,7 +118,7 @@ before consuming the inbound Logon); see `truefix-session` `state_machine.rs`.
   plus the main `server_acceptance_suite_passes`). A new `crates/truefix-at/tests/coverage.rs`
   enforces a **regression floor** (9 versions present, ≥353 scenario runs, all 3 special suites
   non-empty with distinct names) as a permanent CI gate against silent corpus shrinkage.
-  `docs/todo-gap-analysis.md`'s TODO-01 remains the authoritative, item-by-item record of every
+  `docs/todo/001.md`'s TODO-01 remains the authoritative, item-by-item record of every
   individually-deferred scenario name and why (a harness capability this feature didn't build — a
   non-dynamic fixed-identity acceptor mode, predicate-based `ExpectMsg` for outbound
   timestamp-*format*-precision assertions [distinct from the `timestamps_suite()`'s
@@ -234,7 +235,7 @@ before consuming the inbound Logon); see `truefix-session` `state_machine.rs`.
 
 ## 004 — Engine wiring & extra backends
 
-Closes GAP-01–GAP-06 from the 2026-07-02 gap analysis (`docs/todo-gap-analysis.md`). None of the six
+Closes GAP-01–GAP-06 from the 2026-07-02 gap analysis (`docs/todo/001.md`). None of the six
 gaps were protocol-correctness defects — this feature touches no session-state-machine/codec/protocol
 behavior, and the existing 353/353-scenario AT suite staying green **and unmodified** is itself the
 release gate (FR-010), not a target for new scenarios.
@@ -315,8 +316,112 @@ release gate (FR-010), not a target for new scenarios.
   confirm the 353/353-scenario baseline is **unchanged** (FR-010); `cargo deny check`:
   `advisories ok, bans ok, licenses ok, sources ok`.
 
+## 005 — Engine gap remediation
+
+Closes every P0/P1 item from the 2026-07-02 full-code audit (`docs/todo/002.md`), spanning
+four real bugs, four session-state-machine protocol-correctness gaps, and a long tail of
+session/transport/store-log/dictionary-codec feature-completeness gaps — the largest being full parity
+with QuickFIX/J's bundled dictionary field/message coverage across all 9 targeted versions. Unlike 004,
+this feature touches session-state-machine/codec/protocol behavior, so the AT suite is expected to
+*grow*, not stay unmodified. See `docs/todo/002.md` for the closed `GAP-##`/`BUG-##`
+citations (struck through) and `specs/005-engine-gap-remediation/tasks.md` for full per-task disclosure.
+
+- **Correctness bugs: `#` truncation, Signature/93 mapping (US1, BUG-01/02, FR-001/002)**: `strip_comment`
+  in `crates/truefix-config/src/lib.rs` now only treats `#` as a comment start at the first
+  non-whitespace position on a line (previously truncated mid-value, e.g. `Password=ab#cd` → `ab`);
+  `data_field_for_length()` in `crates/truefix-core/src/tags.rs` gained the tag-93→89 exception (every
+  other length↔data pair follows `lengthTag = dataTag - 1`; 89/`Signature` is the one documented
+  exception). `truefix-config` `comment_truncation.rs`, `truefix-core` `signature_length.rs`.
+- **`.cfg` keys that misrepresent behavior: multi-session `AcceptorBuilder` wiring + real JDBC URLs (US2,
+  BUG-03/04, FR-003/004/005/006/006a)**: `Engine::start` now groups `.cfg` `[SESSION]` blocks sharing a
+  `SocketAcceptPort` into one real multi-session `AcceptorBuilder` (real fix, not a stance-registry
+  downgrade — `AllowedRemoteAddresses`/`DynamicSession`/`AcceptorTemplate` now actually govern
+  connection acceptance and template resolution end-to-end); `is_sql_scheme`/`is_mssql_scheme` in
+  `crates/truefix-config/src/builder.rs` recognize standard JDBC-style `jdbc:<subprotocol>://...` URLs
+  (in addition to TrueFix's existing sqlx-native scheme forms) and splice in separately-configured
+  `JdbcUser`/`JdbcPassword` when the URL doesn't already embed credentials. `truefix-config`
+  `jdbc_url_mapping.rs`, `truefix-transport`/`truefix` multi-session acceptor tests.
+- **Session protocol-correctness safeguards: resend veto, PossDup anti-replay, duplicate-Logon rejection
+  (US3, GAP-07/08/18a, FR-007/008/009/010)**: `Application::to_app` (the veto point already existed) now
+  actually suppresses a stale application-message resend and substitutes a `GapFill`, via a new
+  `Action::Resend(Message, u64)` variant threaded through `perform_actions`; the `PossDupFlag=Y`+
+  `seq < expected` early-drop path in `on_received` now validates `OrigSendingTime <= SendingTime`,
+  gated by a new `requires_orig_sending_time`-adjacent config switch, logging out and disconnecting on
+  violation; a second Logon while already `LoggedOn` is now rejected rather than silently ignored.
+  AT suite grew with `app_resend_veto_produces_gap_fill`, `poss_dup_orig_sending_time_after_sending_time`
+  (all 9 versions), `duplicate_logon_rejected` (all 9 versions).
+- **Automatic inbound chunked-resend continuation (US4, GAP-09, FR-011)**: `Session` gained
+  `resend_target`/`resend_chunk_end` fields; a new `maybe_continue_chunked_resend()` helper (called at
+  the end of `drain_queue()`) automatically issues the next `ResendRequest` once the current chunk is
+  satisfied, without waiting for the counterparty to ask. `truefix-session`
+  `multi_chunk_inbound_resend_auto_continues_without_an_external_resend_request`; AT
+  `chunked_resend_auto_continues`.
+- **Session identity completeness: `SessionQualifier` and sub-ID/location-ID (US5, GAP-47,
+  FR-012/013)**: `SessionId::new_full()` (8-arg constructor) and 5 new `SessionConfig` fields
+  (`sender_sub_id`/`sender_location_id`/`target_sub_id`/`target_location_id`/`session_qualifier`), parsed
+  from `.cfg`. Two sessions sharing BeginString/SenderCompID/TargetCompID but differing only by
+  `SessionQualifier` now produce distinct `SessionId`s and can both log on independently. `truefix-config`
+  `session_identity_mapping.rs`, `truefix`
+  `two_sessions_differing_only_by_qualifier_both_start_and_log_on`.
+- **Initiator connection robustness: reconnect backoff array, local bind, connect timeout (US6,
+  GAP-14/15/16, FR-014/015/016)**: `reconnect_delay()` in `crates/truefix-transport/src/lib.rs` steps
+  through a configured `Vec<u32>` (`ReconnectInterval`, single value or list), sticking at the last value
+  and resetting on successful connect; new `tcp_connect()`/`with_connect_timeout()` helpers wire
+  `SocketLocalHost`/`SocketLocalPort` (bind-before-connect) and `SocketConnectTimeout` into every
+  initiator connect path (plain, TLS, and both reconnecting-multi variants). `truefix-config`
+  `initiator_robustness_mapping.rs`, `truefix-transport` `reconnect.rs`
+  (`reconnect_interval_steps_are_honored_by_the_reconnect_loop`,
+  `initiator_connects_from_the_configured_local_bind_address`).
+- **Store/log persistence hardening: creation-time, atomic save+advance, log timestamp/session-identity
+  (US7, GAP-38/39/41, FR-017/018/019)**: `MessageStore` trait gained `creation_time()` and
+  `save_and_advance_sender()` (defaulted to sequential calls, overridden with real transactions in
+  `SqlStore`/`MssqlStore`/`RedbStore`; `MongoStore` intentionally left at the trait default — no
+  multi-doc transaction guarantee without a replica set, disclosed not silent); every structured log
+  backend (`SqlLog`/`MssqlLog`/`RedbLog`/`MongoLog`) gained `logged_at`/`session_id` columns/fields.
+  `truefix-store` `creation_time_file.rs` + per-backend extensions; `truefix-log` per-backend log tests.
+- **Config-key stance registry accuracy sweep (US8, FR-020/021, depends on US2)**:
+  `SocketAcceptProtocol`/`SocketConnectProtocol`/`JdbcDataSourceName`/`JdbcConnectionTestQuery` downgraded
+  to `Unsupported` with documented reasons (VM_PIPE/JNDI have no Rust equivalent; `sqlx` has no
+  custom-query pool-liveliness hook); the 9 JDBC pool-tuning/table-name keys threaded into
+  `StoreConfig::Sql`/`Mssql`'s new `sessions_table`/`messages_table`/`session_id`/`pool` fields and
+  promoted to `Implemented`. `truefix-config` `store_and_log_mapping.rs`.
+- **Dictionary and codec model completeness (US9, GAP-22–29/32/33, FR-022–031)**: the largest single
+  story — 11 new `FieldType` variants (`PriceOffset`/`LocalMktDate`/`DayOfMonth`/`UtcDate`/`Time`/
+  `Currency`/`Exchange`/`MultipleValueString`/`MultipleStringValue`/`MultipleCharValue`/`Country`), open
+  enums (`open_enum: bool`), per-group child dictionaries (`GroupDef.child`) enabling deep nested-group
+  validation (also fixed a real, previously-undetected gap: group-member fields were never validated at
+  all, since `FieldMap::fields()` skips group members by design), repeating-group
+  `replace`/`remove`/`get`-by-index, header/trailer repeating-group decode, custom per-message field
+  order (`encode_with_order`), structured dictionary version metadata + BeginString-match validation,
+  value→label lookup. Closed GAP-33 (bundled dictionary content parity) via a new QFJ-XML→`.fixdict`
+  converter (`crates/truefix-dict/src/qfj_xml.rs`, `--features dict-tooling`) that fully regenerated all
+  8 non-Orchestra bundled dictionaries to real QFJ scale (FIX40: 139 fields/27 messages … FIX50SP2: 1610
+  fields/110 messages, up from ~35/8) — chosen over a manual per-version diff after discovering the true
+  scale of the gap, per explicit user direction. Found and fixed along the way: component-required
+  semantics (a component's own `required` attribute means "the component as a whole," not "every field
+  in it"), three Rust-identifier-safety bugs surfaced by real QFJ data (digit-leading enum labels, a
+  `yield`-keyword collision, a `SecurityStatus` field/message name collision), and a QFJ upstream data
+  quirk (`BeginString`/`CheckSum` misclassified as `CHAR` in FIX40/41's own XML). `truefix-dict`
+  `field_types_extended.rs`, `version_meta.rs`, `dictionary_coverage.rs` (byte-for-byte regeneration
+  regression test), extended `group_validation.rs`/`dual_track.rs`/`cli.rs`; `truefix-core`
+  `groups.rs`/`field_order_encode.rs`/`header_trailer_groups.rs`.
+- **AT suite growth (SC-013)**: the conformance suite grew from **353/353 to 373/373 scenario runs**
+  passing (US3's 3 new scenario families across 9 versions + US4's chunked-resend scenario) — a
+  deliberate, disclosed regression-floor bump in `truefix-at` `coverage.rs`
+  (`server_suite_scenario_run_count_does_not_regress`), the opposite of 004's "stays unmodified" gate,
+  per this feature's own Constitution Principle II framing.
+- **Gate status**: `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -D warnings`
+  clean across default, `--features sql`/`mssql`/`redb`/`mongodb`/`dict-tooling`; `cargo test --workspace
+  --all-features` green (92/92 test binaries passing, 0 failures); `cargo test -p truefix-at --test
+  conformance` confirms 373/373 scenario runs; `cargo test -p truefix-at --test coverage` confirms the
+  floor bump is intentional and disclosed; `cargo deny check` clean.
+
 ## Outstanding before a v1 release claim
 
 - Broaden the corpus from one representative scenario per behavior class toward the full Appendix B
   enumeration (additional permutations within already-covered classes).
-- Expand the bundled dictionaries from representative subsets to full FIX Orchestra coverage.
+- Per-session (not acceptor-group-union) `AllowedRemoteAddresses` enforcement (`GAP-17`, partially
+  addressed by 005's `AcceptorBuilder` wiring — see `docs/todo/002.md`).
+- The remaining open items in `docs/todo/002.md` not closed by 005: `GAP-10`/`12`/`13`/
+  `18c`/`19`/`20`/`21`/`31`/`34`/`35`/`36`/`37`/`40`/`42`/`44`/`45`/`46` (each individually low-priority
+  or explicitly deferred per that document's own recommendation).

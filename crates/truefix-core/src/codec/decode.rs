@@ -58,35 +58,50 @@ pub fn decode(input: &[u8]) -> Result<Message, DecodeError> {
     Ok(msg)
 }
 
-/// Decode `input` into a [`Message`] with repeating groups structured per `spec` (FR-004). Header
-/// and trailer fields stay flat; body group-count tags consume their delimiter-led entries
-/// (nested groups recurse). Structure is best-effort/greedy — count/order validation is a separate
-/// dictionary concern (see `truefix-dict`).
+/// Decode `input` into a [`Message`] with repeating groups structured per `spec` (FR-004, and
+/// header/trailer groups per US9, feature 005, FR-026). Header, body, and trailer are each
+/// decoded through the same group-aware machinery (`decode_section_with_groups`) — a section with
+/// no declared groups (today, header/trailer always; body when `spec` has none for it either)
+/// decodes exactly as flat fields, since `spec.group_of(tag)` simply never matches. Structure is
+/// best-effort/greedy — count/order validation is a separate dictionary concern (see
+/// `truefix-dict`).
 pub fn decode_with_groups(input: &[u8], spec: &dyn GroupSpec) -> Result<Message, DecodeError> {
     let fields = tokenize_validated(input)?;
     let mut msg = Message::new();
+    let mut header: Vec<Token> = Vec::new();
     let mut body: Vec<Token> = Vec::new();
-    for (tag, value, off) in fields {
+    let mut trailer: Vec<Token> = Vec::new();
+    for tok in fields {
+        let tag = tok.0;
         if is_trailer(tag) {
-            msg.trailer.add_field(Field::new(tag, value));
+            trailer.push(tok);
         } else if is_header(tag) {
-            msg.header.add_field(Field::new(tag, value));
+            header.push(tok);
         } else {
-            body.push((tag, value, off));
+            body.push(tok);
         }
     }
+    decode_section_with_groups(&header, spec, &mut msg.header);
+    decode_section_with_groups(&body, spec, &mut msg.body);
+    decode_section_with_groups(&trailer, spec, &mut msg.trailer);
+    Ok(msg)
+}
+
+/// Decode one wire section's (header/body/trailer) tokens into `out`, consuming a delimiter-led
+/// repeating group wherever `spec.group_of` matches a token's tag (nested groups recurse via
+/// `build_group`); every other token becomes a plain field.
+fn decode_section_with_groups(tokens: &[Token], spec: &dyn GroupSpec, out: &mut FieldMap) {
     let mut pos = 0usize;
-    while let Some(tok) = body.get(pos) {
+    while let Some(tok) = tokens.get(pos) {
         let tag = tok.0;
         if let Some((delimiter, members)) = spec.group_of(tag) {
-            let group = build_group(&body, &mut pos, spec, tag, delimiter, members);
-            msg.body.add_group(group);
+            let group = build_group(tokens, &mut pos, spec, tag, delimiter, members);
+            out.add_group(group);
         } else {
-            msg.body.add_field(Field::new(tag, tok.1.clone()));
+            out.add_field(Field::new(tag, tok.1.clone()));
             pos += 1;
         }
     }
-    Ok(msg)
 }
 
 /// Consume a repeating group starting at the count token, returning the structured [`Group`].

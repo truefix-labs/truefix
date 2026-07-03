@@ -98,24 +98,52 @@ enum Entry {
 }
 
 async fn ensure_table(client: &mut Client<Compat<TcpStream>>, table: &str) -> Result<(), LogError> {
+    // GAP-41/FR-019 (feature 005): `logged_at`/`session_id` widen every row, mirroring `SqlLog`.
     client
         .execute(
             format!(
                 "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='{table}' AND xtype='U') \
-                 CREATE TABLE {table} (id BIGINT IDENTITY(1,1) PRIMARY KEY, text NVARCHAR(MAX) NOT NULL)"
+                 CREATE TABLE {table} (id BIGINT IDENTITY(1,1) PRIMARY KEY, text NVARCHAR(MAX) NOT NULL, \
+                 logged_at BIGINT NULL, session_id NVARCHAR(255) NULL)"
             ),
             &[],
         )
         .await
         .map_err(io_err)?;
+    // Best-effort add for a table created before these columns existed; swallowed on error
+    // (most commonly "column already exists").
+    let _ = client
+        .execute(
+            format!("ALTER TABLE {table} ADD logged_at BIGINT NULL"),
+            &[],
+        )
+        .await;
+    let _ = client
+        .execute(
+            format!("ALTER TABLE {table} ADD session_id NVARCHAR(255) NULL"),
+            &[],
+        )
+        .await;
     Ok(())
 }
 
-async fn insert_text(client: &mut Client<Compat<TcpStream>>, table: &str, text: &str) {
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+async fn insert_text(
+    client: &mut Client<Compat<TcpStream>>,
+    table: &str,
+    session_id: &str,
+    text: &str,
+) {
     // Best-effort: a write failure drops the entry rather than failing the session (matches the
     // synchronous, infallible `Log` trait contract, same as `SqlLog`'s `insert_text`).
     let _ = client
-        .execute(format!("INSERT INTO {table} (text) VALUES (@P1)"), &[&text])
+        .execute(
+            format!("INSERT INTO {table} (text, logged_at, session_id) VALUES (@P1, @P2, @P3)"),
+            &[&text, &now_unix(), &session_id],
+        )
         .await;
 }
 
@@ -132,10 +160,13 @@ pub struct MssqlLogConfig {
     pub event_table: String,
     /// `JdbcLogHeartBeats`: whether Heartbeat (`35=0`) messages are persisted.
     pub include_heartbeats: bool,
+    /// The session identity stamped onto every row's `session_id` column (GAP-41/FR-019,
+    /// feature 005). See `SqlLogConfig::session_id`'s doc for the rationale.
+    pub session_id: String,
 }
 
 impl MssqlLogConfig {
-    /// A config using `url` with default table names.
+    /// A config using `url` with default table names and `session_id` `"default"`.
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -143,6 +174,7 @@ impl MssqlLogConfig {
             outgoing_table: "log_outgoing".to_owned(),
             event_table: "log_event".to_owned(),
             include_heartbeats: true,
+            session_id: "default".to_owned(),
         }
     }
 }
@@ -177,6 +209,7 @@ impl MssqlLog {
         let incoming_table = config.incoming_table;
         let outgoing_table = config.outgoing_table;
         let event_table = config.event_table;
+        let session_id = config.session_id;
         tokio::spawn(async move {
             while let Some(entry) = rx.recv().await {
                 match entry {
@@ -186,10 +219,10 @@ impl MssqlLog {
                         } else {
                             &outgoing_table
                         };
-                        insert_text(&mut client, table, &text).await;
+                        insert_text(&mut client, table, &session_id, &text).await;
                     }
                     Entry::Event { text } => {
-                        insert_text(&mut client, &event_table, &text).await;
+                        insert_text(&mut client, &event_table, &session_id, &text).await;
                     }
                 }
             }

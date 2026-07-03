@@ -27,6 +27,10 @@ fn backend<E: std::fmt::Display>(e: E) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
 /// Parse an `mssql://user:password@host[:port]/database` (or `sqlserver://...`) URL into a
 /// `tiberius::Config`. Port defaults to `1433` (the standard SQL Server port) when omitted.
 /// Server-certificate validation is not performed (`trust_cert()`) — MSSQL's own TDS-level
@@ -150,12 +154,21 @@ impl MssqlStore {
                     "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='{sessions}' AND xtype='U') \
                      CREATE TABLE {sessions} (\
                      session_id NVARCHAR(255) NOT NULL PRIMARY KEY, \
-                     sender BIGINT NOT NULL, target BIGINT NOT NULL)"
+                     sender BIGINT NOT NULL, target BIGINT NOT NULL, creation_time BIGINT NULL)"
                 ),
                 &[],
             )
             .await
             .map_err(backend)?;
+        // Best-effort add for tables created before this column existed (GAP-38/FR-017,
+        // feature 005) — errors (most commonly "column already exists") are intentionally
+        // swallowed; a freshly created table above already has the column.
+        let _ = client
+            .execute(
+                format!("ALTER TABLE {sessions} ADD creation_time BIGINT NULL"),
+                &[],
+            )
+            .await;
         client
             .execute(
                 format!(
@@ -172,9 +185,10 @@ impl MssqlStore {
             .execute(
                 format!(
                     "IF NOT EXISTS (SELECT 1 FROM {sessions} WHERE session_id = @P1) \
-                     INSERT INTO {sessions} (session_id, sender, target) VALUES (@P1, 1, 1)"
+                     INSERT INTO {sessions} (session_id, sender, target, creation_time) \
+                     VALUES (@P1, 1, 1, @P2)"
                 ),
-                &[&self.session_id],
+                &[&self.session_id, &now_unix()],
             )
             .await
             .map_err(backend)?;
@@ -284,11 +298,80 @@ impl MessageStore for MssqlStore {
             .map_err(backend)?;
         client
             .execute(
-                format!("UPDATE {sessions} SET sender = 1, target = 1 WHERE session_id = @P1"),
-                &[&self.session_id],
+                format!(
+                    "UPDATE {sessions} SET sender = 1, target = 1, creation_time = @P1 \
+                     WHERE session_id = @P2"
+                ),
+                &[&now_unix(), &self.session_id],
             )
             .await
             .map_err(backend)?;
         Ok(())
+    }
+    async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
+        let sessions = &self.sessions_table;
+        let mut client = self.client.lock().await;
+        let row = client
+            .query(
+                format!("SELECT creation_time FROM {sessions} WHERE session_id = @P1"),
+                &[&self.session_id],
+            )
+            .await
+            .map_err(backend)?
+            .into_row()
+            .await
+            .map_err(backend)?
+            .ok_or_else(|| backend(format!("no row for session_id {:?}", self.session_id)))?;
+        let secs: Option<i64> = row.get(0);
+        Ok(secs.and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok()))
+    }
+    async fn save_and_advance_sender(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
+        // GAP-39/FR-018 (feature 005): a real BEGIN/COMMIT transaction — the client is already
+        // serialized behind this store's own mutex, but that alone doesn't survive a mid-sequence
+        // crash; an explicit transaction does.
+        let messages = &self.messages_table;
+        let sessions = &self.sessions_table;
+        let seq_i = seq as i64;
+        let next = seq_i + 1;
+        let mut client = self.client.lock().await;
+        client
+            .simple_query("BEGIN TRANSACTION")
+            .await
+            .map_err(backend)?;
+        let result = async {
+            client
+                .execute(
+                    format!(
+                        "IF EXISTS (SELECT 1 FROM {messages} WHERE session_id = @P1 AND seq = @P2) \
+                         UPDATE {messages} SET data = @P3 WHERE session_id = @P1 AND seq = @P2 \
+                         ELSE INSERT INTO {messages} (session_id, seq, data) VALUES (@P1, @P2, @P3)"
+                    ),
+                    &[&self.session_id, &seq_i, &message],
+                )
+                .await
+                .map_err(backend)?;
+            client
+                .execute(
+                    format!("UPDATE {sessions} SET sender = @P1 WHERE session_id = @P2"),
+                    &[&next, &self.session_id],
+                )
+                .await
+                .map_err(backend)?;
+            Ok::<(), StoreError>(())
+        }
+        .await;
+        match result {
+            Ok(()) => {
+                client
+                    .simple_query("COMMIT TRANSACTION")
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = client.simple_query("ROLLBACK TRANSACTION").await;
+                Err(e)
+            }
+        }
     }
 }

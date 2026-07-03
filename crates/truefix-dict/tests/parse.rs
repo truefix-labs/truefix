@@ -24,7 +24,7 @@ fn enum_values_parsed() {
     let side = d.field(54).unwrap();
     assert!(side.allows("1"));
     assert!(side.allows("2"));
-    assert!(!side.allows("9"));
+    assert!(!side.allows("Z")); // not a real Side value
 }
 
 #[test]
@@ -32,7 +32,11 @@ fn message_required_and_optional_fields() {
     let d = load_fix44().unwrap();
     let nos = d.message("D").unwrap();
     assert!(nos.required.contains(&11)); // ClOrdID
-    assert!(nos.required.contains(&55)); // Symbol
+                                         // Symbol(55) is a member of the `Instrument` component, which NewOrderSingle references
+                                         // as optional (US9, feature 005, FR-031/GAP-24: a component's own *individual* fields are
+                                         // never unconditionally required in the real QFJ schema, even when the component itself is
+                                         // referenced as `required='Y'` — see qfj_xml.rs's `"component"` conversion for the finding).
+    assert!(nos.optional.contains(&55)); // Symbol
     assert!(nos.optional.contains(&44)); // Price
     assert!(nos.allows_tag(38)); // OrderQty (optional)
     assert!(!nos.allows_tag(7)); // BeginSeqNo not in NewOrderSingle

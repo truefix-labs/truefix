@@ -160,7 +160,7 @@ fn postgres_mysql_sqlite_jdbc_urls_select_the_sql_store() {
     ] {
         let rs = resolved(&base(&format!("JdbcURL={url}\n")));
         match rs.store {
-            StoreConfig::Sql { url: got } => assert_eq!(got, url),
+            StoreConfig::Sql { url: got, .. } => assert_eq!(got, url),
             other => panic!("expected StoreConfig::Sql for {url}, got {other:?}"),
         }
     }
@@ -175,7 +175,7 @@ fn mssql_and_sqlserver_jdbc_urls_select_the_mssql_store() {
     ] {
         let rs = resolved(&base(&format!("JdbcURL={url}\n")));
         match rs.store {
-            StoreConfig::Mssql { url: got } => assert_eq!(got, url),
+            StoreConfig::Mssql { url: got, .. } => assert_eq!(got, url),
             other => panic!("expected StoreConfig::Mssql for {url}, got {other:?}"),
         }
     }
@@ -210,4 +210,174 @@ fn jdbc_url_present_takes_precedence_over_file_log_path_with_a_warning() {
     ));
     assert!(rs.sql_log.is_some());
     assert!(rs.log.is_none());
+}
+
+// --- T007/T008 (US2, feature 005): real QuickFIX/J `jdbc:` URL scheme recognition + credential
+// splicing (BUG-04) ---
+
+#[cfg(feature = "sql")]
+#[test]
+fn jdbc_prefixed_postgres_mysql_sqlite_urls_select_the_sql_store() {
+    for (jdbc_url, expected) in [
+        (
+            "jdbc:postgresql://user:pass@localhost/db",
+            "postgresql://user:pass@localhost/db",
+        ),
+        (
+            "jdbc:postgres://user:pass@localhost/db",
+            "postgres://user:pass@localhost/db",
+        ),
+        (
+            "jdbc:mysql://user:pass@localhost/db",
+            "mysql://user:pass@localhost/db",
+        ),
+        ("jdbc:sqlite:/tmp/whatever.db", "sqlite:/tmp/whatever.db"),
+    ] {
+        let rs = resolved(&base(&format!("JdbcURL={jdbc_url}\n")));
+        match rs.store {
+            StoreConfig::Sql { url, .. } => assert_eq!(url, expected, "for input {jdbc_url}"),
+            other => panic!("expected StoreConfig::Sql for {jdbc_url}, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(feature = "mssql")]
+#[test]
+fn jdbc_sqlserver_url_selects_the_mssql_store() {
+    let rs = resolved(&base("JdbcURL=jdbc:sqlserver://user:pass@localhost/db\n"));
+    match rs.store {
+        StoreConfig::Mssql { url, .. } => assert_eq!(url, "sqlserver://user:pass@localhost/db"),
+        other => panic!("expected StoreConfig::Mssql, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "sql")]
+#[test]
+fn jdbc_user_and_password_are_spliced_into_a_credential_less_jdbc_url() {
+    // Real QuickFIX/J `.cfg` files carry JdbcURL without embedded credentials plus separate
+    // JdbcUser/JdbcPassword keys (JdbcUtil.java:69-72) — this is the drop-in-compatible case.
+    let rs = resolved(&base(
+        "JdbcURL=jdbc:postgresql://localhost/db\nJdbcUser=alice\nJdbcPassword=secret\n",
+    ));
+    match rs.store {
+        StoreConfig::Sql { url, .. } => {
+            assert_eq!(url, "postgresql://alice:secret@localhost/db")
+        }
+        other => panic!("expected StoreConfig::Sql, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "sql")]
+#[test]
+fn an_already_credentialed_jdbc_url_is_not_double_spliced() {
+    let rs = resolved(&base(
+        "JdbcURL=jdbc:postgresql://bob:hunter2@localhost/db\nJdbcUser=alice\nJdbcPassword=secret\n",
+    ));
+    match rs.store {
+        StoreConfig::Sql { url, .. } => {
+            assert_eq!(url, "postgresql://bob:hunter2@localhost/db")
+        }
+        other => panic!("expected StoreConfig::Sql, got {other:?}"),
+    }
+}
+
+// --- T090 (US8, feature 005): JDBC pool/table-name keys apply to StoreConfig::Sql/Mssql
+// (FR-020/021) ---
+
+#[cfg(feature = "sql")]
+#[test]
+fn no_jdbc_pool_or_table_name_keys_means_sql_store_defaults() {
+    let rs = resolved(&base("JdbcURL=jdbc:sqlite:/tmp/whatever.db\n"));
+    match rs.store {
+        StoreConfig::Sql {
+            sessions_table,
+            messages_table,
+            session_id,
+            pool,
+            ..
+        } => {
+            assert_eq!(sessions_table, None);
+            assert_eq!(messages_table, None);
+            assert_eq!(session_id, None);
+            assert!(pool.is_none());
+        }
+        other => panic!("expected StoreConfig::Sql, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "sql")]
+#[test]
+fn jdbc_table_name_keys_apply_to_the_sql_store() {
+    let rs = resolved(&base(
+        "JdbcURL=jdbc:sqlite:/tmp/whatever.db\n\
+         JdbcStoreSessionsTableName=my_sessions\n\
+         JdbcStoreMessagesTableName=my_messages\n\
+         JdbcSessionIdDefaultPropertyValue=SERVER->CLIENT\n",
+    ));
+    match rs.store {
+        StoreConfig::Sql {
+            sessions_table,
+            messages_table,
+            session_id,
+            ..
+        } => {
+            assert_eq!(sessions_table.as_deref(), Some("my_sessions"));
+            assert_eq!(messages_table.as_deref(), Some("my_messages"));
+            assert_eq!(session_id.as_deref(), Some("SERVER->CLIENT"));
+        }
+        other => panic!("expected StoreConfig::Sql, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "sql")]
+#[test]
+fn jdbc_pool_tuning_keys_apply_to_the_sql_store() {
+    let rs = resolved(&base(
+        "JdbcURL=jdbc:sqlite:/tmp/whatever.db\n\
+         JdbcMaxActiveConnection=25\n\
+         JdbcMinIdleConnection=2\n\
+         JdbcConnectionTimeout=10\n\
+         JdbcConnectionIdleTimeout=60\n\
+         JdbcMaxConnectionLifeTime=3600\n\
+         JdbcConnectionKeepaliveTime=30\n",
+    ));
+    match rs.store {
+        StoreConfig::Sql { pool, .. } => {
+            let pool = pool.expect("pool options should be Some when any pool key is set");
+            assert_eq!(pool.max_connections, 25);
+            assert_eq!(pool.min_connections, 2);
+            assert_eq!(pool.acquire_timeout, std::time::Duration::from_secs(10));
+            assert_eq!(pool.idle_timeout, Some(std::time::Duration::from_secs(60)));
+            assert_eq!(
+                pool.max_lifetime,
+                Some(std::time::Duration::from_secs(3600))
+            );
+            assert_eq!(pool.keepalive, Some(std::time::Duration::from_secs(30)));
+        }
+        other => panic!("expected StoreConfig::Sql, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "mssql")]
+#[test]
+fn jdbc_table_name_keys_apply_to_the_mssql_store() {
+    let rs = resolved(&base(
+        "JdbcURL=jdbc:sqlserver://user:pass@localhost/db\n\
+         JdbcStoreSessionsTableName=my_sessions\n\
+         JdbcStoreMessagesTableName=my_messages\n\
+         JdbcSessionIdDefaultPropertyValue=SERVER->CLIENT\n",
+    ));
+    match rs.store {
+        StoreConfig::Mssql {
+            sessions_table,
+            messages_table,
+            session_id,
+            ..
+        } => {
+            assert_eq!(sessions_table.as_deref(), Some("my_sessions"));
+            assert_eq!(messages_table.as_deref(), Some("my_messages"));
+            assert_eq!(session_id.as_deref(), Some("SERVER->CLIENT"));
+        }
+        other => panic!("expected StoreConfig::Mssql, got {other:?}"),
+    }
 }

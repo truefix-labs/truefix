@@ -314,8 +314,15 @@ fn snake_case(name: &str) -> String {
     if out.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         out.insert(0, 'f');
     }
+    // US9 (feature 005): real QFJ field names include `Yield` (tag 236) — confirmed empirically
+    // as the one actual keyword collision across every bundled dictionary source; the rest below
+    // are added defensively (harmless if never hit — no real field name currently matches them).
     match out.as_str() {
-        "type" | "ref" | "self" | "move" | "in" | "fn" | "struct" | "enum" | "match" | "for" => {
+        "type" | "ref" | "self" | "move" | "in" | "fn" | "struct" | "enum" | "match" | "for"
+        | "yield" | "loop" | "impl" | "as" | "break" | "continue" | "static" | "const"
+        | "trait" | "use" | "mod" | "pub" | "where" | "dyn" | "let" | "if" | "else" | "while"
+        | "return" | "true" | "false" | "async" | "await" | "unsafe" | "extern" | "super"
+        | "crate" | "box" | "try" => {
             out.push('_');
         }
         _ => {}
@@ -371,20 +378,52 @@ fn type_mapping(ty: &str) -> TypeMapping {
     }
 }
 
+/// Sanitize a QuickFIX enum-value label into a valid Rust identifier (US9, feature 005, FR-031):
+/// real QFJ-schema labels are always `[A-Za-z0-9_]+` (confirmed empirically against every bundled
+/// XML source — no punctuation), but some start with a digit (e.g. `"3A3"`, `"42"`, `"106H106J"`),
+/// which no Rust identifier may do. Prefixing with `V` when that happens is the minimal fix — the
+/// hand-picked labels this codegen shipped with before US9's real-QFJ-data expansion never hit
+/// this case, since they were all conventional words like `"Buy"`/`"Sell"`.
+fn sanitize_variant(label: &str) -> String {
+    if label.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("V{label}")
+    } else {
+        label.to_owned()
+    }
+}
+
 /// Emit a field-value enum (e.g. `pub enum Side { Buy, Sell, ... }`) if `field` declares labeled
-/// enum values; returns the enum's Rust name if one was emitted.
-fn emit_field_enum(code: &mut String, field: &FieldDef) -> Option<String> {
-    let labeled: Vec<(&str, &str)> = field
+/// enum values; returns the enum's Rust name if one was emitted. `message_names` disambiguates
+/// the rare real-QFJ-schema case (US9, feature 005, FR-031) where a field and a message share the
+/// same human-readable name (e.g. FIX 5.0SP2's field 965 `SecurityStatus` and message `f`
+/// `SecurityStatus`) — the enum gets a `Value`-suffixed name instead of colliding with the
+/// generated message struct of the same name.
+fn emit_field_enum(
+    code: &mut String,
+    field: &FieldDef,
+    message_names: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let labeled: Vec<(&str, String)> = field
         .values
         .iter()
-        .filter_map(|(v, l)| l.as_deref().map(|l| (v.as_str(), l)))
+        .filter_map(|(v, l)| l.as_deref().map(|l| (v.as_str(), sanitize_variant(l))))
         .collect();
     if labeled.is_empty() {
         return None;
     }
-    let enum_name = field.name.clone();
+    let enum_name = if message_names.contains(&field.name) {
+        format!("{}Value", field.name)
+    } else {
+        field.name.clone()
+    };
     let _ = writeln!(code, "/// Enumerated values for {}.", field.name);
     let _ = writeln!(code, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]");
+    // US9 (feature 005): real QFJ enum labels are SCREAMING_SNAKE_CASE (e.g. `PER_UNIT`), not
+    // the UpperCamelCase this project's own hand-picked labels (`Buy`/`Sell`) happened to already
+    // be — emitted verbatim (Constitution Principle III: reproduce the source's own naming, not
+    // re-derive a "nicer" one) rather than silently reformatted, so this allow is scoped to
+    // exactly the generated variants that are affected.
+    let _ = writeln!(code, "#[allow(non_camel_case_types)]");
     let _ = writeln!(code, "pub enum {enum_name} {{");
     for (_, label) in &labeled {
         let _ = writeln!(code, "    /// Wire value handled in `as_str`/`parse`.");
@@ -578,6 +617,8 @@ pub fn emit_version(code: &mut String, name: &str, bytes: &[u8]) -> Result<(), C
     let _ = writeln!(code, "    use truefix_core::Message;");
 
     // Field-value enums: one per field that carries labeled enum values, referenced by any message.
+    let message_names: std::collections::BTreeSet<String> =
+        dict.messages.iter().map(|m| m.name.clone()).collect();
     let mut enum_names: BTreeMap<u32, String> = BTreeMap::new();
     let mut used_tags: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     for m in &dict.messages {
@@ -587,7 +628,7 @@ pub fn emit_version(code: &mut String, name: &str, bytes: &[u8]) -> Result<(), C
     }
     for &tag in &used_tags {
         if let Some(field) = dict.fields.get(&tag) {
-            if let Some(enum_name) = emit_field_enum(code, field) {
+            if let Some(enum_name) = emit_field_enum(code, field, &message_names) {
                 enum_names.insert(tag, enum_name);
             }
         }

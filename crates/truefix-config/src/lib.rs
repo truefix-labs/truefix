@@ -84,6 +84,15 @@ pub enum ConfigError {
         /// The offending value.
         value: String,
     },
+    /// More than one `[SESSION]` block sharing one acceptor bind address set `DynamicSession=Y`/
+    /// `AcceptorTemplate` (US2, feature 005, BUG-03/FR-006) — the acceptor group has exactly one
+    /// dynamic-session template slot, so this is a genuine misconfiguration, never silently
+    /// resolved by picking one member's template over the other's.
+    #[error("acceptor group at {addr}: more than one session declares a dynamic-session template")]
+    AmbiguousAcceptorTemplate {
+        /// The shared bind address every session in the ambiguous group targets.
+        addr: std::net::SocketAddr,
+    },
 }
 
 /// A parsed settings document: the `[DEFAULT]` section plus the `[SESSION]` sections (each with
@@ -174,11 +183,27 @@ fn flush_section(
     current.clear();
 }
 
+/// Strip a trailing/whole-line `#` comment (BUG-01, feature 005). A `#` only starts a comment when
+/// it's the first character of the line or immediately preceded by whitespace — matching this
+/// codebase's own pre-existing, intentionally-tested trailing-comment support (`ConnectionType=
+/// initiator   # comment`), while no longer truncating a value like `Password=ab#cd`, where `#` sits
+/// immediately after a non-whitespace character. Neither reference engine supports trailing comments
+/// at all (QFJ/QFGo both only treat a `#`-led *line* as a comment); this whitespace-boundary rule is
+/// a deliberate, disclosed TrueFix-only extension of that stricter behavior, not a departure from it
+/// for the case both references actually define (`Password=ab#cd` still keeps the `#`, matching both).
 fn strip_comment(line: &str) -> &str {
-    match line.find('#') {
-        Some(idx) => line.get(..idx).unwrap_or(""),
-        None => line,
+    let bytes = line.as_bytes();
+    let mut search_from = 0;
+    while let Some(rel) = line.get(search_from..).and_then(|s| s.find('#')) {
+        let idx = search_from + rel;
+        let preceded_by_boundary =
+            idx == 0 || bytes.get(idx - 1).is_some_and(|b| b.is_ascii_whitespace());
+        if preceded_by_boundary {
+            return line.get(..idx).unwrap_or("");
+        }
+        search_from = idx + 1;
     }
+    line
 }
 
 fn section_header(line: &str) -> Option<&str> {
@@ -294,6 +319,22 @@ SenderCompID=A
             Some(&"initiator".to_string())
         );
         assert_eq!(s.sessions().len(), 1);
+    }
+
+    #[test]
+    fn hash_immediately_after_a_value_is_not_treated_as_a_comment() {
+        // BUG-01 (feature 005): `strip_comment` used to find the *first* `#` anywhere on the line,
+        // truncating a value like `Password=ab#cd` to `ab`. The fix only treats `#` as a comment
+        // start when it's at the start of the line or preceded by whitespace — preserving the
+        // pre-existing, intentionally-tested trailing-comment support (`comments_and_blank_lines_
+        // ignored` above) while no longer corrupting a value with a `#` immediately inside it.
+        let cfg = "\
+[SESSION]
+SenderCompID=A
+Password=ab#cd
+";
+        let s = SessionSettings::parse(cfg).unwrap();
+        assert_eq!(s.sessions()[0].get("Password"), Some(&"ab#cd".to_string()));
     }
 
     #[test]

@@ -16,12 +16,21 @@ use tokio::sync::mpsc;
 
 use crate::{is_heartbeat, Log, LogError};
 
-const INCOMING: TableDefinition<u64, &str> = TableDefinition::new("log_incoming");
-const OUTGOING: TableDefinition<u64, &str> = TableDefinition::new("log_outgoing");
-const EVENT: TableDefinition<u64, &str> = TableDefinition::new("log_event");
+/// GAP-41/FR-019 (feature 005): the value type widened from bare `&str` to
+/// `(logged_at: Unix seconds, session_id, text)`, so a row can be audited/replayed on its own
+/// without an external join. A schema-widening, deliberately-breaking change to the on-disk
+/// format for pre-existing `.redb` log files (no migration path — matches research.md's own
+/// framing of this as a widening, not an additive change).
+const INCOMING: TableDefinition<u64, (i64, &str, &str)> = TableDefinition::new("log_incoming");
+const OUTGOING: TableDefinition<u64, (i64, &str, &str)> = TableDefinition::new("log_outgoing");
+const EVENT: TableDefinition<u64, (i64, &str, &str)> = TableDefinition::new("log_event");
 
 fn backend<E: std::fmt::Display>(e: E) -> LogError {
     LogError::Io(e.to_string())
+}
+
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 enum Entry {
@@ -41,14 +50,19 @@ pub struct RedbLogConfig {
     pub path: PathBuf,
     /// Whether Heartbeat (`35=0`) messages are persisted.
     pub include_heartbeats: bool,
+    /// The session identity stamped onto every row (GAP-41/FR-019, feature 005). See
+    /// `truefix_log::SqlLogConfig::session_id`'s doc for the rationale.
+    pub session_id: String,
 }
 
 impl RedbLogConfig {
-    /// A config using `path` with `include_heartbeats` defaulting to `true`.
+    /// A config using `path` with `include_heartbeats` defaulting to `true` and `session_id`
+    /// `"default"`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
             include_heartbeats: true,
+            session_id: "default".to_owned(),
         }
     }
 }
@@ -62,7 +76,10 @@ pub struct RedbLog {
 }
 
 /// The next free key for `table` — one past its current max key, or `0` if empty.
-fn next_key(db: &Database, table: TableDefinition<u64, &str>) -> Result<u64, LogError> {
+fn next_key(
+    db: &Database,
+    table: TableDefinition<u64, (i64, &str, &str)>,
+) -> Result<u64, LogError> {
     let txn = db.begin_read().map_err(backend)?;
     let t = txn.open_table(table).map_err(backend)?;
     let last = t.last().map_err(backend)?;
@@ -72,14 +89,16 @@ fn next_key(db: &Database, table: TableDefinition<u64, &str>) -> Result<u64, Log
 
 fn insert_blocking(
     db: &Database,
-    table: TableDefinition<u64, &str>,
+    table: TableDefinition<u64, (i64, &str, &str)>,
     key: u64,
+    session_id: &str,
     text: &str,
 ) -> Result<(), LogError> {
     let txn = db.begin_write().map_err(backend)?;
     {
         let mut t = txn.open_table(table).map_err(backend)?;
-        t.insert(key, text).map_err(backend)?;
+        t.insert(key, (now_unix(), session_id, text))
+            .map_err(backend)?;
     }
     txn.commit().map_err(backend)?;
     Ok(())
@@ -114,9 +133,11 @@ impl RedbLog {
         let mut next_event = next_key(&db, EVENT)?;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Entry>();
+        let session_id = config.session_id;
         tokio::spawn(async move {
             while let Some(entry) = rx.recv().await {
                 let db = db.clone();
+                let session_id = session_id.clone();
                 let result = match entry {
                     Entry::Message { direction, text } => {
                         let (table, key) = if direction == "I" {
@@ -128,14 +149,18 @@ impl RedbLog {
                             next_outgoing += 1;
                             (OUTGOING, key)
                         };
-                        tokio::task::spawn_blocking(move || insert_blocking(&db, table, key, &text))
-                            .await
+                        tokio::task::spawn_blocking(move || {
+                            insert_blocking(&db, table, key, &session_id, &text)
+                        })
+                        .await
                     }
                     Entry::Event { text } => {
                         let key = next_event;
                         next_event += 1;
-                        tokio::task::spawn_blocking(move || insert_blocking(&db, EVENT, key, &text))
-                            .await
+                        tokio::task::spawn_blocking(move || {
+                            insert_blocking(&db, EVENT, key, &session_id, &text)
+                        })
+                        .await
                     }
                 };
                 // Best-effort: a write failure (join or backend error) drops the entry rather than

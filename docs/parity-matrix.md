@@ -496,7 +496,7 @@ Phase 4 (early) got AT coverage to 8 versions/318 runs; this closeout brings in 
 - Confirmed (T055) that US3's field-order scenarios (`2t_FirstThreeFieldsOutOfOrder`,
   `14g_HeaderBodyTrailerFieldsOutOfOrder`, `15_HeaderAndBodyFieldsOrderedDifferently`) and the
   `validateChecksum` suite were already folded into `server_suite()`/their own dedicated test —
-  `docs/todo-gap-analysis.md`'s TODO-01 checkboxes were stale (still marked "deferred until US3
+  `docs/todo/001.md`'s TODO-01 checkboxes were stale (still marked "deferred until US3
   lands") and have been corrected to reflect actual completion.
 
 **Honest scope framing, not a claimed "73/73"**: this project does not vendor or otherwise verify
@@ -505,7 +505,7 @@ so "100% of the 73 published server scenarios" is not something this codebase ca
 itself against. What *is* verifiable and enforced: every scenario this project has itself authored
 passes across every version it targets (353/353, CI-gated), the corpus cannot silently shrink
 (`coverage.rs`'s regression floor), and every individually-deferred scenario name is recorded with an
-explicit reason in `docs/todo-gap-analysis.md`'s TODO-01 (harness capability gaps, dictionary-content
+explicit reason in `docs/todo/001.md`'s TODO-01 (harness capability gaps, dictionary-content
 gaps, or genuinely ambiguous reference semantics this project won't guess at) rather than silently
 dropped.
 
@@ -705,4 +705,30 @@ scope to fix here).
 spec/data-model.md, both are library-level additions selectable only via `StoreConfig::Redb`/`Mongo`
 through the direct Rust API, matching `SqlLog`/`MssqlLog`'s precedent that not every store/log backend
 is `.cfg`-selectable (only `LogConfig::Screen`/`File`/`Tracing`/`Composite` are). See
-`docs/todo-gap-analysis.md`'s GAP-01–GAP-06 entries for the user-facing gap-closure summary.
+`docs/todo/001.md`'s GAP-01–GAP-06 entries for the user-facing gap-closure summary.
+
+## Feature 005 — Stance Tracking Scaffold (T002) — final sweep (T099)
+
+Config keys this feature changes stance for (`docs/todo/002.md`'s BUG-03/BUG-04/
+doc-accuracy findings, FR-003/004/006/012/013/014/015/016/020/021), tracked here as each landed; see
+`crates/truefix-config/src/keys.rs` (`APPENDIX_A_KEYS`) for the authoritative per-key registry.
+
+| Key | Stage | Status |
+|-----|-------|--------|
+| `JdbcURL` (`jdbc:`-prefixed recognition added) | G2 (US2) | **landed** — `is_sql_scheme`/`is_mssql_scheme` recognize `jdbc:postgresql://`/`jdbc:mysql://`/`jdbc:sqlserver://`/`jdbc:hsqldb:` in addition to the existing sqlx-native schemes; stance unchanged (`Impl`), coverage widened |
+| `JdbcUser` / `JdbcPassword` | G2 (US2) | **landed** — spliced into the connection string when the `jdbc:` URL doesn't already embed credentials; stance `Rec` → `Impl` |
+| `AllowedRemoteAddresses` / `DynamicSession` / `AcceptorTemplate` (already `Impl`, previously unreachable — this feature makes the marking accurate) | G2 (US2) | **landed** — `Engine::start` now groups `.cfg` sessions sharing a `SocketAcceptPort` into a real multi-session `AcceptorBuilder`; stance unchanged (`Impl`), marking now accurate |
+| `SenderSubID` / `SenderLocationID` / `TargetSubID` / `TargetLocationID` / `SessionQualifier` (already `Impl`, previously never actually populated by any builder path — this feature makes the marking accurate) | G5 (US5) | **landed** — `SessionConfig` gained the 5 fields, parsed from `.cfg` and threaded into `SessionId::new_full()`; stance unchanged (`Impl`), marking now accurate |
+| `ReconnectInterval` (single value or stepped list) | G6 (US6) | **landed** — `reconnect_delay()` steps through a `Vec<u32>`; stance `Rec` → `Impl` |
+| `SocketLocalHost` / `SocketLocalPort` | G6 (US6) | **landed** — bind-before-connect via new `tcp_connect()`; stance `Rec` → `Impl` |
+| `SocketConnectTimeout` | G6 (US6) | **landed** — wraps every initiator connect path via `with_connect_timeout()`; stance `Rec` → `Impl` |
+| `SocketAcceptProtocol` / `SocketConnectProtocol` (→ `Unsupported`) | G8 (US8) | **landed** — VM_PIPE (in-JVM-process transport) has no Rust equivalent; stance `Rec` → `Unsup` |
+| `JdbcDataSourceName` (→ `Unsupported`) | G8 (US8) | **landed** — same JNDI-lookup mechanism as its already-`Unsupported` siblings `JndiContextFactory`/`JndiProviderURL`; stance `Rec` → `Unsup` |
+| `JdbcConnectionTestQuery` (→ `Unsupported`) | G8 (US8) | **landed** — `sqlx`'s pool already validates connection liveliness automatically (`test_before_acquire`), no custom-query hook exposed at the `.cfg` level; stance `Rec` → `Unsup` |
+| `JdbcMaxActiveConnection` / `JdbcMinIdleConnection` / `JdbcConnectionTimeout` / `JdbcConnectionIdleTimeout` / `JdbcMaxConnectionLifeTime` / `JdbcConnectionKeepaliveTime` / `JdbcStoreMessagesTableName` / `JdbcStoreSessionsTableName` / `JdbcSessionIdDefaultPropertyValue` (9 keys) | G8 (US8) | **landed** — threaded into `StoreConfig::Sql`/`Mssql`'s new `sessions_table`/`messages_table`/`session_id`/`pool: SqlPoolOptions` fields via `jdbc_store_config()`; stance `Rec` → `Impl`. `JdbcConnectionKeepaliveTime` required adding a new `SqlPoolOptions.keepalive: Option<Duration>` field (research.md's finding of "5 pool-tuning siblings" was off by one — there are 6, this one had no existing field at all); parsed and stored but intentionally not wired into `sqlx`'s pool (no matching `sqlx` hook exists), matching the project's established precedent for accepted-but-inert config keys |
+
+Also landed this feature, with no `.cfg`-key-stance change of their own (protocol/codec behavior, not
+config surface): `GAP-07`/`08`/`18a` (US3, session-state-machine safeguards), `GAP-09` (US4, chunked
+resend), `GAP-38`/`39`/`41` (US7, store/log hardening), and the entire US9 dictionary/codec cluster
+(`GAP-22`–`29`/`32`/`33`) — see `docs/acceptance-record.md`'s "005" section for the full narrative and
+`docs/todo/002.md` for the struck-through gap citations.

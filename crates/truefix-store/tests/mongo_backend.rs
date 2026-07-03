@@ -60,6 +60,37 @@ async fn exercise_session_isolation(uri: &str, unique_suffix: &str) {
     assert_eq!(a.get(1, 1).await.unwrap(), vec![(1, b"a-only".to_vec())]);
 }
 
+/// T048 (US7, feature 005): creation-time persistence, updated on `reset()` (GAP-38/FR-017).
+async fn exercise_creation_time(uri: &str, unique_suffix: &str) {
+    let config = MongoStoreConfig {
+        sessions_collection: format!("ct_sessions_{unique_suffix}"),
+        messages_collection: format!("ct_messages_{unique_suffix}"),
+        session_id: "s1".to_owned(),
+        ..MongoStoreConfig::new(uri)
+    };
+    let store = MongoStore::connect_with_config(config).await.unwrap();
+
+    let created = store.creation_time().await.unwrap();
+    assert!(created.is_some(), "expected a recorded creation time");
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    store.reset().await.unwrap();
+    let after_reset = store.creation_time().await.unwrap();
+    assert!(
+        after_reset.unwrap().unix_timestamp() > created.unwrap().unix_timestamp(),
+        "reset() should advance the recorded creation time"
+    );
+}
+
+#[tokio::test]
+async fn mongo_creation_time_if_available() {
+    let Ok(uri) = std::env::var("DATABASE_URL_MONGO") else {
+        eprintln!("skipping: DATABASE_URL_MONGO not set");
+        return;
+    };
+    exercise_creation_time(&uri, "mongo3").await;
+}
+
 #[tokio::test]
 async fn mongo_full_contract_if_available() {
     let Ok(uri) = std::env::var("DATABASE_URL_MONGO") else {

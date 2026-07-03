@@ -81,6 +81,21 @@ pub trait MessageStore: Send + Sync {
     fn was_corrupted(&self) -> bool {
         false
     }
+    /// The wall-clock time this store was created (or last reset), if the backend tracks one
+    /// (GAP-38/FR-017, feature 005). `None` for backends with no such concept (e.g.
+    /// `MemoryStore`, `NoopStore`) or when not yet recorded.
+    async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
+        Ok(None)
+    }
+    /// Atomically persist an outbound message and advance the sender sequence past it
+    /// (GAP-39/FR-018, feature 005): closes the crash window where `save()` succeeds but a
+    /// subsequent `set_next_sender_seq()` doesn't (or vice versa), which could otherwise
+    /// double-send or skip a sequence number on restart. The default implementation preserves
+    /// today's behavior (two independent calls) for any backend that doesn't override it.
+    async fn save_and_advance_sender(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
+        self.save(seq, message).await?;
+        self.set_next_sender_seq(seq + 1).await
+    }
 }
 
 /// Which store backend to construct.
@@ -109,12 +124,33 @@ pub enum StoreConfig {
     Sql {
         /// Database URL.
         url: String,
+        /// `JdbcStoreSessionsTableName` (US8, feature 005, FR-021); `None` uses
+        /// `SqlStoreConfig::new`'s default (`"seqnums"`).
+        sessions_table: Option<String>,
+        /// `JdbcStoreMessagesTableName` (US8, feature 005, FR-021); `None` uses
+        /// `SqlStoreConfig::new`'s default (`"messages"`).
+        messages_table: Option<String>,
+        /// `JdbcSessionIdDefaultPropertyValue` (US8, feature 005, FR-021); `None` uses
+        /// `SqlStoreConfig::new`'s default (`"default"`).
+        session_id: Option<String>,
+        /// `Jdbc*Connection*` pool-tuning keys (US8, feature 005, FR-021); `None` uses
+        /// `SqlPoolOptions::default()`.
+        pool: Option<SqlPoolOptions>,
     },
     /// MSSQL-backed store (requires the `mssql` feature; FR-020).
     #[cfg(feature = "mssql")]
     Mssql {
         /// Database URL (`mssql://user:password@host[:port]/database`).
         url: String,
+        /// `JdbcStoreSessionsTableName` (US8, feature 005, FR-021); `None` uses
+        /// `MssqlStoreConfig::new`'s default (`"seqnums"`).
+        sessions_table: Option<String>,
+        /// `JdbcStoreMessagesTableName` (US8, feature 005, FR-021); `None` uses
+        /// `MssqlStoreConfig::new`'s default (`"messages"`).
+        messages_table: Option<String>,
+        /// `JdbcSessionIdDefaultPropertyValue` (US8, feature 005, FR-021); `None` uses
+        /// `MssqlStoreConfig::new`'s default (`"default"`).
+        session_id: Option<String>,
     },
     /// Embedded transactional store via `redb` (requires the `redb` feature; US5, feature 004,
     /// FR-006), a modern replacement for QuickFIX/J's obsolete `SleepycatStore`.
@@ -144,9 +180,43 @@ pub async fn build_store(config: &StoreConfig) -> Result<Box<dyn MessageStore>, 
         }
         StoreConfig::Noop => Box::new(NoopStore),
         #[cfg(feature = "sql")]
-        StoreConfig::Sql { url } => Box::new(SqlStore::connect(url).await?),
+        StoreConfig::Sql {
+            url,
+            sessions_table,
+            messages_table,
+            session_id,
+            pool,
+        } => {
+            let defaults = SqlStoreConfig::new(url);
+            Box::new(
+                SqlStore::connect_with_config(SqlStoreConfig {
+                    sessions_table: sessions_table.clone().unwrap_or(defaults.sessions_table),
+                    messages_table: messages_table.clone().unwrap_or(defaults.messages_table),
+                    session_id: session_id.clone().unwrap_or(defaults.session_id),
+                    pool: pool.unwrap_or(defaults.pool),
+                    ..defaults
+                })
+                .await?,
+            )
+        }
         #[cfg(feature = "mssql")]
-        StoreConfig::Mssql { url } => Box::new(MssqlStore::connect(url).await?),
+        StoreConfig::Mssql {
+            url,
+            sessions_table,
+            messages_table,
+            session_id,
+        } => {
+            let defaults = MssqlStoreConfig::new(url);
+            Box::new(
+                MssqlStore::connect_with_config(MssqlStoreConfig {
+                    sessions_table: sessions_table.clone().unwrap_or(defaults.sessions_table),
+                    messages_table: messages_table.clone().unwrap_or(defaults.messages_table),
+                    session_id: session_id.clone().unwrap_or(defaults.session_id),
+                    ..defaults
+                })
+                .await?,
+            )
+        }
         #[cfg(feature = "redb")]
         StoreConfig::Redb { path } => Box::new(RedbStore::connect(path).await?),
         #[cfg(feature = "mongodb")]

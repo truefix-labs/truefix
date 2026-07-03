@@ -11,7 +11,7 @@ fn typed_message_encodes_identically_to_generic_message() {
     typed
         .set_cl_ord_id("O1")
         .set_symbol("AAPL")
-        .set_side(Side::Buy)
+        .set_side(Side::BUY)
         .set_order_qty("100".parse().unwrap());
     // Stamp the session header fields a real send would add, directly on the inner generic Message.
     typed.0.header.set(Field::string(8, "FIX.4.4"));

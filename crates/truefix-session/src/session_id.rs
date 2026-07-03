@@ -42,6 +42,33 @@ impl SessionId {
             session_qualifier: None,
         }
     }
+
+    /// Create a session id from all eight components (GAP-47/FR-012, feature 005): the three
+    /// required identity fields plus SenderSubID/SenderLocationID/TargetSubID/TargetLocationID/
+    /// SessionQualifier, which together let two sessions sharing the same
+    /// BeginString/SenderCompID/TargetCompID be distinguished (FR-013).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_full(
+        begin_string: impl Into<String>,
+        sender_comp_id: impl Into<String>,
+        sender_sub_id: Option<String>,
+        sender_location_id: Option<String>,
+        target_comp_id: impl Into<String>,
+        target_sub_id: Option<String>,
+        target_location_id: Option<String>,
+        session_qualifier: Option<String>,
+    ) -> Self {
+        Self {
+            begin_string: begin_string.into(),
+            sender_comp_id: sender_comp_id.into(),
+            sender_sub_id,
+            sender_location_id,
+            target_comp_id: target_comp_id.into(),
+            target_sub_id,
+            target_location_id,
+            session_qualifier,
+        }
+    }
 }
 
 impl fmt::Display for SessionId {

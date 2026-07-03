@@ -55,6 +55,21 @@ fn all_boolean_switches_map_from_y() {
     assert!(c.force_resend_when_corrupted_store);
 }
 
+// --- 005/T027 (US3, GAP-08/FR-009): `RequiresOrigSendingTime` also gates the session-layer
+// anti-replay check, in addition to the pre-existing dictionary-level validation toggle. ---
+
+#[test]
+fn requires_orig_sending_time_defaults_to_false() {
+    let c = resolved(&base(""));
+    assert!(!c.requires_orig_sending_time_on_low_seq);
+}
+
+#[test]
+fn requires_orig_sending_time_y_sets_the_session_level_switch() {
+    let c = resolved(&base("RequiresOrigSendingTime=Y\n"));
+    assert!(c.requires_orig_sending_time_on_low_seq);
+}
+
 #[test]
 fn logon_tag_maps_tag_and_value() {
     let c = resolved(&base("LogonTag=9001=HOUSE-ID\n"));

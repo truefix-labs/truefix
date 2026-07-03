@@ -63,6 +63,13 @@ pub struct ResolvedSession {
         truefix_dict::DataDictionary,
         truefix_dict::ValidationOptions,
     )>,
+    /// This session is the acceptor group's dynamic-session template (`DynamicSession=Y` or
+    /// `AcceptorTemplate` set — US2, feature 005, BUG-03/FR-006). Acceptor-only; always `false` for
+    /// initiators.
+    pub acceptor_template: bool,
+    /// Only accept connections from these remote IP addresses (`AllowedRemoteAddresses` — US2,
+    /// feature 005, BUG-03/FR-006). Acceptor-only; empty when unset.
+    pub allowed_remote_addresses: Vec<IpAddr>,
 }
 
 /// Forward-proxy configuration for an initiator connection, resolved from configuration (US12,
@@ -396,7 +403,9 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.max_latency = u32_key(map, "MaxLatency", &session, 120)?;
     cfg.logon_timeout = u32_key(map, "LogonTimeout", &session, 10)?;
     cfg.logout_timeout = u32_key(map, "LogoutTimeout", &session, 10)?;
-    cfg.reconnect_interval = u32_key(map, "ReconnectInterval", &session, 30)?;
+    let (reconnect_interval, reconnect_interval_steps) = resolve_reconnect_interval(map, &session)?;
+    cfg.reconnect_interval = reconnect_interval;
+    cfg.reconnect_interval_steps = reconnect_interval_steps;
     cfg.resend_request_chunk_size = u32_key(map, "ResendRequestChunkSize", &session, 0)?;
     cfg.enable_last_msg_seq_num_processed = bool_key(map, "EnableLastMsgSeqNumProcessed", false);
     cfg.enable_next_expected_msg_seq_num = bool_key(map, "EnableNextExpectedMsgSeqNum", false);
@@ -424,8 +433,30 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.refresh_on_logon = bool_key(map, "RefreshOnLogon", false);
     cfg.force_resend_when_corrupted_store = bool_key(map, "ForceResendWhenCorruptedStore", false);
     cfg.continue_initialization_on_error = bool_key(map, "ContinueInitializationOnError", false);
+    // 005/T027 (GAP-08/FR-009): the same `RequiresOrigSendingTime` key QuickFIX/J uses also gates
+    // the session-layer anti-replay check (state.rs's low-seq+PossDup branch), in addition to the
+    // pre-existing dictionary-level `ValidationOptions.requires_orig_sending_time` check below —
+    // the two run at different layers (session state machine vs. `validate()`) but share one key.
+    cfg.requires_orig_sending_time_on_low_seq = bool_key(map, "RequiresOrigSendingTime", false);
     cfg.logon_tag = resolve_logon_tag(map, &session)?;
     cfg.in_chan_capacity = usize_key(map, "InChanCapacity", &session, None)?;
+    // GAP-47/FR-012/FR-013 (feature 005): full session-identity keys.
+    cfg.sender_sub_id = map.get("SenderSubID").cloned();
+    cfg.sender_location_id = map.get("SenderLocationID").cloned();
+    cfg.target_sub_id = map.get("TargetSubID").cloned();
+    cfg.target_location_id = map.get("TargetLocationID").cloned();
+    cfg.session_qualifier = map.get("SessionQualifier").cloned();
+    // GAP-15/FR-015 + GAP-16/FR-016 (feature 005): initiator connect robustness.
+    cfg.local_bind_addr = resolve_local_bind_addr(map, &session)?;
+    cfg.connect_timeout = match map.get("SocketConnectTimeout") {
+        None => None,
+        Some(_) => Some(std::time::Duration::from_secs(u64::from(u32_key(
+            map,
+            "SocketConnectTimeout",
+            &session,
+            0,
+        )?))),
+    };
 
     let address = resolve_address(map, connection, &session)?;
     let store = resolve_store(map, &session)?;
@@ -440,6 +471,9 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     let trusted_proxy_addresses = resolve_trusted_proxy_addresses(map, &session)?;
     let sync_write_timeout = resolve_sync_write_timeout(map, &session)?;
     let validator = resolve_validator(map, &session)?;
+    let acceptor_template =
+        bool_key(map, "DynamicSession", false) || map.contains_key("AcceptorTemplate");
+    let allowed_remote_addresses = resolve_allowed_remote_addresses(map, &session)?;
 
     Ok(ResolvedSession {
         session: cfg,
@@ -455,7 +489,31 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         trusted_proxy_addresses,
         sync_write_timeout,
         validator,
+        acceptor_template,
+        allowed_remote_addresses,
     })
+}
+
+/// Resolve `AllowedRemoteAddresses` (US2, feature 005, BUG-03/FR-006): a comma-separated list of IP
+/// addresses this session's acceptor group only accepts connections from. Empty (the default) means
+/// no restriction, matching today's behavior. Mirrors `resolve_trusted_proxy_addresses`'s parsing
+/// exactly.
+fn resolve_allowed_remote_addresses(map: &Map, session: &str) -> Result<Vec<IpAddr>, ConfigError> {
+    match map.get("AllowedRemoteAddresses") {
+        None => Ok(Vec::new()),
+        Some(v) => v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                s.parse::<IpAddr>().map_err(|_| ConfigError::InvalidValue {
+                    key: "AllowedRemoteAddresses".to_owned(),
+                    session: session.to_owned(),
+                    reason: format!("expected an IP address, got {s:?}"),
+                })
+            })
+            .collect(),
+    }
 }
 
 /// Resolve `UseDataDictionary` + `DataDictionary`/`AppDataDictionary`/`TransportDataDictionary` +
@@ -615,10 +673,20 @@ fn resolve_log(map: &Map, session: &str) -> (Option<LogSpec>, Option<SqlLogSpec>
                 "both JdbcURL and FileLogPath are set; JdbcURL wins for this session's log"
             );
         }
+        // BUG-04 (feature 005): strip a `jdbc:`-prefixed URL down to the sqlx-native form
+        // `connect_sql_log`/`connect_mssql_log`'s own scheme-sniffing understands, splicing in
+        // JdbcUser/JdbcPassword when the URL doesn't already embed credentials — mirrors
+        // `resolve_store`'s `jdbc_store_config` treatment exactly.
+        let stripped = url.strip_prefix("jdbc:").unwrap_or(url);
+        let url = splice_credentials(
+            stripped,
+            map.get("JdbcUser").map(String::as_str),
+            map.get("JdbcPassword").map(String::as_str),
+        );
         return (
             None,
             Some(SqlLogSpec {
-                url: url.clone(),
+                url,
                 incoming_table: map
                     .get("JdbcLogIncomingTable")
                     .cloned()
@@ -726,6 +794,68 @@ fn resolve_failover_addresses(map: &Map, session: &str) -> Result<Vec<SocketAddr
         n += 1;
     }
     Ok(addrs)
+}
+
+/// `ReconnectInterval` (GAP-14/FR-014, feature 005): a single integer (unchanged behavior) or a
+/// space/comma-separated list of integers, matching QuickFIX/J's own `.cfg` grammar for this key.
+/// Returns `(first_value, steps)`; `steps` is empty for the single-integer form (preserving
+/// today's fixed-interval reconnect behavior verbatim).
+fn resolve_reconnect_interval(map: &Map, session: &str) -> Result<(u32, Vec<u32>), ConfigError> {
+    let Some(raw) = map.get("ReconnectInterval") else {
+        return Ok((30, Vec::new()));
+    };
+    let tokens: Vec<&str> = raw
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut steps = Vec::with_capacity(tokens.len());
+    for t in &tokens {
+        let v: u32 = t.parse().map_err(|_| ConfigError::InvalidValue {
+            key: "ReconnectInterval".to_owned(),
+            session: session.to_owned(),
+            reason: format!(
+                "expected an integer or space/comma-separated list of integers, got {raw:?}"
+            ),
+        })?;
+        steps.push(v);
+    }
+    match steps.first() {
+        None => Ok((30, Vec::new())),
+        Some(&first) if steps.len() == 1 => Ok((first, Vec::new())),
+        Some(&first) => Ok((first, steps)),
+    }
+}
+
+/// `SocketLocalHost`+`SocketLocalPort` (GAP-15/FR-015, feature 005): the local address an
+/// initiator binds before connecting out. Both keys must be set together (an unpaired
+/// `SocketLocalPort` is ambiguous, matching the numbered-failover-endpoint convention above).
+fn resolve_local_bind_addr(map: &Map, session: &str) -> Result<Option<SocketAddr>, ConfigError> {
+    let (host, port_str) = match (map.get("SocketLocalHost"), map.get("SocketLocalPort")) {
+        (None, None) => return Ok(None),
+        (Some(h), Some(p)) => (h.as_str(), p.as_str()),
+        _ => {
+            return Err(ConfigError::InvalidValue {
+                key: "SocketLocalHost/SocketLocalPort".to_owned(),
+                session: session.to_owned(),
+                reason: "both SocketLocalHost and SocketLocalPort must be set together".to_owned(),
+            })
+        }
+    };
+    let port: u16 = port_str.parse().map_err(|_| ConfigError::InvalidValue {
+        key: "SocketLocalPort".to_owned(),
+        session: session.to_owned(),
+        reason: format!("expected a port number, got {port_str:?}"),
+    })?;
+    let addr = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut it| it.next())
+        .ok_or_else(|| ConfigError::InvalidValue {
+            key: "SocketLocalHost".to_owned(),
+            session: session.to_owned(),
+            reason: format!("could not resolve address {host}:{port}"),
+        })?;
+    Ok(Some(addr))
 }
 
 /// Decode a config value as inline PEM bytes (US12, FR-017): `.cfg` is line-oriented (one
@@ -837,7 +967,13 @@ fn resolve_address(
 /// [`StoreConfig::Memory`].
 fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
     if let Some(url) = map.get("JdbcURL") {
-        return jdbc_store_config(url, session);
+        return jdbc_store_config(
+            map,
+            url,
+            session,
+            map.get("JdbcUser").map(String::as_str),
+            map.get("JdbcPassword").map(String::as_str),
+        );
     }
     let Some(dir) = map.get("FileStorePath") else {
         return Ok(StoreConfig::Memory);
@@ -869,6 +1005,10 @@ fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
 /// `JdbcURL`'s scheme prefix, dispatched by string prefix — mirrors the scheme-sniffing
 /// `SqlStore::connect`/`MssqlStore::connect` already do internally (research.md §3: no
 /// `JdbcDriver`-class-based dispatch, since this codebase has no such registry to mirror).
+///
+/// A second, `jdbc:`-prefixed form (BUG-04, feature 005) is recognized as a distinct, disjoint
+/// group before these sqlx-native checks — the real URL grammar QuickFIX/J's own `.cfg` files use
+/// (`jdbc:postgresql://...`, `jdbc:mysql://...`, etc.), never sqlx's bare-scheme form.
 fn is_sql_scheme(url: &str) -> bool {
     url.starts_with("postgres://")
         || url.starts_with("postgresql://")
@@ -880,17 +1020,65 @@ fn is_mssql_scheme(url: &str) -> bool {
     url.starts_with("mssql://") || url.starts_with("sqlserver://")
 }
 
+/// The `jdbc:`-prefixed sibling forms of [`is_sql_scheme`]/[`is_mssql_scheme`] (BUG-04).
+fn is_jdbc_sql_scheme(url: &str) -> bool {
+    url.starts_with("jdbc:postgres://")
+        || url.starts_with("jdbc:postgresql://")
+        || url.starts_with("jdbc:mysql://")
+        || url.starts_with("jdbc:sqlite:")
+        || url.starts_with("jdbc:h2:")
+}
+
+fn is_jdbc_mssql_scheme(url: &str) -> bool {
+    url.starts_with("jdbc:mssql://") || url.starts_with("jdbc:sqlserver://")
+}
+
 fn jdbc_scheme_of(url: &str) -> String {
+    let url = url.strip_prefix("jdbc:").unwrap_or(url);
     url.split_once(':')
         .map_or_else(|| url.to_owned(), |(s, _)| s.to_owned())
 }
 
-fn jdbc_store_config(url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
+/// Splice `user`/`password` into `url`'s authority when `url` doesn't already embed credentials
+/// (no `@`-delimited userinfo before the host) and both are present. Real QuickFIX/J `.cfg` files
+/// supply `JdbcURL` (credential-less) plus separate `JdbcUser`/`JdbcPassword` keys
+/// (`JdbcUtil.java:69-72`) rather than embedding credentials in the URL string the way TrueFix's
+/// own sqlx-native form does.
+fn splice_credentials(url: &str, user: Option<&str>, password: Option<&str>) -> String {
+    let (user, password) = match (user, password) {
+        (Some(u), Some(p)) => (u, p),
+        _ => return url.to_owned(),
+    };
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    if rest.contains('@') {
+        // Already credentialed — never override an explicit inline credential.
+        return url.to_owned();
+    }
+    format!("{scheme}://{user}:{password}@{rest}")
+}
+
+fn jdbc_store_config(
+    map: &Map,
+    url: &str,
+    session: &str,
+    user: Option<&str>,
+    password: Option<&str>,
+) -> Result<StoreConfig, ConfigError> {
     if is_sql_scheme(url) {
-        return sql_store_config(url, session);
+        return sql_store_config(map, url, session);
     }
     if is_mssql_scheme(url) {
-        return mssql_store_config(url, session);
+        return mssql_store_config(map, url, session);
+    }
+    if is_jdbc_sql_scheme(url) {
+        let stripped = url.strip_prefix("jdbc:").unwrap_or(url);
+        return sql_store_config(map, &splice_credentials(stripped, user, password), session);
+    }
+    if is_jdbc_mssql_scheme(url) {
+        let stripped = url.strip_prefix("jdbc:").unwrap_or(url);
+        return mssql_store_config(map, &splice_credentials(stripped, user, password), session);
     }
     Err(ConfigError::UnsupportedBackend {
         session: session.to_owned(),
@@ -898,15 +1086,106 @@ fn jdbc_store_config(url: &str, session: &str) -> Result<StoreConfig, ConfigErro
     })
 }
 
+/// The `JdbcStoreSessionsTableName`/`JdbcStoreMessagesTableName`/
+/// `JdbcSessionIdDefaultPropertyValue` keys shared by `sql_store_config`/`mssql_store_config`
+/// (US8, feature 005, FR-021).
+#[cfg(any(feature = "sql", feature = "mssql"))]
+fn jdbc_table_name_keys(map: &Map) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        map.get("JdbcStoreSessionsTableName").cloned(),
+        map.get("JdbcStoreMessagesTableName").cloned(),
+        map.get("JdbcSessionIdDefaultPropertyValue").cloned(),
+    )
+}
+
+/// The 6 `Jdbc*Connection*`/`JdbcMaxActiveConnection`/`JdbcMinIdleConnection` pool-tuning keys
+/// (US8, feature 005, FR-021); `None` when none of them are set (so `SqlStoreConfig`'s own
+/// default `SqlPoolOptions` applies unchanged).
 #[cfg(feature = "sql")]
-fn sql_store_config(url: &str, _session: &str) -> Result<StoreConfig, ConfigError> {
+fn jdbc_pool_options(
+    map: &Map,
+    session: &str,
+) -> Result<Option<truefix_store::SqlPoolOptions>, ConfigError> {
+    let any_set = [
+        "JdbcMaxActiveConnection",
+        "JdbcMinIdleConnection",
+        "JdbcConnectionTimeout",
+        "JdbcConnectionIdleTimeout",
+        "JdbcMaxConnectionLifeTime",
+        "JdbcConnectionKeepaliveTime",
+    ]
+    .iter()
+    .any(|k| map.contains_key(*k));
+    if !any_set {
+        return Ok(None);
+    }
+    let defaults = truefix_store::SqlPoolOptions::default();
+    Ok(Some(truefix_store::SqlPoolOptions {
+        max_connections: u32_key(
+            map,
+            "JdbcMaxActiveConnection",
+            session,
+            defaults.max_connections,
+        )?,
+        min_connections: u32_key(
+            map,
+            "JdbcMinIdleConnection",
+            session,
+            defaults.min_connections,
+        )?,
+        acquire_timeout: match map.get("JdbcConnectionTimeout") {
+            None => defaults.acquire_timeout,
+            Some(_) => std::time::Duration::from_secs(u64::from(u32_key(
+                map,
+                "JdbcConnectionTimeout",
+                session,
+                0,
+            )?)),
+        },
+        idle_timeout: match map.get("JdbcConnectionIdleTimeout") {
+            None => defaults.idle_timeout,
+            Some(_) => Some(std::time::Duration::from_secs(u64::from(u32_key(
+                map,
+                "JdbcConnectionIdleTimeout",
+                session,
+                0,
+            )?))),
+        },
+        max_lifetime: match map.get("JdbcMaxConnectionLifeTime") {
+            None => defaults.max_lifetime,
+            Some(_) => Some(std::time::Duration::from_secs(u64::from(u32_key(
+                map,
+                "JdbcMaxConnectionLifeTime",
+                session,
+                0,
+            )?))),
+        },
+        keepalive: match map.get("JdbcConnectionKeepaliveTime") {
+            None => defaults.keepalive,
+            Some(_) => Some(std::time::Duration::from_secs(u64::from(u32_key(
+                map,
+                "JdbcConnectionKeepaliveTime",
+                session,
+                0,
+            )?))),
+        },
+    }))
+}
+
+#[cfg(feature = "sql")]
+fn sql_store_config(map: &Map, url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
+    let (sessions_table, messages_table, session_id) = jdbc_table_name_keys(map);
     Ok(StoreConfig::Sql {
         url: url.to_owned(),
+        sessions_table,
+        messages_table,
+        session_id,
+        pool: jdbc_pool_options(map, session)?,
     })
 }
 
 #[cfg(not(feature = "sql"))]
-fn sql_store_config(url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
+fn sql_store_config(_map: &Map, url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
     Err(ConfigError::UnsupportedBackend {
         session: session.to_owned(),
         scheme: jdbc_scheme_of(url),
@@ -914,14 +1193,18 @@ fn sql_store_config(url: &str, session: &str) -> Result<StoreConfig, ConfigError
 }
 
 #[cfg(feature = "mssql")]
-fn mssql_store_config(url: &str, _session: &str) -> Result<StoreConfig, ConfigError> {
+fn mssql_store_config(map: &Map, url: &str, _session: &str) -> Result<StoreConfig, ConfigError> {
+    let (sessions_table, messages_table, session_id) = jdbc_table_name_keys(map);
     Ok(StoreConfig::Mssql {
         url: url.to_owned(),
+        sessions_table,
+        messages_table,
+        session_id,
     })
 }
 
 #[cfg(not(feature = "mssql"))]
-fn mssql_store_config(url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
+fn mssql_store_config(_map: &Map, url: &str, session: &str) -> Result<StoreConfig, ConfigError> {
     Err(ConfigError::UnsupportedBackend {
         session: session.to_owned(),
         scheme: jdbc_scheme_of(url),

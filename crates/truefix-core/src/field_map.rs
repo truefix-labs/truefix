@@ -77,6 +77,49 @@ impl FieldMap {
         })
     }
 
+    /// Get one entry (by 0-based `index`) of the first group with `count_tag` (US9, feature 005,
+    /// FR-024/FR-025). `None` if the group doesn't exist or `index` is out of range.
+    pub fn get_group(&self, count_tag: u32, index: usize) -> Option<&FieldMap> {
+        self.group(count_tag).and_then(|entries| entries.get(index))
+    }
+
+    /// Replace one entry (by 0-based `index`) of the first group with `count_tag` (US9, feature
+    /// 005, FR-024/FR-025). No-op if the group doesn't exist or `index` is out of range.
+    pub fn replace_group(&mut self, count_tag: u32, index: usize, entry: FieldMap) {
+        if let Some(Member::Group {
+            count_tag: ct,
+            entries,
+        }) = self
+            .members
+            .iter_mut()
+            .find(|m| matches!(m, Member::Group { count_tag: ct, .. } if *ct == count_tag))
+        {
+            debug_assert_eq!(*ct, count_tag);
+            if let Some(slot) = entries.get_mut(index) {
+                *slot = entry;
+            }
+        }
+    }
+
+    /// Remove one entry (by 0-based `index`) of the first group with `count_tag` (US9, feature
+    /// 005, FR-024/FR-025), shifting later entries down. No-op if the group doesn't exist or
+    /// `index` is out of range.
+    pub fn remove_group(&mut self, count_tag: u32, index: usize) {
+        if let Some(Member::Group {
+            count_tag: ct,
+            entries,
+        }) = self
+            .members
+            .iter_mut()
+            .find(|m| matches!(m, Member::Group { count_tag: ct, .. } if *ct == count_tag))
+        {
+            debug_assert_eq!(*ct, count_tag);
+            if index < entries.len() {
+                entries.remove(index);
+            }
+        }
+    }
+
     /// Iterate the top-level fields (skipping repeating groups), in order.
     pub fn fields(&self) -> impl Iterator<Item = &Field> {
         self.members.iter().filter_map(|m| match m {

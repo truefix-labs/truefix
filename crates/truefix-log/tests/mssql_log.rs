@@ -104,3 +104,47 @@ async fn mssql_log_persists_messages_and_events_if_available() {
     assert_eq!(outgoing, 1, "one outgoing message logged");
     assert_eq!(events, 1, "one event logged");
 }
+
+/// T056 (US7, feature 005): every row carries a `logged_at` timestamp and `session_id`
+/// (GAP-41/FR-019), mirroring `sql_log.rs`'s equivalent test.
+#[tokio::test]
+async fn mssql_log_rows_carry_logged_at_and_session_id_if_available() {
+    let Ok(url) = std::env::var("DATABASE_URL_MSSQL") else {
+        eprintln!("skipping: DATABASE_URL_MSSQL not set");
+        return;
+    };
+
+    let config = MssqlLogConfig {
+        event_table: "t56_log_event".to_owned(),
+        session_id: "SERVER->CLIENT".to_owned(),
+        ..MssqlLogConfig::new(&url)
+    };
+    let log = MssqlLog::connect_with_config(config).await.unwrap();
+    log.on_event("logged on");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let tiberius_config = parse_url(&url);
+    let addr = tokio::net::lookup_host(tiberius_config.get_addr())
+        .await
+        .unwrap()
+        .next()
+        .unwrap();
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    tcp.set_nodelay(true).unwrap();
+    let mut client = Client::connect(tiberius_config, tcp.compat_write())
+        .await
+        .unwrap();
+
+    let row = client
+        .query("SELECT TOP 1 logged_at, session_id FROM t56_log_event", &[])
+        .await
+        .unwrap()
+        .into_row()
+        .await
+        .unwrap()
+        .unwrap();
+    let logged_at: i64 = row.get(0).unwrap();
+    let session_id: &str = row.get(1).unwrap();
+    assert!(logged_at > 0, "expected a nonzero logged_at timestamp");
+    assert_eq!(session_id, "SERVER->CLIENT");
+}

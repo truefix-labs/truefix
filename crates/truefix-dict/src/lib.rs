@@ -22,6 +22,8 @@
 )]
 
 pub mod codegen;
+#[cfg(feature = "dict-tooling")]
+pub mod fix_repository;
 pub mod fixt;
 mod hash;
 pub mod model;

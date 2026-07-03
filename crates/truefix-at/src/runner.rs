@@ -128,6 +128,26 @@ pub async fn start_acceptor(
             }
             Ok(())
         }
+        // T021 (US3, feature 005, GAP-07/FR-007): a sentinel ClOrdID ("VETO-RESEND", carried over
+        // from the originating NewOrderSingle onto its ExecutionReport by `execution_report`'s
+        // existing field-copy) lets a scenario prove a resend-originated (PossDupFlag=Y) send gets
+        // vetoed and replaced by a GapFill — unconditional, not gated by a tweak, matching the
+        // existing "LOGOUT" sentinel's pattern above. The *original* live send is never vetoed
+        // (only its later resend is), matching `resend_veto.rs`'s transport-level test.
+        async fn to_app(
+            &self,
+            message: &mut Message,
+            _id: &SessionId,
+        ) -> Result<(), truefix_core::DoNotSend> {
+            let is_veto_sentinel =
+                message.body.get(11).and_then(|f| f.as_str().ok()) == Some("VETO-RESEND");
+            let is_resend = message.header.get(43).and_then(|f| f.as_str().ok()) == Some("Y");
+            if is_veto_sentinel && is_resend {
+                Err(truefix_core::DoNotSend)
+            } else {
+                Ok(())
+            }
+        }
     }
 
     let mut template = SessionConfig::new(version, "SERVER", "CLIENT", Role::Acceptor);

@@ -42,12 +42,12 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     // Session identity & type
     k("BeginString", "identity", Impl),
     k("SenderCompID", "identity", Impl),
-    k("SenderSubID", "identity", Rec),
-    k("SenderLocationID", "identity", Rec),
+    k("SenderSubID", "identity", Impl),
+    k("SenderLocationID", "identity", Impl),
     k("TargetCompID", "identity", Impl),
-    k("TargetSubID", "identity", Rec),
-    k("TargetLocationID", "identity", Rec),
-    k("SessionQualifier", "identity", Rec),
+    k("TargetSubID", "identity", Impl),
+    k("TargetLocationID", "identity", Impl),
+    k("SessionQualifier", "identity", Impl),
     k("ConnectionType", "identity", Impl),
     k("Description", "identity", Rec),
     k("DefaultApplVerID", "identity", Impl),
@@ -129,7 +129,18 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     // Acceptor / dynamic session
     k("SocketAcceptAddress", "acceptor", Impl),
     k("SocketAcceptPort", "acceptor", Impl),
-    k("SocketAcceptProtocol", "acceptor", Rec),
+    k(
+        "SocketAcceptProtocol",
+        "acceptor",
+        Unsup("selects between QFJ's SOCKET and VM_PIPE (in-JVM-process) transport factories; VM_PIPE has no meaningful Rust equivalent (US8, feature 005)"),
+    ),
+    // `AcceptorTemplate`/`DynamicSession`/`AllowedRemoteAddresses` were already marked `Impl`
+    // before feature 005, but `builder.rs` never read any of the three and `Engine::start` only
+    // ever bound one single-session `Acceptor` per `[SESSION]` block — so a `.cfg` setting them had
+    // no effect at all (BUG-03). Feature 005 (US2, FR-006/006a) makes the marking accurate:
+    // `Engine::start` now groups `[SESSION]` blocks sharing a bind address into one
+    // `AcceptorBuilder`, registering each group's dynamic template and the union of its members'
+    // allow-list entries.
     k("AcceptorTemplate", "acceptor", Impl),
     k("DynamicSession", "acceptor", Impl),
     k("AllowedRemoteAddresses", "acceptor", Impl),
@@ -146,10 +157,14 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     // existing proxy path).
     k("SocketConnectHost1", "initiator", Impl),
     k("SocketConnectPort1", "initiator", Impl),
-    k("SocketConnectProtocol", "initiator", Rec),
-    k("SocketConnectTimeout", "initiator", Rec),
-    k("SocketLocalHost", "initiator", Rec),
-    k("SocketLocalPort", "initiator", Rec),
+    k(
+        "SocketConnectProtocol",
+        "initiator",
+        Unsup("selects between QFJ's SOCKET and VM_PIPE (in-JVM-process) transport factories; VM_PIPE has no meaningful Rust equivalent (US8, feature 005)"),
+    ),
+    k("SocketConnectTimeout", "initiator", Impl),
+    k("SocketLocalHost", "initiator", Impl),
+    k("SocketLocalPort", "initiator", Impl),
     k("ReconnectInterval", "initiator", Impl),
     // Socket options (FR-019)
     k("SocketKeepAlive", "socket", Impl),
@@ -269,42 +284,62 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     // (`SqlStore`/`SqlLog`, via `sqlx`) and MSSQL behind the separate `mssql` feature
     // (`MssqlStore`/`MssqlLog`, via `tiberius` — sqlx has no official MSSQL driver).
     //
-    // `JdbcURL` itself is now `Implemented` (US3, feature 004, FR-003): `builder.rs`'s
-    // `resolve_store`/`resolve_log` dispatch on the URL's scheme prefix (`postgres://`/
-    // `mysql://`/`sqlite:` vs. `mssql://`/`sqlserver://`) — a scheme-sniffing equivalent to
-    // QuickFIX/J's `JdbcDriver`-class-based registry dispatch, not a literal port of it (this
-    // codebase has no driver-class registry to mirror). The four `JdbcLog*` keys consumed by
-    // that same dispatch (table names + heartbeat filter, feeding the new `SqlLogSpec`) are
-    // `Implemented` too. `JdbcDriver`/`JdbcUser`/`JdbcPassword`/`JdbcDataSourceName` stay
-    // `Recognized`: the URL already carries user/password/scheme inline
-    // (`postgres://user:pass@host/db`-style), so these QuickFIX/J-only auxiliary keys are parsed
-    // but have nothing left to configure. `JdbcStoreMessagesTableName`/
-    // `JdbcStoreSessionsTableName` also stay `Recognized`: `StoreConfig::Sql`/`Mssql` carry only a
-    // bare `url: String` (no table-name override field), a pre-existing limitation from before
-    // this feature, not a regression — same for the connection-pool keys below (`SqlLogSpec` has
-    // no pool-settings field; pool tuning remains programmatic-only via `SqlLogConfig`/
-    // `SqlStoreConfig` directly). Oracle (per spec 003's Clarifications) is deferred rather than
-    // implemented — see `docs/parity-matrix.md`'s "Feature 003 — US14" section for the license
-    // rationale.
+    // `JdbcURL` itself is `Implemented` (US3, feature 004, FR-003; extended US2, feature 005,
+    // BUG-04/FR-003): `builder.rs`'s `resolve_store`/`resolve_log` dispatch on the URL's scheme
+    // prefix — both TrueFix's own sqlx-native form (`postgres://`/`mysql://`/`sqlite:` vs.
+    // `mssql://`/`sqlserver://`) and, since feature 005, the real JDBC form QuickFIX/J's own `.cfg`
+    // files actually use (`jdbc:postgresql://`/`jdbc:mysql://`/`jdbc:sqlite:`/`jdbc:h2:` vs.
+    // `jdbc:sqlserver://`) — a scheme-sniffing equivalent to QuickFIX/J's `JdbcDriver`-class-based
+    // registry dispatch, not a literal port of it (this codebase has no driver-class registry to
+    // mirror). The four `JdbcLog*` keys consumed by that same dispatch (table names + heartbeat
+    // filter, feeding the new `SqlLogSpec`) are `Implemented` too. `JdbcUser`/`JdbcPassword` are
+    // `Implemented` since feature 005 (BUG-04/FR-004): spliced into a credential-less `JdbcURL`'s
+    // authority before it reaches `StoreConfig::Sql`/`Mssql`/`SqlLogSpec`, matching how real
+    // QuickFIX/J `.cfg` files supply them (`JdbcUtil.java:69-72`) — an already-credentialed URL
+    // (TrueFix's own `postgres://user:pass@host/db` form) is never double-spliced. `JdbcDriver`
+    // stays `Recognized`: the URL's own scheme already carries this information, so there's
+    // nothing left to configure once the URL is present. `JdbcDataSourceName` (feature 005, US8)
+    // moves to `Unsupported` — see that key's own entry below, not here, since it's part of a
+    // different (JNDI) mechanism than `JdbcDriver`/`JdbcUser`/`JdbcPassword`.
+    // `JdbcStoreMessagesTableName`/`JdbcStoreSessionsTableName`/
+    // `JdbcSessionIdDefaultPropertyValue` and the `Jdbc*Connection*`/`JdbcMaxActiveConnection`/
+    // `JdbcMinIdleConnection` pool-tuning keys moved `Recognized` → `Implemented` in US8 (feature
+    // 005, FR-021): `StoreConfig::Sql`/`Mssql` gained optional `sessions_table`/`messages_table`/
+    // `session_id`/`pool` fields (`None` preserves each backend's existing default), parsed by
+    // `jdbc_table_name_keys`/`jdbc_pool_options` in `builder.rs`. Oracle (per spec 003's
+    // Clarifications) is deferred rather than implemented — see `docs/parity-matrix.md`'s
+    // "Feature 003 — US14" section for the license rationale.
     k("JdbcDriver", "sql", Rec),
     k("JdbcURL", "sql", Impl),
-    k("JdbcUser", "sql", Rec),
-    k("JdbcPassword", "sql", Rec),
-    k("JdbcDataSourceName", "sql", Rec),
-    k("JdbcStoreMessagesTableName", "sql", Rec),
-    k("JdbcStoreSessionsTableName", "sql", Rec),
+    k("JdbcUser", "sql", Impl),
+    k("JdbcPassword", "sql", Impl),
+    k(
+        "JdbcDataSourceName",
+        "sql",
+        Unsup("part of QFJ's JNDI DataSource lookup mechanism, same as JndiContextFactory/JndiProviderURL below — JNDI has no Rust equivalent (US8, feature 005)"),
+    ),
+    k("JdbcStoreMessagesTableName", "sql", Impl),
+    k("JdbcStoreSessionsTableName", "sql", Impl),
     k("JdbcLogIncomingTable", "sql", Impl),
     k("JdbcLogOutgoingTable", "sql", Impl),
     k("JdbcLogEventTable", "sql", Impl),
     k("JdbcLogHeartBeats", "sql", Impl),
-    k("JdbcMaxActiveConnection", "sql", Rec),
-    k("JdbcMaxConnectionLifeTime", "sql", Rec),
-    k("JdbcMinIdleConnection", "sql", Rec),
-    k("JdbcConnectionTimeout", "sql", Rec),
-    k("JdbcConnectionIdleTimeout", "sql", Rec),
-    k("JdbcConnectionKeepaliveTime", "sql", Rec),
-    k("JdbcConnectionTestQuery", "sql", Rec),
-    k("JdbcSessionIdDefaultPropertyValue", "sql", Rec),
+    k("JdbcMaxActiveConnection", "sql", Impl),
+    k("JdbcMaxConnectionLifeTime", "sql", Impl),
+    k("JdbcMinIdleConnection", "sql", Impl),
+    k("JdbcConnectionTimeout", "sql", Impl),
+    k("JdbcConnectionIdleTimeout", "sql", Impl),
+    // Parsed and stored (`SqlPoolOptions::keepalive`), but not wired into `sqlx`'s pool — `sqlx`
+    // has no keepalive-probe concept distinct from idle_timeout/max_lifetime (both already
+    // exposed as real keys above). Stays `Impl` since the value is genuinely reachable/stored,
+    // matching this project's precedent for keys with no underlying mechanism to attach to.
+    k("JdbcConnectionKeepaliveTime", "sql", Impl),
+    k(
+        "JdbcConnectionTestQuery",
+        "sql",
+        Unsup("sqlx's pool already validates connection liveliness automatically before handing one out (test_before_acquire, default true) — no string-based custom-query hook is exposed at the .cfg level for this to map onto (US8, feature 005)"),
+    ),
+    k("JdbcSessionIdDefaultPropertyValue", "sql", Impl),
     k(
         "JndiContextFactory",
         "sql",

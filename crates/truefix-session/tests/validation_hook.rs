@@ -44,7 +44,7 @@ fn sent(actions: &[Action]) -> Vec<&Message> {
     actions
         .iter()
         .filter_map(|a| match a {
-            Action::Send(m) => Some(m),
+            Action::Send(m) | Action::Resend(m, _) => Some(m),
             Action::Disconnect | Action::ResetStore => None,
         })
         .collect()
@@ -72,7 +72,7 @@ fn valid_app_message_is_accepted() {
 #[test]
 fn invalid_app_message_is_rejected_and_seq_advances() {
     let mut s = logged_on();
-    let actions = s.handle(Event::Received(new_order("9", 2))); // bad Side enum
+    let actions = s.handle(Event::Received(new_order("Z", 2))); // bad Side enum
     let out = sent(&actions);
     let reject = out
         .iter()

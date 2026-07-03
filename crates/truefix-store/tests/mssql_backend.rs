@@ -60,6 +60,46 @@ async fn exercise_session_isolation(url: &str, unique_suffix: &str) {
     assert_eq!(a.get(1, 1).await.unwrap(), vec![(1, b"a-only".to_vec())]);
 }
 
+/// T048/T049 (US7, feature 005): creation-time persistence and atomic save+advance-sender
+/// (GAP-38/GAP-39; FR-017/FR-018), mirroring `sql_backends.rs`'s equivalent test.
+async fn exercise_creation_time_and_atomic_save(url: &str, unique_suffix: &str) {
+    let config = MssqlStoreConfig {
+        sessions_table: format!("ct_sessions_{unique_suffix}"),
+        messages_table: format!("ct_messages_{unique_suffix}"),
+        session_id: "s1".to_owned(),
+        ..MssqlStoreConfig::new(url)
+    };
+    let store = MssqlStore::connect_with_config(config).await.unwrap();
+
+    let created = store.creation_time().await.unwrap();
+    assert!(created.is_some(), "expected a recorded creation time");
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    store.reset().await.unwrap();
+    let after_reset = store.creation_time().await.unwrap();
+    assert!(
+        after_reset.unwrap().unix_timestamp() > created.unwrap().unix_timestamp(),
+        "reset() should advance the recorded creation time"
+    );
+
+    store.set_next_sender_seq(5).await.unwrap();
+    store.save_and_advance_sender(5, b"atomic").await.unwrap();
+    assert_eq!(store.next_sender_seq().await.unwrap(), 6);
+    assert_eq!(
+        store.get(5, 5).await.unwrap(),
+        vec![(5, b"atomic".to_vec())]
+    );
+}
+
+#[tokio::test]
+async fn mssql_creation_time_and_atomic_save_if_available() {
+    let Ok(url) = std::env::var("DATABASE_URL_MSSQL") else {
+        eprintln!("skipping: DATABASE_URL_MSSQL not set");
+        return;
+    };
+    exercise_creation_time_and_atomic_save(&url, "mssql3").await;
+}
+
 #[tokio::test]
 async fn mssql_full_contract_if_available() {
     let Ok(url) = std::env::var("DATABASE_URL_MSSQL") else {

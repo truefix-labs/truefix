@@ -131,6 +131,66 @@ fn bind_listener_with_options(addr: SocketAddr, reuse_address: bool) -> io::Resu
     TcpListener::from_std(socket.into())
 }
 
+/// Connect out to `addr` (GAP-15/FR-015 + GAP-16/FR-016, feature 005), optionally binding to
+/// `local_bind_addr` first (`SocketLocalHost`/`SocketLocalPort`) and/or bounding the whole attempt
+/// by `connect_timeout` (`SocketConnectTimeout`). `None` for either preserves today's behavior
+/// (OS-chosen ephemeral port, unbounded wait) exactly.
+async fn tcp_connect(
+    addr: SocketAddr,
+    local_bind_addr: Option<SocketAddr>,
+    connect_timeout: Option<Duration>,
+) -> io::Result<TcpStream> {
+    let connect = async move {
+        match local_bind_addr {
+            None => TcpStream::connect(addr).await,
+            Some(local) => {
+                // A blocking bind-then-connect on a worker thread avoids the nonblocking-connect
+                // EINPROGRESS/readiness dance; connects are infrequent enough that the blocking
+                // thread cost is immaterial.
+                tokio::task::spawn_blocking(move || -> io::Result<std::net::TcpStream> {
+                    let domain = if addr.is_ipv4() {
+                        socket2::Domain::IPV4
+                    } else {
+                        socket2::Domain::IPV6
+                    };
+                    let socket = socket2::Socket::new(
+                        domain,
+                        socket2::Type::STREAM,
+                        Some(socket2::Protocol::TCP),
+                    )?;
+                    socket.bind(&local.into())?;
+                    socket.connect(&addr.into())?;
+                    socket.set_nonblocking(true)?;
+                    Ok(socket.into())
+                })
+                .await
+                .unwrap_or_else(|e| Err(io::Error::other(e)))
+                .and_then(TcpStream::from_std)
+            }
+        }
+    };
+    with_connect_timeout(connect_timeout, connect).await
+}
+
+/// GAP-16/FR-016 (feature 005): bound `fut` by `dur` when set, surfacing a typed
+/// `ErrorKind::TimedOut` on expiry rather than blocking indefinitely. `None` preserves the
+/// unbounded wait. Split out from [`tcp_connect`] so the timeout-wrapping behavior itself is
+/// unit-testable with `tokio::time::pause()`, without depending on real network timing.
+async fn with_connect_timeout<F, T>(dur: Option<Duration>, fut: F) -> io::Result<T>
+where
+    F: std::future::Future<Output = io::Result<T>>,
+{
+    match dur {
+        None => fut.await,
+        Some(dur) => tokio::time::timeout(dur, fut).await.unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connect attempt timed out",
+            ))
+        }),
+    }
+}
+
 /// Optional per-session services: a persistent message store, a log, and socket options.
 #[derive(Clone, Default)]
 pub struct Services {
@@ -317,7 +377,7 @@ pub async fn connect_initiator_with<A>(
 where
     A: Application + 'static,
 {
-    let stream = TcpStream::connect(addr).await?;
+    let stream = tcp_connect(addr, config.local_bind_addr, config.connect_timeout).await?;
     Ok(spawn_session(stream, config, app, services))
 }
 
@@ -335,7 +395,7 @@ pub async fn connect_initiator_tls<A>(
 where
     A: Application + 'static,
 {
-    let tcp = TcpStream::connect(addr).await?;
+    let tcp = tcp_connect(addr, config.local_bind_addr, config.connect_timeout).await?;
     services.socket_options.apply(&tcp);
     let connector = tokio_rustls::TlsConnector::from(tls);
     let stream = connector.connect(server_name, tcp).await?;
@@ -1014,6 +1074,26 @@ where
     }
 }
 
+/// Encode, log, write, and persist an already-hook-approved outbound message. Shared by
+/// [`Action::Send`], [`Action::Resend`]'s accepted path, and [`Action::Resend`]'s
+/// vetoed-then-gap-filled path (US3, feature 005, GAP-07/FR-007).
+async fn write_log_persist<S: AsyncWrite + Unpin>(
+    msg: &Message,
+    stream: &mut S,
+    services: &Services,
+    id: &SessionId,
+    session: &mut Session,
+) -> Result<(), ()> {
+    let bytes = msg.encode();
+    if let Some(log) = &services.log {
+        log.on_outgoing(&String::from_utf8_lossy(&bytes));
+    }
+    write_with_timeout(stream, &bytes, services, id).await?;
+    metrics_export::record_sent(id);
+    persist_sent(msg, &bytes, session, services).await;
+    Ok(())
+}
+
 /// Perform a batch of engine [`Action`]s: invoke the `to_admin`/`to_app` hooks (honoring an
 /// outbound `DoNotSend` by discarding the message from the resend store instead of writing it),
 /// log, encode, write, and persist each send. Returns whether a disconnect was requested.
@@ -1046,13 +1126,25 @@ where
                     }
                     continue;
                 }
-                let bytes = msg.encode();
-                if let Some(log) = &services.log {
-                    log.on_outgoing(&String::from_utf8_lossy(&bytes));
+                write_log_persist(&msg, stream, services, id, session).await?;
+            }
+            Action::Resend(mut msg, seq) => {
+                // GAP-07/FR-007 (feature 005): a resend-originated send goes through the same
+                // `to_app` veto point a live send does, but unlike a vetoed live send (whose
+                // sequence number was never promised to the counterparty), a vetoed resend's
+                // sequence number *was* already promised in an earlier connection — silently
+                // discarding it would leave the counterparty's own sequence tracking permanently
+                // stuck waiting for a message that will never arrive. Substitute a compensating
+                // GapFill instead of a bare discard.
+                if app.to_app(&mut msg, id).await.is_err() {
+                    session.discard_sent(seq);
+                    if let Action::Send(mut gap_fill) = session.gap_fill_after_veto(seq) {
+                        app.to_admin(&mut gap_fill, id).await;
+                        write_log_persist(&gap_fill, stream, services, id, session).await?;
+                    }
+                    continue;
                 }
-                write_with_timeout(stream, &bytes, services, id).await?;
-                metrics_export::record_sent(id);
-                persist_sent(&msg, &bytes, session, services).await;
+                write_log_persist(&msg, stream, services, id, session).await?;
             }
             Action::Disconnect => disconnect = true,
             Action::ResetStore => {
@@ -1111,7 +1203,13 @@ fn is_admin(msg: &Message) -> bool {
 
 /// Persist an original outbound transmission to the store for restart-survivable resend (FR-001/002).
 /// Skips resends (PossDupFlag=Y keep the original's seq and must not overwrite it) and honours
-/// `PersistMessages` (FR-003).
+/// `PersistMessages` (FR-003). Uses `save_and_advance_sender` (GAP-39/FR-018, feature 005) rather
+/// than a bare `save`, atomically bundling this message's persistence with advancing the sender
+/// counter past it, for backends that can offer that guarantee (SQL/MSSQL/redb) — closing the
+/// crash window between "message saved" and "sequence advanced". The caller's own subsequent
+/// aggregate `set_next_sender_seq(session.next_out_seq())` (after a whole batch of actions)
+/// remains and is now redundant-but-harmless for the sender column specifically (idempotent: it
+/// re-asserts the same value `save_and_advance_sender` already set).
 async fn persist_sent(msg: &Message, bytes: &[u8], session: &Session, services: &Services) {
     if !session.persist_messages() {
         return;
@@ -1128,7 +1226,7 @@ async fn persist_sent(msg: &Message, bytes: &[u8], session: &Session, services: 
         .and_then(|f| f.as_int().ok())
         .filter(|&s| s > 0)
     {
-        let _ = store.save(seq as u64, bytes).await;
+        let _ = store.save_and_advance_sender(seq as u64, bytes).await;
     }
 }
 
@@ -1398,6 +1496,24 @@ impl ReconnectHandle {
     }
 }
 
+/// GAP-14/FR-014 (feature 005): the reconnect delay for the `attempt`-th consecutive failed
+/// connect since the last success (0-indexed). When `reconnect_interval_steps` is empty, always
+/// returns the fixed `reconnect_interval` (today's behavior, unchanged). Otherwise indexes into
+/// the steps array, clamped (sticking) at the last element once `attempt` exceeds it.
+fn reconnect_delay(config: &SessionConfig, attempt: usize) -> Duration {
+    let secs = if config.reconnect_interval_steps.is_empty() {
+        config.reconnect_interval
+    } else {
+        let last = config.reconnect_interval_steps.len().saturating_sub(1);
+        config
+            .reconnect_interval_steps
+            .get(attempt.min(last))
+            .copied()
+            .unwrap_or(config.reconnect_interval)
+    };
+    Duration::from_secs(u64::from(secs).max(1))
+}
+
 /// Connect out as an initiator, automatically reconnecting after `config.reconnect_interval`
 /// seconds whenever the connection drops, until stopped.
 pub fn connect_initiator_reconnecting<A>(
@@ -1429,21 +1545,26 @@ where
 {
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
-    let interval = Duration::from_secs(u64::from(config.reconnect_interval).max(1));
     let id = config.session_id();
     let task = tokio::spawn(async move {
         let mut connected_before = false;
         let mut next_endpoint = 0usize;
+        let mut backoff_step = 0usize;
         while !loop_stop.load(Ordering::SeqCst) {
             let Some(&addr) = addrs.get(next_endpoint % addrs.len().max(1)) else {
                 break; // addrs is empty; nothing to connect to
             };
             next_endpoint = next_endpoint.wrapping_add(1);
-            if let Ok(stream) = TcpStream::connect(addr).await {
+            if let Ok(stream) =
+                tcp_connect(addr, config.local_bind_addr, config.connect_timeout).await
+            {
                 if connected_before {
                     metrics_export::record_reconnect(&id);
                 }
                 connected_before = true;
+                // GAP-14/FR-014 (feature 005): a successful connect clears the backoff ladder —
+                // stepped delays only escalate across *consecutive* failed attempts.
+                backoff_step = 0;
                 let (control_tx, control_rx) = mpsc::channel(8);
                 run_connection(
                     stream,
@@ -1459,7 +1580,8 @@ where
             if loop_stop.load(Ordering::SeqCst) {
                 break;
             }
-            tokio::time::sleep(interval).await;
+            tokio::time::sleep(reconnect_delay(&config, backoff_step)).await;
+            backoff_step = backoff_step.saturating_add(1);
         }
     });
     ReconnectHandle { stop, task }
@@ -1481,24 +1603,26 @@ where
 {
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
-    let interval = Duration::from_secs(u64::from(config.reconnect_interval).max(1));
     let id = config.session_id();
     let connector = tokio_rustls::TlsConnector::from(tls);
     let task = tokio::spawn(async move {
         let mut connected_before = false;
         let mut next_endpoint = 0usize;
+        let mut backoff_step = 0usize;
         while !loop_stop.load(Ordering::SeqCst) {
             let Some(&addr) = addrs.get(next_endpoint % addrs.len().max(1)) else {
                 break; // addrs is empty; nothing to connect to
             };
             next_endpoint = next_endpoint.wrapping_add(1);
-            if let Ok(tcp) = TcpStream::connect(addr).await {
+            if let Ok(tcp) = tcp_connect(addr, config.local_bind_addr, config.connect_timeout).await
+            {
                 services.socket_options.apply(&tcp);
                 if let Ok(stream) = connector.connect(server_name.clone(), tcp).await {
                     if connected_before {
                         metrics_export::record_reconnect(&id);
                     }
                     connected_before = true;
+                    backoff_step = 0;
                     let (control_tx, control_rx) = mpsc::channel(8);
                     run_connection(
                         stream,
@@ -1515,7 +1639,8 @@ where
             if loop_stop.load(Ordering::SeqCst) {
                 break;
             }
-            tokio::time::sleep(interval).await;
+            tokio::time::sleep(reconnect_delay(&config, backoff_step)).await;
+            backoff_step = backoff_step.saturating_add(1);
         }
     });
     ReconnectHandle { stop, task }
@@ -1602,4 +1727,90 @@ where
         }
     });
     ScheduledHandle { stop, task }
+}
+
+#[cfg(test)]
+mod connect_timeout_tests {
+    // T042 (US6, feature 005): `with_connect_timeout` (the wrapper `tcp_connect` uses around
+    // every initiator connect attempt) bounds an otherwise-never-resolving connect by
+    // `connect_timeout`, surfacing a typed `ErrorKind::TimedOut` rather than hanging forever
+    // (GAP-16/FR-016). Uses `tokio::time::pause()` (virtual time) instead of a real black-holed
+    // address, so this is deterministic and has no real-network dependency.
+    use super::with_connect_timeout;
+    use std::time::Duration;
+    use tokio::io;
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unbounded_connect_never_completes_without_a_timeout_configured() {
+        let result = tokio::time::timeout(
+            Duration::from_secs(60),
+            with_connect_timeout(None, std::future::pending::<io::Result<()>>()),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "with no connect_timeout configured, the connect future should never resolve"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_configured_timeout_fires_before_an_unbounded_connect_resolves() {
+        let result = with_connect_timeout(
+            Some(Duration::from_secs(5)),
+            std::future::pending::<io::Result<()>>(),
+        )
+        .await;
+        let err = result.expect_err("expected the timeout to fire");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connect_that_resolves_before_the_timeout_is_unaffected() {
+        let result = with_connect_timeout(Some(Duration::from_secs(5)), async {
+            Ok::<_, io::Error>(42)
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+    }
+}
+
+#[cfg(test)]
+mod reconnect_delay_tests {
+    // T040 (US6, feature 005): `reconnect_delay` steps up across consecutive attempts and sticks
+    // at the last configured value once exhausted (GAP-14/FR-014).
+    use super::reconnect_delay;
+    use std::time::Duration;
+    use truefix_session::{Role, SessionConfig};
+
+    fn cfg() -> SessionConfig {
+        SessionConfig::new("FIX.4.4", "ME", "YOU", Role::Initiator)
+    }
+
+    #[test]
+    fn empty_steps_always_use_the_fixed_reconnect_interval() {
+        let mut c = cfg();
+        c.reconnect_interval = 7;
+        for attempt in [0, 1, 5, 100] {
+            assert_eq!(reconnect_delay(&c, attempt), Duration::from_secs(7));
+        }
+    }
+
+    #[test]
+    fn steps_index_by_attempt_number() {
+        let mut c = cfg();
+        c.reconnect_interval_steps = vec![2, 5, 10, 30];
+        assert_eq!(reconnect_delay(&c, 0), Duration::from_secs(2));
+        assert_eq!(reconnect_delay(&c, 1), Duration::from_secs(5));
+        assert_eq!(reconnect_delay(&c, 2), Duration::from_secs(10));
+        assert_eq!(reconnect_delay(&c, 3), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn steps_stick_at_the_last_value_once_exhausted() {
+        let mut c = cfg();
+        c.reconnect_interval_steps = vec![2, 5, 10, 30];
+        for attempt in [4, 5, 100] {
+            assert_eq!(reconnect_delay(&c, attempt), Duration::from_secs(30));
+        }
+    }
 }
