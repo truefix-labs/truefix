@@ -128,6 +128,13 @@ impl FieldType {
                 .is_ok_and(|s| s.split(' ').all(|tok| tok.chars().count() == 1)),
             Self::Boolean => field.as_bool().is_ok(),
             Self::UtcTimestamp | Self::Time => field.as_utc_timestamp().is_ok(),
+            // BUG-12/FR-030 (feature 006): UtcTimeOnly/UtcDate previously fell into the `_ => true`
+            // catch-all below, letting a garbled value silently pass dictionary validation.
+            // UtcDateOnly is deliberately left unchecked (matches an equivalent, apparently
+            // unintentional omission in the reference behavior this project targets parity with —
+            // not a TrueFix-specific regression, so not "fixed" in isolation here).
+            Self::UtcTimeOnly => field.as_utc_time_only().is_ok(),
+            Self::UtcDate => field.as_utc_date_only().is_ok(),
             Self::Currency => field.as_str().is_ok_and(is_alpha_len(3)),
             Self::Country => field.as_str().is_ok_and(is_alpha_len(2)),
             Self::Exchange => field.as_str().is_ok_and(|s| {

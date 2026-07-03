@@ -125,3 +125,49 @@ fn all_five_validation_option_toggles_map_from_settings() {
     assert!(!opts.allow_pos_dup);
     assert!(opts.requires_orig_sending_time);
 }
+
+// --- T079 (US8, feature 006): real FIXT transport/application dictionary split, and the
+// transport-priority fix to `.validator`'s single-dict fallback (GAP-18c part 2) ---
+
+#[test]
+fn when_both_app_and_transport_dictionaries_are_set_validator_prefers_transport() {
+    // Previously `AppDataDictionary` won this priority race, meaning admin/session-layer
+    // structural validation (what `.validator` is actually used for) ran against the
+    // *application* dictionary under a real FIXT split -- the actual aliasing bug.
+    let rs = resolved(&base(
+        "UseDataDictionary=Y\nAppDataDictionary=FIX.5.0\nTransportDataDictionary=FIXT.1.1\n",
+    ));
+    let (dict, _) = rs.validator.expect("validator wired");
+    assert_eq!(dict.version(), "FIXT.1.1");
+}
+
+#[test]
+fn only_one_of_app_or_transport_dictionary_produces_no_fixt_dictionaries() {
+    let rs = resolved(&base("UseDataDictionary=Y\nAppDataDictionary=FIX.4.2\n"));
+    assert!(rs.fixt_dictionaries.is_none());
+}
+
+#[test]
+fn both_app_and_transport_dictionaries_produce_a_real_fixt_dictionaries() {
+    let rs = resolved(&base(
+        "UseDataDictionary=Y\nAppDataDictionary=FIX.5.0\nTransportDataDictionary=FIXT.1.1\n\
+         DefaultApplVerID=FIX.5.0\n",
+    ));
+    let dicts = rs.fixt_dictionaries.expect("fixt_dictionaries wired");
+    assert_eq!(dicts.transport().version(), "FIXT.1.1");
+    assert_eq!(
+        dicts.application_for(Some("FIX.5.0")).unwrap().version(),
+        "FIX.5.0"
+    );
+    // DefaultApplVerID also drives the no-explicit-ApplVerID fallback.
+    assert_eq!(dicts.application_for(None).unwrap().version(), "FIX.5.0");
+}
+
+#[test]
+fn default_appl_ver_id_absent_falls_back_to_the_app_dictionarys_own_version_string() {
+    let rs = resolved(&base(
+        "UseDataDictionary=Y\nAppDataDictionary=FIX.5.0\nTransportDataDictionary=FIXT.1.1\n",
+    ));
+    let dicts = rs.fixt_dictionaries.expect("fixt_dictionaries wired");
+    assert_eq!(dicts.application_for(None).unwrap().version(), "FIX.5.0");
+}

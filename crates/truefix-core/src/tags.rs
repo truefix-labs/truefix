@@ -53,6 +53,17 @@ pub fn is_header(tag: u32) -> bool {
             | 347
             | 369
             | 370
+            // GAP-26/FR-032 (feature 006): the standard NoHops (627) repeating group and its
+            // member fields -- the one realistic FIX standard-header group, previously entirely
+            // unclassified here (so even a direct decode_with_groups caller would misroute it to
+            // "body" instead of "header"). Verified against current shipped dictionary content
+            // (`crates/truefix-dict/dict-src/normalized/FIX44.fixdict`'s own `group 627 NoHops
+            // 628 628,629,630` and `header ... 627` lines) rather than trusted from the audit's
+            // own citation, which named the wrong tag (504, actually PaymentDate).
+            | 627
+            | 628
+            | 629
+            | 630
     )
 }
 
@@ -79,6 +90,20 @@ pub fn data_field_for_length(tag: u32) -> Option<u32> {
         364 => 365, // EncodedUnderlyingSecurityDescLen -> EncodedUnderlyingSecurityDesc
         93 => 89,   // SignatureLength -> Signature (BUG-02, feature 005): the one documented
         // exception to `lengthTag = dataTag - 1` (Signature's length field is 93, not 88).
+        // B22/FR-033 (feature 006): the remaining Len/Data pairs present in the shipped
+        // dictionaries (verified directly against `dict-src/normalized/FIX50SP2.fixdict`, which
+        // enumerates every `EncodedXLen`/`EncodedX` field) but missing from this table — embedded
+        // SOH bytes in their content would otherwise corrupt message framing. This corrects (and
+        // extends) the audit's own citation, which named two incorrect tag pairs (620->621, which
+        // is actually LegSecurityDesc(620)->EncodedLegSecurityDescLen(621), not a Len/Data pair at
+        // all; and 1039->1040, which is UnderlyingSettlMethod->SecondaryTradeID, unrelated plain
+        // STRING fields) and missed three genuine pairs entirely (1359/1397/1468's Len fields).
+        445 => 446,   // EncodedListStatusTextLen -> EncodedListStatusText
+        618 => 619,   // EncodedLegIssuerLen -> EncodedLegIssuer
+        621 => 622,   // EncodedLegSecurityDescLen -> EncodedLegSecurityDesc
+        1359 => 1360, // EncodedSymbolLen -> EncodedSymbol
+        1397 => 1398, // EncodedMktSegmDescLen -> EncodedMktSegmDesc
+        1468 => 1469, // EncodedSecurityListDescLen -> EncodedSecurityListDesc
         _ => return None,
     })
 }

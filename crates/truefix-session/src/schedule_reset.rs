@@ -3,7 +3,7 @@
 //! disconnect → reset sequence numbers → clear the store on exit, and reconnect/reset on entry —
 //! skipping entirely when the session is non-stop.
 
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 
 use crate::schedule::Schedule;
 
@@ -41,10 +41,36 @@ pub fn decide(
     }
 }
 
+/// Decide whether a recurring daily sequence reset (`ResetSeqTime`/`EnableResetSeqTime`, GAP-11)
+/// should fire now. This is independent of the Enter/Exit boundary decision above — it applies
+/// even to a `non_stop` (24x7) schedule, and even mid-window for a windowed schedule.
+///
+/// `last_reset_date` is the date (in the schedule's local offset) the reset last fired on, or
+/// `None` if it has never fired. Returns `Some(new_date)` when a reset should fire now — the
+/// caller performs the reset and stores `new_date` as the new `last_reset_date` — or `None` when
+/// no reset should fire (the caller keeps its `last_reset_date` unchanged).
+///
+/// Fires at most once per local calendar day: once `now_utc`'s local time-of-day has reached
+/// `reset_seq_time` and today's date doesn't match `last_reset_date`, it fires and remembers
+/// today's date, so subsequent calls later the same day are a no-op until the date rolls over.
+pub fn decide_recurring_reset(
+    schedule: &Schedule,
+    last_reset_date: Option<Date>,
+    now_utc: OffsetDateTime,
+) -> Option<Date> {
+    let reset_time = schedule.reset_seq_time?;
+    let local = now_utc.to_offset(schedule.effective_offset(now_utc));
+    if local.time() >= reset_time && last_reset_date != Some(local.date()) {
+        Some(local.date())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::macros::{datetime, time};
+    use time::macros::{date, datetime, time};
     use time::Weekday;
 
     fn window() -> Schedule {
@@ -72,6 +98,58 @@ mod tests {
         let outside = datetime!(2026-07-04 10:00 UTC);
         assert_eq!(decide(&s, true, inside), ScheduleAction::None);
         assert_eq!(decide(&s, false, outside), ScheduleAction::None);
+    }
+
+    #[test]
+    fn recurring_reset_fires_once_after_the_reset_time_is_reached() {
+        let s = Schedule::non_stop().with_reset_seq_time(time!(9:00));
+        let before = datetime!(2026-06-30 08:59 UTC);
+        let after = datetime!(2026-06-30 09:30 UTC);
+        // Before 09:00 on 2026-06-30: no fire yet, regardless of when it last fired.
+        assert_eq!(
+            decide_recurring_reset(&s, Some(date!(2026 - 06 - 29)), before),
+            None
+        );
+        // After 09:00 on 2026-06-30, having last fired on 06-29 (or never): fires, remembering
+        // 06-30.
+        assert_eq!(
+            decide_recurring_reset(&s, Some(date!(2026 - 06 - 29)), after),
+            Some(date!(2026 - 06 - 30))
+        );
+        assert_eq!(
+            decide_recurring_reset(&s, None, after),
+            Some(date!(2026 - 06 - 30))
+        );
+    }
+
+    #[test]
+    fn recurring_reset_does_not_refire_the_same_day() {
+        let s = Schedule::non_stop().with_reset_seq_time(time!(9:00));
+        let now = datetime!(2026-06-30 10:00 UTC);
+        assert_eq!(
+            decide_recurring_reset(&s, Some(date!(2026 - 06 - 30)), now),
+            None
+        );
+    }
+
+    #[test]
+    fn recurring_reset_disabled_when_reset_seq_time_unset() {
+        let s = window(); // no reset_seq_time set
+        assert_eq!(
+            decide_recurring_reset(&s, None, datetime!(2026-06-30 10:00 UTC)),
+            None
+        );
+    }
+
+    #[test]
+    fn recurring_reset_is_independent_of_enter_exit_window() {
+        // A windowed (non-non-stop) schedule still recurs its daily reset even mid-window.
+        let s = window().with_reset_seq_time(time!(9:00));
+        let now = datetime!(2026-06-30 09:30 UTC); // Tuesday, inside the Mon-Fri window
+        assert_eq!(
+            decide_recurring_reset(&s, Some(date!(2026 - 06 - 29)), now),
+            Some(date!(2026 - 06 - 30))
+        );
     }
 
     #[test]

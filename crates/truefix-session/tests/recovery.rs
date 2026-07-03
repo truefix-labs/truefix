@@ -318,6 +318,241 @@ fn sequence_reset_reset_mode_sets_expected() {
     assert_eq!(s.next_in_seq(), 10);
 }
 
+// --- T004/T005 (US1, feature 006): SequenceReset anti-replay hole (BUG-06/FR-002, FR-003) ---
+
+#[test]
+fn sequence_reset_reset_mode_with_decreasing_new_seq_no_is_rejected() {
+    let mut s = logged_on_acceptor(); // expected 2
+    let sr_up = with(msg("4", 99), 36, "10");
+    s.handle(Event::Received(sr_up));
+    assert_eq!(s.next_in_seq(), 10);
+
+    // A decreasing plain-mode SequenceReset must be rejected, not applied (anti-replay hole).
+    let sr_down = with(msg("4", 10), 36, "3");
+    let actions = s.handle(Event::Received(sr_down));
+    assert_eq!(s.next_in_seq(), 10, "next_in_seq must not rewind");
+    let out = sends(&actions);
+    let reject = out
+        .iter()
+        .find(|m| m.msg_type() == Some("3"))
+        .expect("a session Reject rejecting the decreasing NewSeqNo");
+    assert_eq!(reject.body.get(373).unwrap().as_int().unwrap(), 5); // ValueIsIncorrect
+    assert_eq!(reject.body.get(371).unwrap().as_int().unwrap(), 36); // RefTagID = NewSeqNo
+}
+
+#[test]
+fn sequence_reset_reset_mode_with_equal_new_seq_no_is_a_no_op_accept() {
+    let mut s = logged_on_acceptor(); // expected 2
+    let sr = with(msg("4", 2), 36, "2"); // NewSeqNo == next_in_seq
+    let actions = s.handle(Event::Received(sr));
+    assert_eq!(s.next_in_seq(), 2);
+    assert!(
+        sends(&actions).iter().all(|m| m.msg_type() != Some("3")),
+        "NewSeqNo equal to the current expected value is a no-op accept, not a rejection"
+    );
+}
+
+#[test]
+fn sequence_reset_reset_mode_missing_new_seq_no_is_rejected_as_required_tag_missing() {
+    let mut s = logged_on_acceptor(); // expected 2
+    let sr = msg("4", 2); // no NewSeqNo (tag 36) at all, no GapFillFlag
+    let actions = s.handle(Event::Received(sr));
+    assert_eq!(
+        s.next_in_seq(),
+        2,
+        "must not silently skip adjustment and drain the queue"
+    );
+    let out = sends(&actions);
+    let reject = out
+        .iter()
+        .find(|m| m.msg_type() == Some("3"))
+        .expect("a session Reject for the missing NewSeqNo tag");
+    assert_eq!(reject.body.get(373).unwrap().as_int().unwrap(), 1); // RequiredTagMissing
+    assert_eq!(reject.body.get(371).unwrap().as_int().unwrap(), 36); // RefTagID = NewSeqNo
+}
+
+// --- T006 (US1, feature 006): malformed ResendRequest (BUG-22/FR-004) ---
+
+#[test]
+fn resend_request_missing_begin_seq_no_gets_required_tag_missing_response() {
+    let mut s = logged_on_acceptor();
+    let mut m = msg("2", 2);
+    m.body.set(Field::int(16, 5)); // EndSeqNo present; BeginSeqNo (tag 7) entirely absent
+    let actions = s.handle(Event::Received(m));
+    let out = sends(&actions);
+    let reject = out
+        .iter()
+        .find(|m| m.msg_type() == Some("3"))
+        .expect("a session Reject for the missing BeginSeqNo tag");
+    assert_eq!(reject.body.get(373).unwrap().as_int().unwrap(), 1); // RequiredTagMissing
+    assert_eq!(reject.body.get(371).unwrap().as_int().unwrap(), 7); // RefTagID = BeginSeqNo
+}
+
+#[test]
+fn resend_request_missing_end_seq_no_gets_required_tag_missing_response() {
+    let mut s = logged_on_acceptor();
+    let mut m = msg("2", 2);
+    m.body.set(Field::int(7, 1)); // BeginSeqNo present; EndSeqNo (tag 16) entirely absent
+    let actions = s.handle(Event::Received(m));
+    let out = sends(&actions);
+    let reject = out
+        .iter()
+        .find(|m| m.msg_type() == Some("3"))
+        .expect("a session Reject for the missing EndSeqNo tag");
+    assert_eq!(reject.body.get(373).unwrap().as_int().unwrap(), 1); // RequiredTagMissing
+    assert_eq!(reject.body.get(371).unwrap().as_int().unwrap(), 16); // RefTagID = EndSeqNo
+}
+
+#[test]
+fn resend_request_begin_greater_than_end_with_both_tags_present_still_silently_no_ops() {
+    let mut s = logged_on_acceptor();
+    let mut m = msg("2", 2);
+    m.body.set(Field::int(7, 10));
+    m.body.set(Field::int(16, 3)); // begin > end, both present -- unchanged behavior (spec Edge Cases)
+    let actions = s.handle(Event::Received(m));
+    assert!(
+        actions.is_empty(),
+        "begin > end with both tags present remains a silent no-op, unchanged"
+    );
+}
+
+// --- T007 (US1, feature 006): ResetOnLogon partial-reset reconnect-fail loop (B1/FR-005) ---
+
+#[test]
+fn reset_on_logon_initiator_sends_its_own_logon_at_a_freshly_reset_seq_not_a_stale_seeded_value() {
+    let mut c = SessionConfig::new("FIX.4.4", "CLIENT", "SERVER", Role::Initiator);
+    c.reset_on_logon = true;
+    c.check_latency = false; // fixtures use fixed timestamps; not testing latency here
+    let mut s = Session::new(c);
+    // Simulate resuming from a persisted store where the prior connection had already advanced
+    // sequence numbers well past 1 (out=7, in=4) -- exactly the scenario where sending our own
+    // Logon at the stale seeded value (instead of a fresh reset seq 1) desyncs from the
+    // counterparty's freshly-reset expectation and triggers the gap -> resend-stale-Logon ->
+    // reject_logon(duplicate-Logon) failure loop B1 describes.
+    s.seed_sequences(7, 4);
+
+    let connect_actions = s.handle(Event::Connected);
+    let sent_logon_seq = connect_actions.iter().find_map(|a| match a {
+        Action::Send(m) if m.msg_type() == Some("A") => {
+            m.header.get(34).and_then(|f| f.as_int().ok())
+        }
+        _ => None,
+    });
+    assert_eq!(
+        sent_logon_seq,
+        Some(1),
+        "ResetOnLogon must send our own Logon at a freshly-reset seq 1, not the stale seeded value"
+    );
+    assert_eq!(s.next_out_seq(), 2);
+    assert_eq!(
+        s.next_in_seq(),
+        1,
+        "inbound also resets, ready to consume the counterparty's own seq-1 reply"
+    );
+
+    // The acceptor replies with its own Logon, ALSO carrying ResetSeqNumFlag=Y and seq 1.
+    let mut reply = with(with(msg("A", 1), 108, "30"), 141, "Y");
+    reply.header.set(Field::string(49, "SERVER"));
+    reply.header.set(Field::string(56, "CLIENT"));
+    s.handle(Event::Received(reply));
+    assert_eq!(s.state(), SessionState::LoggedOn);
+    assert_eq!(
+        s.next_in_seq(),
+        2,
+        "inbound consumes the acceptor's seq-1 reply"
+    );
+    assert_eq!(
+        s.next_out_seq(),
+        2,
+        "outbound must remain at the value the fresh reset already produced, undisturbed by \
+         reprocessing the reply's own reset flag"
+    );
+}
+
+// --- T008 (US1, feature 006): drain_queue skips validate_app (B3/FR-006) ---
+
+#[test]
+fn invalid_message_drained_from_queue_after_a_gap_is_rejected_like_an_in_order_one() {
+    let c = cfg(Role::Acceptor);
+    let mut s = Session::new(c);
+    s.set_dictionary(
+        truefix_dict::load_fix44().unwrap(),
+        truefix_dict::ValidationOptions::default(),
+    );
+    s.handle(Event::Connected);
+    let logon = with(with(msg("A", 1), 108, "30"), 141, "Y");
+    s.handle(Event::Received(logon));
+    assert_eq!(s.next_in_seq(), 2);
+
+    // seq 3: an invalid NewOrderSingle (bad Side enum "Z") arrives first -> queued (gap).
+    let mut invalid_order = msg("D", 3);
+    invalid_order.body.set(Field::string(11, "ORD1"));
+    invalid_order.body.set(Field::string(21, "1"));
+    invalid_order.body.set(Field::string(55, "AAPL"));
+    invalid_order.body.set(Field::string(54, "Z")); // invalid Side
+    invalid_order
+        .body
+        .set(Field::string(60, "20240101-00:00:00"));
+    invalid_order.body.set(Field::string(40, "2"));
+    s.handle(Event::Received(invalid_order));
+    assert_eq!(
+        s.next_in_seq(),
+        2,
+        "still awaiting seq 2; seq 3 queued, not yet processed"
+    );
+
+    // seq 2: a plain valid heartbeat arrives, filling the immediate gap and triggering drain_queue.
+    let hb2 = msg("0", 2);
+    let actions = s.handle(Event::Received(hb2));
+    assert_eq!(
+        s.next_in_seq(),
+        4,
+        "both seq 2 and (drained) seq 3 consumed"
+    );
+    let out = sends(&actions);
+    assert!(
+        out.iter().any(|m| m.msg_type() == Some("3")),
+        "the invalid message drained from the queue must be rejected, not silently delivered"
+    );
+}
+
+// --- T009 (US1, feature 006): stale chunked-resend tracking across a reconnect (B4/FR-007) ---
+
+#[test]
+fn reconnecting_clears_stale_chunked_resend_tracking_so_a_fresh_connection_does_not_spuriously_request_a_resend(
+) {
+    let mut c = cfg(Role::Acceptor);
+    c.resend_request_chunk_size = 3;
+    let mut s = Session::new(c);
+    s.handle(Event::Connected);
+    let logon1 = with(with(msg("A", 1), 108, "30"), 141, "Y");
+    s.handle(Event::Received(logon1));
+    assert_eq!(s.next_in_seq(), 2);
+
+    // A big gap triggers chunked-resend tracking (resend_target/resend_chunk_end set internally).
+    s.handle(Event::Received(msg("0", 10)));
+
+    // The connection drops and a fresh one is established (same Session instance reused, matching
+    // the transport's reuse pattern) -- the counterparty reconnects and re-logs-on with a full
+    // reset (ResetSeqNumFlag=Y), starting a clean sequence from 1 with NO gap this time.
+    s.handle(Event::Connected);
+    let logon2 = with(with(msg("A", 1), 108, "30"), 141, "Y");
+    s.handle(Event::Received(logon2));
+    assert_eq!(s.next_in_seq(), 2, "reset via ResetSeqNumFlag");
+
+    // The counterparty now sends consecutive, correctly-numbered messages with no gap at all.
+    for seq in 2..=5 {
+        let actions = s.handle(Event::Received(msg("0", seq)));
+        assert!(
+            actions.is_empty(),
+            "seq {seq} is exactly the next expected message on the fresh connection -- no gap \
+             exists, so no ResendRequest should ever be issued; a stale chunked-resend target/\
+             chunk-end carried over from the prior (dropped) connection must not spuriously fire"
+        );
+    }
+    assert_eq!(s.next_in_seq(), 6);
+}
+
 #[test]
 fn last_msg_seq_num_processed_stamped_when_enabled() {
     let mut c = cfg(Role::Initiator);

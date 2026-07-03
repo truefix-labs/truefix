@@ -70,6 +70,29 @@ pub struct ResolvedSession {
     /// Only accept connections from these remote IP addresses (`AllowedRemoteAddresses` — US2,
     /// feature 005, BUG-03/FR-006). Acceptor-only; empty when unset.
     pub allowed_remote_addresses: Vec<IpAddr>,
+    /// `.cfg`-selectable `ScreenLog`/`TracingLog`/`CompositeLog` (`Log` key, GAP-21); `None` means
+    /// the pre-existing File/SQL-only inference from `FileLogPath`/`JdbcURL` (unchanged default).
+    pub log_kind: Option<LogKind>,
+    /// A real FIXT 1.1 transport/application dictionary split (T079/GAP-18c part 2), present only
+    /// when both `AppDataDictionary` and `TransportDataDictionary` are set — see
+    /// `resolve_fixt_dictionaries`'s doc. `None` otherwise, including the common case where only
+    /// one of the two (or the generic `DataDictionary`) is set, which [`Self::validator`] alone
+    /// already covers.
+    pub fixt_dictionaries: Option<truefix_dict::FixtDictionaries>,
+}
+
+/// Which non-File/SQL `truefix-log` backend to build, selected via the `Log` config key
+/// (GAP-21). `File`/`Sql` continue to be selected implicitly by `FileLogPath`/`JdbcURL` presence,
+/// as before `Log` existed — this only adds the three backends that had no `.cfg` trigger at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogKind {
+    /// `ScreenLog` (stdout).
+    Screen,
+    /// `TracingLog` (the `tracing` facade, QFJ's SLF4J equivalent).
+    Tracing,
+    /// `CompositeLog` fanning out to every other backend this session also has configured
+    /// (`FileLogPath` and/or `JdbcURL`), plus `Screen` and `Tracing`.
+    Composite,
 }
 
 /// Forward-proxy configuration for an initiator connection, resolved from configuration (US12,
@@ -291,24 +314,40 @@ fn bool_key(map: &Map, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-/// `LogonTag=<tag>=<value>` (e.g. `LogonTag=9001=HOUSE-ID`); absent → `None`.
-fn resolve_logon_tag(map: &Map, session: &str) -> Result<Option<(u32, String)>, ConfigError> {
-    let Some(raw) = map.get("LogonTag") else {
-        return Ok(None);
-    };
-    let (tag, value) = raw
-        .split_once('=')
-        .ok_or_else(|| ConfigError::InvalidValue {
-            key: "LogonTag".to_owned(),
+/// `LogonTag=<tag>=<value>`, `LogonTag1=<tag>=<value>`, `LogonTag2=<tag>=<value>`, … (e.g.
+/// `LogonTag=9001=HOUSE-ID`), each appended to every outbound Logon in ascending numeric-suffix
+/// order (`LogonTag` itself sorts first, GAP-12); none present → empty `Vec`.
+fn resolve_logon_tags(map: &Map, session: &str) -> Result<Vec<(u32, String)>, ConfigError> {
+    let parse_one = |key: &str, raw: &str| -> Result<(u32, String), ConfigError> {
+        let (tag, value) = raw
+            .split_once('=')
+            .ok_or_else(|| ConfigError::InvalidValue {
+                key: key.to_owned(),
+                session: session.to_owned(),
+                reason: format!("expected `<tag>=<value>`, got {raw:?}"),
+            })?;
+        let tag: u32 = tag.parse().map_err(|_| ConfigError::InvalidValue {
+            key: key.to_owned(),
             session: session.to_owned(),
-            reason: format!("expected `<tag>=<value>`, got {raw:?}"),
+            reason: format!("expected an integer tag, got {tag:?}"),
         })?;
-    let tag: u32 = tag.parse().map_err(|_| ConfigError::InvalidValue {
-        key: "LogonTag".to_owned(),
-        session: session.to_owned(),
-        reason: format!("expected an integer tag, got {tag:?}"),
-    })?;
-    Ok(Some((tag, value.to_owned())))
+        Ok((tag, value.to_owned()))
+    };
+
+    let mut result = Vec::new();
+    if let Some(raw) = map.get("LogonTag") {
+        result.push(parse_one("LogonTag", raw)?);
+    }
+    let mut suffix = 1u32;
+    loop {
+        let key = format!("LogonTag{suffix}");
+        let Some(raw) = map.get(&key) else {
+            break;
+        };
+        result.push(parse_one(&key, raw)?);
+        suffix += 1;
+    }
+    Ok(result)
 }
 
 fn f64_key(map: &Map, key: &str, session: &str, default: f64) -> Result<f64, ConfigError> {
@@ -438,7 +477,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     // pre-existing dictionary-level `ValidationOptions.requires_orig_sending_time` check below —
     // the two run at different layers (session state machine vs. `validate()`) but share one key.
     cfg.requires_orig_sending_time_on_low_seq = bool_key(map, "RequiresOrigSendingTime", false);
-    cfg.logon_tag = resolve_logon_tag(map, &session)?;
+    cfg.logon_tags = resolve_logon_tags(map, &session)?;
     cfg.in_chan_capacity = usize_key(map, "InChanCapacity", &session, None)?;
     // GAP-47/FR-012/FR-013 (feature 005): full session-identity keys.
     cfg.sender_sub_id = map.get("SenderSubID").cloned();
@@ -467,10 +506,12 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         ConnectionType::Acceptor => Vec::new(),
     };
     let (log, sql_log) = resolve_log(map, &session);
+    let log_kind = resolve_log_kind(map, &session)?;
     let proxy = resolve_proxy(map, &session)?;
     let trusted_proxy_addresses = resolve_trusted_proxy_addresses(map, &session)?;
     let sync_write_timeout = resolve_sync_write_timeout(map, &session)?;
     let validator = resolve_validator(map, &session)?;
+    let fixt_dictionaries = resolve_fixt_dictionaries(map, &session)?;
     let acceptor_template =
         bool_key(map, "DynamicSession", false) || map.contains_key("AcceptorTemplate");
     let allowed_remote_addresses = resolve_allowed_remote_addresses(map, &session)?;
@@ -491,6 +532,8 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         validator,
         acceptor_template,
         allowed_remote_addresses,
+        log_kind,
+        fixt_dictionaries,
     })
 }
 
@@ -517,15 +560,18 @@ fn resolve_allowed_remote_addresses(map: &Map, session: &str) -> Result<Vec<IpAd
 }
 
 /// Resolve `UseDataDictionary` + `DataDictionary`/`AppDataDictionary`/`TransportDataDictionary` +
-/// the five already-implemented `ValidationOptions` toggles into a validator (US2, feature 004,
-/// FR-002). `None` when `UseDataDictionary` is absent/`N`, matching today's behavior (no dictionary
-/// validation wired) unchanged.
+/// the five already-implemented `ValidationOptions` toggles into a single-dictionary validator
+/// (US2, feature 004, FR-002). `None` when `UseDataDictionary` is absent/`N`, matching today's
+/// behavior (no dictionary validation wired) unchanged.
 ///
-/// **Scope note**: `Services.validator` (which this feeds) already only carries a single
-/// `DataDictionary`, not `truefix_dict::FixtDictionaries`' separate transport/application pair —
-/// this is a pre-existing limitation of the programmatic API, not something newly introduced by
-/// `.cfg` wiring. `AppDataDictionary`/`TransportDataDictionary` are therefore treated as alternate
-/// key names for the same single dictionary value, not a true FIXT dual-dictionary setup.
+/// When both `AppDataDictionary` and `TransportDataDictionary` are present (a real FIXT 1.1 split
+/// config), this single-dictionary value is the **transport** dictionary specifically — matching
+/// its actual use here (session/structural validation, header/trailer group decode), which under
+/// FIXT lives in the transport dictionary, not the application one (T079/GAP-18c part 2; this
+/// priority order was the actual "aliasing" bug — previously `AppDataDictionary` would win when
+/// both were set, silently validating admin messages against the wrong dictionary). See
+/// `resolve_fixt_dictionaries` for the real transport/application pair, used for **application**
+/// message validation, which needs both.
 fn resolve_validator(
     map: &Map,
     session: &str,
@@ -541,8 +587,8 @@ fn resolve_validator(
     }
     let value = map
         .get("DataDictionary")
-        .or_else(|| map.get("AppDataDictionary"))
         .or_else(|| map.get("TransportDataDictionary"))
+        .or_else(|| map.get("AppDataDictionary"))
         .ok_or_else(|| ConfigError::MissingRequired {
             key: "DataDictionary".to_owned(),
             session: session.to_owned(),
@@ -557,6 +603,39 @@ fn resolve_validator(
         ..truefix_dict::ValidationOptions::default()
     };
     Ok(Some((dict, opts)))
+}
+
+/// Resolve a real `truefix_dict::FixtDictionaries` (transport + application dictionaries kept
+/// genuinely separate, T079/GAP-18c part 2) when both `AppDataDictionary` and
+/// `TransportDataDictionary` are present — i.e. a real FIXT 1.1 dual-dictionary `.cfg`, as opposed
+/// to the single-dictionary aliasing `resolve_validator` above still performs for the common
+/// non-FIXT (or "one dictionary named either key") case. `None` unless both are present, so this
+/// is purely additive — it never changes `resolve_validator`'s own return value or the sessions
+/// that only ever set one of the two keys.
+fn resolve_fixt_dictionaries(
+    map: &Map,
+    session: &str,
+) -> Result<Option<truefix_dict::FixtDictionaries>, ConfigError> {
+    if !bool_key(map, "UseDataDictionary", false) {
+        return Ok(None);
+    }
+    let (Some(app_value), Some(transport_value)) = (
+        map.get("AppDataDictionary"),
+        map.get("TransportDataDictionary"),
+    ) else {
+        return Ok(None);
+    };
+    let app_dict = load_dictionary_value(app_value, session)?;
+    let transport_dict = load_dictionary_value(transport_value, session)?;
+    let mut dicts = truefix_dict::FixtDictionaries::new(transport_dict);
+    let app_ver_id = map
+        .get("DefaultApplVerID")
+        .cloned()
+        .unwrap_or_else(|| app_dict.version().to_owned());
+    dicts = dicts
+        .with_application(app_ver_id.clone(), app_dict)
+        .with_default_appl_ver_id(app_ver_id);
+    Ok(Some(dicts))
 }
 
 /// `DataDictionary`'s value is either one of `truefix_dict::ALL_DICTS`'s bundled version strings
@@ -715,6 +794,28 @@ fn resolve_log(map: &Map, session: &str) -> (Option<LogSpec>, Option<SqlLogSpec>
         }),
         None,
     )
+}
+
+/// Resolve the `Log` config key (GAP-21): `Screen`/`Tracing`/`Composite` (case-insensitive) select
+/// a `ScreenLog`/`TracingLog`/`CompositeLog` backend, none of which had a `.cfg` trigger before this
+/// (`resolve_log` above only ever inferred File or SQL, from `FileLogPath`/`JdbcURL` presence).
+/// `File`/`Sql` are also accepted as explicit (redundant) synonyms for that pre-existing inference,
+/// resolving to `None` — i.e. a no-op, matching behavior from before `Log` existed. Absent → `None`.
+fn resolve_log_kind(map: &Map, session: &str) -> Result<Option<LogKind>, ConfigError> {
+    let Some(v) = map.get("Log") else {
+        return Ok(None);
+    };
+    match v.to_ascii_lowercase().as_str() {
+        "screen" => Ok(Some(LogKind::Screen)),
+        "tracing" => Ok(Some(LogKind::Tracing)),
+        "composite" => Ok(Some(LogKind::Composite)),
+        "file" | "sql" => Ok(None),
+        _ => Err(ConfigError::InvalidValue {
+            key: "Log".to_owned(),
+            session: session.to_owned(),
+            reason: format!("expected Screen/Tracing/Composite/File/Sql, got {v:?}"),
+        }),
+    }
 }
 
 /// Resolve the full socket-option set (FR-019): `SocketTcpNoDelay`/`SocketKeepAlive`/
@@ -1021,12 +1122,18 @@ fn is_mssql_scheme(url: &str) -> bool {
 }
 
 /// The `jdbc:`-prefixed sibling forms of [`is_sql_scheme`]/[`is_mssql_scheme`] (BUG-04).
+///
+/// `jdbc:h2:` is deliberately NOT recognized here (BUG-10/FR-018, feature 006, resolved via
+/// `/speckit-clarify`: no H2 backend is implemented) — it previously advertised SQL-family
+/// support with no corresponding `connect_pool` branch, so it silently fell through to an
+/// unconditional SQLite-file-path interpretation, opening/creating a bogus file literally named
+/// e.g. `h2:mem:quickfixj` and persisting real session data into it with no error at all. An
+/// unrecognized scheme now correctly surfaces as `UnsupportedBackend` instead.
 fn is_jdbc_sql_scheme(url: &str) -> bool {
     url.starts_with("jdbc:postgres://")
         || url.starts_with("jdbc:postgresql://")
         || url.starts_with("jdbc:mysql://")
         || url.starts_with("jdbc:sqlite:")
-        || url.starts_with("jdbc:h2:")
 }
 
 fn is_jdbc_mssql_scheme(url: &str) -> bool {
@@ -1056,7 +1163,34 @@ fn splice_credentials(url: &str, user: Option<&str>, password: Option<&str>) -> 
         // Already credentialed — never override an explicit inline credential.
         return url.to_owned();
     }
-    format!("{scheme}://{user}:{password}@{rest}")
+    // GAP-55/FR-020 (feature 006): percent-encode the reserved URL-authority characters before
+    // splicing — an unescaped `@`, `:`, or `/` in `JdbcUser`/`JdbcPassword` would otherwise
+    // corrupt the resulting URL's own delimiter structure (e.g. a password containing `@` would
+    // be parsed as if it started the host portion).
+    format!(
+        "{scheme}://{}:{}@{rest}",
+        percent_encode_userinfo(user),
+        percent_encode_userinfo(password)
+    )
+}
+
+/// Percent-encode the URL-authority-reserved characters (`%` itself, `@`, `:`, `/`) in a
+/// userinfo component (username or password) before splicing it into a URL. Deliberately
+/// minimal — just the characters that would otherwise corrupt this specific splice, not a
+/// general-purpose URL-encoding implementation (no new dependency for this one call site,
+/// consistent with this workspace's dependency-minimization discipline).
+fn percent_encode_userinfo(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '%' => out.push_str("%25"),
+            '@' => out.push_str("%40"),
+            ':' => out.push_str("%3A"),
+            '/' => out.push_str("%2F"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn jdbc_store_config(
@@ -1259,7 +1393,15 @@ fn resolve_schedule(map: &Map, session: &str) -> Result<Option<Schedule>, Config
         None => schedule,
     };
     let schedule = match map.get("TimeZone") {
-        Some(tz) => schedule.with_utc_offset_seconds(parse_utc_offset(tz, session)?),
+        Some(tz) => match parse_utc_offset(tz, session) {
+            Ok(seconds) => schedule.with_utc_offset_seconds(seconds),
+            // GAP-10: not a numeric offset -- try an IANA zone name (e.g. `America/New_York`)
+            // before giving up.
+            Err(numeric_err) => match time_tz::timezones::get_by_name(tz) {
+                Some(named) => schedule.with_named_time_zone(named),
+                None => return Err(numeric_err),
+            },
+        },
         None => schedule,
     };
     Ok(Some(schedule))
@@ -1311,7 +1453,10 @@ fn parse_utc_offset(v: &str, session: &str) -> Result<i32, ConfigError> {
     let bad = || ConfigError::InvalidValue {
         key: "TimeZone".to_owned(),
         session: session.to_owned(),
-        reason: format!("expected a numeric offset like +05:00/-03:00, got {v:?}"),
+        reason: format!(
+            "expected a numeric offset like +05:00/-03:00 or an IANA zone name like \
+             America/New_York, got {v:?}"
+        ),
     };
     let (sign, rest) = match v.as_bytes().first() {
         Some(b'+') => (1i32, v.get(1..).unwrap_or("")),

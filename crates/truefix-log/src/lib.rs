@@ -75,6 +75,18 @@ pub trait Log: Send + Sync {
     fn on_event(&self, text: &str);
 }
 
+impl Log for Box<dyn Log> {
+    fn on_incoming(&self, message: &str) {
+        (**self).on_incoming(message);
+    }
+    fn on_outgoing(&self, message: &str) {
+        (**self).on_outgoing(message);
+    }
+    fn on_event(&self, text: &str) {
+        (**self).on_event(text);
+    }
+}
+
 /// Which log backend to construct.
 #[derive(Debug, Clone)]
 pub enum LogConfig {

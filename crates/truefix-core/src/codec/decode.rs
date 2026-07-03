@@ -71,6 +71,23 @@ pub fn decode_with_groups(input: &[u8], spec: &dyn GroupSpec) -> Result<Message,
     let mut header: Vec<Token> = Vec::new();
     let mut body: Vec<Token> = Vec::new();
     let mut trailer: Vec<Token> = Vec::new();
+    // GAP-26/FR-032 (feature 006): mirror `decode()`'s `fields_out_of_order`/
+    // `ValidateFieldsOutOfOrder` tracking, which this function never performed at all — a
+    // pre-existing gap in this otherwise-correct primitive, only surfaced once a production path
+    // actually started calling it (`crates/truefix-transport`'s `classify_buffered`).
+    let mut max_section_seen = 0u8;
+    for (i, tok) in fields.iter().enumerate() {
+        let tag = tok.0;
+        let section = section_of(tag);
+        if section < max_section_seen {
+            msg.fields_out_of_order = true;
+        } else {
+            max_section_seen = section;
+        }
+        if i == 2 && tag != MSG_TYPE {
+            msg.fields_out_of_order = true;
+        }
+    }
     for tok in fields {
         let tag = tok.0;
         if is_trailer(tag) {

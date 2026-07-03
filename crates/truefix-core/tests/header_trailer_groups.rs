@@ -1,6 +1,5 @@
 //! T063 (US9, feature 005) — `decode_with_groups` structures a repeating group declared in the
-//! *header* or *trailer* section, not just the body (FR-026). Dormant until a dictionary source
-//! declares one (today none of TrueFix's bundled dictionaries do) — this test exercises the core
+//! *header* or *trailer* section, not just the body (FR-026). This test exercises the core
 //! codec-layer mechanism directly via a synthetic `GroupSpec`, using two tag numbers
 //! `truefix_core::tags::is_header` already classifies as header fields (128/115 — DeliverToCompID/
 //! OnBehalfOfCompID), independent of their real FIX semantics — only their section classification
@@ -8,6 +7,14 @@
 //! length-prefixed binary-data pair (`SecureDataLen`/`SecureData`), which the tokenizer treats
 //! specially — a real, if incidental, discovery about which header tags are safe to repurpose for
 //! this kind of synthetic test.)
+//!
+//! GAP-26/FR-032 (feature 006) closed the "dormant" half of this finding: the shipped FIX44/
+//! FIX50SP2 dictionaries actually already declare the real standard-header group this mechanism
+//! was built for (`NoHops`, tag 627 — not 504, a citation error in the original audit, corrected
+//! after reading the shipped dictionary content directly), and the production transport decode
+//! path now actually calls `decode_with_groups` when a dictionary is attached. See
+//! `crates/truefix-transport/tests/header_trailer_groups_production.rs` for the real,
+//! production-path version of this test.
 
 use truefix_core::{decode_with_groups, encode, Field, FieldMap, Group, GroupSpec, Message};
 

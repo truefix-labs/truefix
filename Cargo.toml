@@ -27,6 +27,10 @@ rustls-pki-types = { version = "1", features = ["std"] }
 thiserror = "2"
 rust_decimal = "1"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+# GAP-10 (feature 006): IANA timezone-name acceptance for `TimeZone` (`Schedule`'s DST-aware named
+# zones, vs. the pre-existing fixed-offset-only `TimeZone=+05:00` form). BSD-3-Clause (permissive,
+# Apache-2.0/MIT-compatible — Constitution Principle III).
+time-tz = "2"
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
 tracing = "0.1"

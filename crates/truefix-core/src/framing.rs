@@ -3,9 +3,16 @@
 use crate::error::DecodeError;
 use crate::tags::SOH;
 
+/// BUG-13/FR-024 (feature 006): a sane maximum declared `BodyLength` (tag 9). No legitimate FIX
+/// message (including large repeating-group or `RawData`-bearing ones) approaches this; a
+/// connection declaring more is closed instead of growing an unbounded read buffer while waiting
+/// for that many bytes to arrive — a straightforward memory-exhaustion DoS vector otherwise
+/// reachable pre- or post-Logon on any open acceptor port.
+pub const MAX_BODY_LEN: usize = 16 * 1024 * 1024;
+
 /// If `buf` begins with at least one complete FIX message, return `Ok(Some(total_len))` (the byte
 /// length of that message). Return `Ok(None)` if more bytes are needed, or `Err` if the start of
-/// the buffer cannot be framed.
+/// the buffer cannot be framed (including a declared `BodyLength` beyond [`MAX_BODY_LEN`]).
 ///
 /// Uses BodyLength (tag 9) to locate the body, then accounts for the fixed 7-byte
 /// `10=XXX<SOH>` CheckSum trailer.
@@ -30,6 +37,12 @@ pub fn frame_length(buf: &[u8]) -> Result<Option<usize>, DecodeError> {
         .ok()
         .and_then(|s| s.parse().ok())
         .ok_or(DecodeError::InvalidBodyLength)?;
+    if body_len > MAX_BODY_LEN {
+        return Err(DecodeError::BodyLengthTooLarge {
+            declared: body_len,
+            max: MAX_BODY_LEN,
+        });
+    }
 
     let body_start = soh1 + 1 + soh2_rel + 1;
     let total = body_start + body_len + 7;

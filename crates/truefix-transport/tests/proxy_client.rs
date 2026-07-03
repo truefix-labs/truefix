@@ -359,3 +359,52 @@ async fn initiator_connects_through_an_http_connect_proxy() {
         "both sides should log on through the HTTP CONNECT proxy"
     );
 }
+
+// --- T054 (US6, feature 006): proxy connect is bounded by connect_timeout (BUG-19) ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_proxy_that_accepts_but_never_completes_the_handshake_times_out() {
+    // A "proxy" that accepts the TCP connection and then sends nothing at all -- before the fix,
+    // connect_initiator_via_proxy had no timeout of its own and would hang indefinitely waiting
+    // for a SOCKS/CONNECT reply that will never arrive.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            // Hold the connection open, reply with nothing, forever.
+            std::mem::forget(stream);
+        }
+    });
+
+    let proxy = ProxyConfig {
+        proxy_type: ProxyType::Socks5,
+        proxy_addr,
+        username: None,
+        password: None,
+    };
+    let mut cfg = init_cfg();
+    cfg.connect_timeout = Some(Duration::from_millis(500));
+
+    let flag = Arc::new(AtomicBool::new(false));
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        connect_initiator_via_proxy(
+            &proxy,
+            "127.0.0.1",
+            1, // never reached -- the proxy handshake itself never completes
+            cfg,
+            Arc::new(FlagApp { on: flag.clone() }),
+            truefix_transport::Services::default(),
+        ),
+    )
+    .await;
+
+    match result {
+        Err(_) => panic!(
+            "connect_initiator_via_proxy did not respect connect_timeout -- it hung past this \
+             test's own 5s outer bound instead of failing within the configured 500ms"
+        ),
+        Ok(Err(_)) => {} // expected: the proxy connect attempt itself timed out and errored
+        Ok(Ok(_)) => panic!("expected the proxy connect attempt to fail (no handshake reply)"),
+    }
+}

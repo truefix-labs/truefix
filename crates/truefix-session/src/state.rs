@@ -10,14 +10,15 @@ use core::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use truefix_core::{Field, Message};
-use truefix_dict::{DataDictionary, ValidationOptions};
+use truefix_dict::{DataDictionary, FixtDictionaries, ValidationOptions};
 
 use crate::admin;
 use crate::config::{Role, SessionConfig};
 use crate::session_id::SessionId;
 use crate::tags::{
-    GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO, NEXT_EXPECTED_MSG_SEQ_NUM,
-    ORIG_SENDING_TIME, POSS_DUP_FLAG, RESET_SEQ_NUM_FLAG, SENDING_TIME, SESSION_STATUS,
+    APPL_VER_ID, DEFAULT_APPL_VER_ID, GAP_FILL_FLAG, HEART_BT_INT, MSG_SEQ_NUM, NEW_SEQ_NO,
+    NEXT_EXPECTED_MSG_SEQ_NUM, ORIG_SENDING_TIME, POSS_DUP_FLAG, RESET_SEQ_NUM_FLAG, SENDING_TIME,
+    SESSION_STATUS,
 };
 use crate::time_util::now_utc_timestamp_prec;
 
@@ -112,6 +113,14 @@ pub struct Session {
     queue: BTreeMap<u64, Message>,
     /// Optional inbound application-message validator (dictionary + toggles).
     validator: Option<(DataDictionary, ValidationOptions)>,
+    /// A FIXT 1.1 transport/application dictionary split (T079/GAP-18c part 2), taking precedence
+    /// over `validator` for application-message validation when set: the application dictionary
+    /// is selected per-message via [`Self::negotiated_appl_ver_id`]/tag 1128 rather than being a
+    /// single fixed dictionary for the whole session.
+    fixt_validator: Option<(FixtDictionaries, ValidationOptions)>,
+    /// The `DefaultApplVerID` (tag 1137) negotiated from the most recent inbound Logon under FIXT
+    /// 1.1 (T078/GAP-18c part 1); `None` before any Logon carrying tag 1137 has been received.
+    negotiated_appl_ver_id: Option<String>,
 }
 
 impl Session {
@@ -135,6 +144,8 @@ impl Session {
             store: BTreeMap::new(),
             queue: BTreeMap::new(),
             validator: None,
+            fixt_validator: None,
+            negotiated_appl_ver_id: None,
         }
     }
 
@@ -143,6 +154,21 @@ impl Session {
     /// BusinessMessageReject (business-level) instead of being delivered.
     pub fn set_dictionary(&mut self, dict: DataDictionary, opts: ValidationOptions) {
         self.validator = Some((dict, opts));
+    }
+
+    /// Enable inbound application-message validation against a real FIXT 1.1 transport/
+    /// application dictionary split (T079/GAP-18c part 2), taking precedence over
+    /// [`Self::set_dictionary`]: the application dictionary is selected per-message (tag 1128, or
+    /// the negotiated tag 1137 from Logon, or `dicts`' own baked-in `DefaultApplVerID`) rather
+    /// than being one fixed dictionary for the whole session.
+    pub fn set_fixt_dictionaries(&mut self, dicts: FixtDictionaries, opts: ValidationOptions) {
+        self.fixt_validator = Some((dicts, opts));
+    }
+
+    /// The `DefaultApplVerID` (tag 1137) negotiated from the most recent inbound Logon under FIXT
+    /// 1.1 (T078/GAP-18c part 1); `None` if no Logon carrying tag 1137 has been received yet.
+    pub fn negotiated_appl_ver_id(&self) -> Option<&str> {
+        self.negotiated_appl_ver_id.as_deref()
     }
 
     /// The session's identity.
@@ -478,22 +504,43 @@ impl Session {
             return true;
         };
         let Ok(ts) = field.as_utc_timestamp() else {
-            return true; // unparseable SendingTime is a dictionary/validation concern
+            // B7/FR-009 (feature 006): an unparseable SendingTime fails the latency check rather
+            // than passing it — a garbled value is not evidence of an acceptable send time.
+            return false;
         };
         let now = time::OffsetDateTime::now_utc();
         (now - ts).whole_seconds().abs() <= i64::from(self.config.max_latency)
     }
 
     fn on_connected(&mut self) -> Vec<Action> {
+        // B4/FR-007 (feature 006): reset per-connection timer/resend-tracking state so a reused
+        // `Session` object doesn't carry stale values across a reconnect (a fresh connection has
+        // received nothing yet and has no chunked resend outstanding).
         self.ticks_awaiting = 0;
+        self.ticks_since_recv = 0;
+        self.test_request_outstanding = false;
+        self.resend_target = None;
+        self.resend_chunk_end = None;
         self.state = SessionState::AwaitingLogon;
         match self.config.role {
             Role::Initiator => {
+                let mut actions = Vec::new();
+                // B1/FR-005 (feature 006): perform the ResetOnLogon full reset *before* composing
+                // our own outbound Logon, not reactively when the counterparty's reset-flagged
+                // reply arrives (by then `logon_sent` is already true and our Logon has already
+                // been sent using whatever stale sequence number preceded the reset). Resetting
+                // here guarantees our own Logon always carries a fresh seq 1, matching the
+                // counterparty's own freshly-reset expectation, regardless of send/receive order.
+                if self.config.reset_on_logon {
+                    self.reset_sequences(true);
+                    actions.push(Action::ResetStore);
+                }
                 let next_exp = self.maybe_next_expected();
                 let seq = self.next_seq();
                 let msg = admin::logon(&self.config, seq, next_exp);
                 self.logon_sent = true;
-                vec![self.send_stored(msg)]
+                actions.push(self.send_stored(msg));
+                actions
             }
             Role::Acceptor => Vec::new(),
         }
@@ -564,6 +611,16 @@ impl Session {
                     self.next_in_seq = self.next_in_seq.saturating_add(1);
                     actions.extend(self.reset_on_error());
                     if self.config.disconnect_on_error {
+                        // B5/FR-008 (feature 006): send a Logout before disconnecting on a
+                        // dictionary-validation failure, matching the identity/latency disconnect
+                        // paths above instead of dropping the connection with only a Reject sent.
+                        let seq = self.next_seq();
+                        let lo = admin::logout(
+                            &self.config,
+                            seq,
+                            Some("application message failed validation"),
+                        );
+                        actions.push(self.send_stored(lo));
                         self.state = SessionState::Disconnected;
                         actions.push(Action::Disconnect);
                     } else {
@@ -621,11 +678,25 @@ impl Session {
     /// action. Admin messages and the no-dictionary case return `None`.
     fn validate_app(&mut self, msg: &Message) -> Option<Action> {
         let error = {
-            let (dict, opts) = self.validator.as_ref()?;
             if is_admin_type(msg.msg_type()) {
                 return None;
             }
-            dict.validate(msg, opts).err()
+            // T079/GAP-18c part 2: a real FIXT transport/application split, when configured,
+            // takes precedence — the application dictionary is chosen per-message by tag 1128
+            // (ApplVerID), falling back to the tag-1137 value negotiated from Logon (T078), falling
+            // back to whatever `FixtDictionaries` itself was built with as `DefaultApplVerID`. A
+            // message whose resolved ApplVerID has no registered application dictionary is treated
+            // like the no-dictionary case (skipped, not rejected) — the same conservative default
+            // this session already applies when no dictionary is configured at all.
+            if let Some((dicts, opts)) = self.fixt_validator.as_ref() {
+                let msg_appl_ver_id = msg.header.get(APPL_VER_ID).and_then(|f| f.as_str().ok());
+                let appl_ver_id = msg_appl_ver_id.or(self.negotiated_appl_ver_id.as_deref());
+                let dict = dicts.application_for(appl_ver_id)?;
+                dict.validate(msg, opts).err()
+            } else {
+                let (dict, opts) = self.validator.as_ref()?;
+                dict.validate(msg, opts).err()
+            }
         }?;
         let ref_seq = msg
             .header
@@ -671,6 +742,21 @@ impl Session {
     fn drain_queue(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
         while let Some(msg) = self.queue.remove(&self.next_in_seq) {
+            // B3/FR-006 (feature 006): a message drained from the out-of-order queue must be
+            // validated exactly like an in-order message (mirroring `on_received`'s `Equal` branch)
+            // — bypassing `validate_app` here would let an invalid message enqueued behind a
+            // legitimate gap-filler slip through unchecked.
+            if let Some(reject) = self.validate_app(&msg) {
+                actions.push(reject);
+                self.next_in_seq = self.next_in_seq.saturating_add(1);
+                actions.extend(self.reset_on_error());
+                if self.config.disconnect_on_error {
+                    self.state = SessionState::Disconnected;
+                    actions.push(Action::Disconnect);
+                    return actions;
+                }
+                continue;
+            }
             let mt = msg.msg_type().map(str::to_owned);
             actions.extend(self.process_in_order(&msg, mt.as_deref()));
             self.next_in_seq = self.next_in_seq.saturating_add(1);
@@ -721,6 +807,41 @@ impl Session {
     }
 
     fn on_resend_request(&mut self, msg: &Message) -> Vec<Action> {
+        // BUG-22/FR-004 (feature 006): a ResendRequest structurally missing BeginSeqNo(7) or
+        // EndSeqNo(16) entirely is a required-field violation and must be rejected, distinct from
+        // (and checked before) the existing, retained silent-skip for a well-formed request where
+        // both tags are present but `BeginSeqNo > EndSeqNo` (spec Edge Cases). `ResendRequest` is
+        // admin-typed and so never reaches the dictionary-level required-field check.
+        let ref_seq = msg
+            .header
+            .get(MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&s| s > 0)
+            .map_or(0, |s| s as u64);
+        for (present_tag, tag) in [
+            (
+                msg.body.get(crate::tags::BEGIN_SEQ_NO).is_some(),
+                crate::tags::BEGIN_SEQ_NO,
+            ),
+            (
+                msg.body.get(crate::tags::END_SEQ_NO).is_some(),
+                crate::tags::END_SEQ_NO,
+            ),
+        ] {
+            if !present_tag {
+                let seq = self.next_seq();
+                let rej = admin::reject_with_reason(
+                    &self.config,
+                    seq,
+                    ref_seq,
+                    Some(tag),
+                    1, // SessionRejectReason: Required tag missing
+                    "required tag missing",
+                );
+                return vec![self.send_stored(rej)];
+            }
+        }
+
         let begin = msg
             .body
             .get(crate::tags::BEGIN_SEQ_NO)
@@ -783,18 +904,60 @@ impl Session {
 
     fn on_sequence_reset(&mut self, msg: &Message) -> Vec<Action> {
         let gap_fill = msg.body.get(GAP_FILL_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
+        let new_seq_present = msg.body.get(NEW_SEQ_NO).is_some();
         let new_seq = msg
             .body
             .get(NEW_SEQ_NO)
             .and_then(|f| f.as_int().ok())
             .filter(|&n| n > 0)
             .map(|n| n as u64);
-        if let Some(ns) = new_seq {
-            if gap_fill {
-                if ns >= self.next_in_seq {
-                    self.next_in_seq = ns;
+
+        // BUG-06/FR-002/FR-003 (feature 006): plain-mode (non-gap-fill) SequenceReset anti-replay
+        // hole. Unlike gap-fill mode, a decreasing NewSeqNo must be rejected rather than applied —
+        // applying it would rewind `next_in_seq`, reopening the window to replay/re-accept
+        // previously-processed sequence numbers (this message type bypasses the PossDup anti-replay
+        // check every other inbound message type gets, since it's routed here directly from
+        // `on_received` before that check runs). A missing NewSeqNo tag entirely is a required-field
+        // violation, not a silent skip that still drains the queue.
+        if !gap_fill {
+            let ref_seq = msg
+                .header
+                .get(MSG_SEQ_NUM)
+                .and_then(|f| f.as_int().ok())
+                .filter(|&s| s > 0)
+                .map_or(0, |s| s as u64);
+            if !new_seq_present {
+                let seq = self.next_seq();
+                let rej = admin::reject_with_reason(
+                    &self.config,
+                    seq,
+                    ref_seq,
+                    Some(NEW_SEQ_NO),
+                    1, // SessionRejectReason: Required tag missing
+                    "NewSeqNo is missing",
+                );
+                return vec![self.send_stored(rej)];
+            }
+            if let Some(ns) = new_seq {
+                if ns < self.next_in_seq {
+                    let seq = self.next_seq();
+                    let rej = admin::reject_with_reason(
+                        &self.config,
+                        seq,
+                        ref_seq,
+                        Some(NEW_SEQ_NO),
+                        5, // SessionRejectReason: Value is incorrect (out of range) for this tag
+                        "NewSeqNo is decreasing",
+                    );
+                    return vec![self.send_stored(rej)];
                 }
-            } else {
+                self.next_in_seq = ns;
+            }
+            return self.drain_queue();
+        }
+
+        if let Some(ns) = new_seq {
+            if ns >= self.next_in_seq {
                 self.next_in_seq = ns;
             }
         }
@@ -816,6 +979,44 @@ impl Session {
             });
         }
 
+        // BUG-05/FR-001 (feature 006): reject a Logon whose own MsgSeqNum is below our expected
+        // next-incoming sequence number and carries no PossDup justification, via the same
+        // Logout+disconnect path used for the duplicate-Logon case above — before any reset/
+        // state-transition side effects run, so a spurious too-low-seq Logon never partially
+        // mutates session state or gets a Logon reply of its own.
+        let logon_seq_early = msg
+            .header
+            .get(MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&s| s > 0)
+            .map(|s| s as u64);
+        let poss_dup = msg.header.get(POSS_DUP_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
+        if !poss_dup && logon_seq_early.is_some_and(|s| s.cmp(&self.next_in_seq) == Ordering::Less)
+        {
+            return self.reject_logon(&truefix_core::Reject {
+                reason: 0,
+                ref_tag: None,
+                text: Some("MsgSeqNum too low".to_owned()),
+                session_status: None,
+            });
+        }
+
+        // T078/GAP-18c part 1 (feature 006, FIXT 1.1): auto-extract the inbound Logon's own
+        // DefaultApplVerID (tag 1137 — appears only on Logon, per `FIXT11.fixdict`'s message
+        // definition; distinct from tag 1128 ApplVerID, a per-message header field any message may
+        // carry to override it), remembering it for the life of the connection so later
+        // per-message application-dictionary selection (`validate_app`, T079) can prefer it over
+        // the static `DefaultApplVerID` .cfg value when a given message carries neither its own
+        // 1128 nor anything else more specific. A Logon without tag 1137 leaves the prior
+        // negotiated value untouched (there is nothing to renegotiate to).
+        if let Some(appl_ver_id) = msg
+            .body
+            .get(DEFAULT_APPL_VER_ID)
+            .and_then(|f| f.as_str().ok())
+        {
+            self.negotiated_appl_ver_id = Some(appl_ver_id.to_owned());
+        }
+
         let mut store_reset = false;
         if msg
             .body
@@ -832,12 +1033,7 @@ impl Session {
         // NextExpectedMsgSeqNum (789) and LastMsgSeqNumProcessed (369) on the response reflect
         // having consumed this Logon. The resulting actions (queue drain / ResendRequest) are
         // emitted *after* the Logon response below to preserve wire ordering.
-        let logon_seq = msg
-            .header
-            .get(MSG_SEQ_NUM)
-            .and_then(|f| f.as_int().ok())
-            .filter(|&s| s > 0)
-            .map(|s| s as u64);
+        let logon_seq = logon_seq_early;
         let disposition = logon_seq.map(|s| s.cmp(&self.next_in_seq));
         if disposition == Some(Ordering::Equal) {
             self.next_in_seq = self.next_in_seq.saturating_add(1);

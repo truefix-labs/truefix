@@ -62,10 +62,42 @@ fn no_schedule_keys_means_always_active() {
 
 #[test]
 fn invalid_timezone_is_a_typed_error() {
-    let cfg = base("StartTime=09:00:00\nEndTime=17:00:00\nTimeZone=America/New_York\n");
+    // T082 (US8, feature 006): GAP-10 added IANA-name recognition, so this must now be something
+    // that's neither a valid numeric offset NOR a real IANA zone name (America/New_York, used
+    // here before GAP-10, is now a *valid* value -- see `named_iana_timezone_is_mapped` below).
+    let cfg = base("StartTime=09:00:00\nEndTime=17:00:00\nTimeZone=Not/A_Real_Zone\n");
     let err = SessionSettings::parse(&cfg).unwrap().resolve().unwrap_err();
     match err {
         truefix_config::ConfigError::InvalidValue { key, .. } => assert_eq!(key, "TimeZone"),
         other => panic!("expected InvalidValue, got {other:?}"),
     }
+}
+
+// --- T082 (US8, feature 006): IANA zone names for `TimeZone` (GAP-10) ---
+
+#[test]
+fn named_iana_timezone_is_mapped_and_dst_aware() {
+    let s = resolved_schedule(&base(
+        "StartTime=09:00:00\nEndTime=17:00:00\nTimeZone=America/New_York\n",
+    ))
+    .unwrap();
+    // Winter (EST, UTC-5): 09:00 local == 14:00 UTC.
+    assert!(s.is_in_session(datetime!(2026-01-15 14:00 UTC)));
+    // Summer (EDT, UTC-4): 08:59 local == 12:59 UTC, still before the 09:00 open -- proves the
+    // offset shifted with the date (in winter this same UTC instant would already be in-window),
+    // which a fixed numeric `TimeZone=` offset could never do.
+    assert!(!s.is_in_session(datetime!(2026-07-15 12:59 UTC)));
+    assert!(s.is_in_session(datetime!(2026-07-15 13:00 UTC)));
+}
+
+#[test]
+fn named_iana_timezone_takes_precedence_over_a_stale_fixed_offset_field() {
+    // A named zone entirely replaces the fixed-offset representation (Schedule::named_time_zone
+    // takes precedence over Schedule::utc_offset_seconds, which stays at its default 0/UTC).
+    let s = resolved_schedule(&base(
+        "StartTime=09:00:00\nEndTime=17:00:00\nTimeZone=Europe/London\n",
+    ))
+    .unwrap();
+    assert!(s.named_time_zone.is_some());
+    assert_eq!(s.utc_offset_seconds, 0);
 }

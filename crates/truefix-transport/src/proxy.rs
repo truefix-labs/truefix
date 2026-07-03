@@ -190,6 +190,19 @@ fn parse_proxy_header(buf: &[u8]) -> Option<(SocketAddr, usize)> {
 /// Otherwise (untrusted source, or no valid header present) the stream is left completely
 /// untouched and `peer` is returned unchanged — an untrusted source's header is never trusted,
 /// matching the spec's Clarifications (rejected in favor of the physical source address).
+/// GAP-54 (feature 006): the overall bound on how long a trusted-source connection may take to
+/// deliver a complete PROXY header before it's treated as if none was sent — `TcpStream::peek`
+/// awaits until at least one byte is available, so with no timeout at all a connection that opens
+/// but sends nothing would hang this task indefinitely.
+const PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// GAP-53/B15 (feature 006, per docs/todo/003.md's audit numbering — the PROXY v2 buffer-sizing
+/// item): large enough to comfortably hold a realistic PROXY v2 header's TLV set (spec maximum is
+/// 64 KiB, but that's far beyond anything this codebase's own trusted-proxy use actually attaches)
+/// without truncating it mid-TLV, which previously could cause the remaining PROXY-protocol bytes
+/// to be misread as FIX message data.
+const PROXY_HEADER_PEEK_BUF: usize = 4096;
+
 pub(crate) async fn strip_trusted_proxy_header(
     stream: &mut TcpStream,
     peer: SocketAddr,
@@ -198,7 +211,14 @@ pub(crate) async fn strip_trusted_proxy_header(
     if trusted.is_empty() || !trusted.contains(&peer.ip()) {
         return peer;
     }
-    let mut buf = [0u8; 256];
+    match tokio::time::timeout(PROXY_HEADER_TIMEOUT, peek_proxy_header(stream, peer)).await {
+        Ok(addr) => addr,
+        Err(_) => peer, // timed out waiting for a complete header -- treat as untrusted/absent
+    }
+}
+
+async fn peek_proxy_header(stream: &mut TcpStream, peer: SocketAddr) -> SocketAddr {
+    let mut buf = vec![0u8; PROXY_HEADER_PEEK_BUF];
     for _ in 0..10 {
         let n = match stream.peek(&mut buf).await {
             Ok(n) => n,

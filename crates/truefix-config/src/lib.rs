@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 pub use builder::{
-    ConnectionType, LenientResolve, LogSpec, ProxyKind, ProxySpec, ResolvedSession,
+    ConnectionType, LenientResolve, LogKind, LogSpec, ProxyKind, ProxySpec, ResolvedSession,
     SocketOptionsSpec, SqlLogSpec, TlsSpec, TlsVersion,
 };
 pub use keys::{key_info, KeyInfo, Stance, APPENDIX_A_KEYS};
@@ -92,6 +92,24 @@ pub enum ConfigError {
     AmbiguousAcceptorTemplate {
         /// The shared bind address every session in the ambiguous group targets.
         addr: std::net::SocketAddr,
+    },
+    /// Two sessions in one acceptor group (sharing a `SocketAcceptPort`) would produce an
+    /// identical wire-extractable routing key — distinguished only by `SessionQualifier`, which
+    /// has no wire tag and so cannot disambiguate a live inbound connection (BUG-07/FR-011,
+    /// feature 006). `SessionQualifier`-distinguished sessions must each be bound to their own
+    /// distinct listener/port, resolved via `/speckit-clarify`.
+    #[error(
+        "acceptor group at {addr}: sessions {session_a} and {session_b} are distinguished only \
+         by SessionQualifier, which has no wire tag -- each SessionQualifier-distinguished \
+         session must be bound to its own distinct SocketAcceptPort"
+    )]
+    AmbiguousSessionQualifier {
+        /// The shared bind address both conflicting sessions target.
+        addr: std::net::SocketAddr,
+        /// The first conflicting session's label.
+        session_a: String,
+        /// The second conflicting session's label.
+        session_b: String,
     },
 }
 
@@ -240,13 +258,16 @@ fn interpolate_value(
                 name: after.to_owned(),
             })?;
         let name = after.get(..end).unwrap_or("");
-        let replacement = lookup
-            .get(name)
-            .ok_or_else(|| ConfigError::UnresolvedVariable {
+        // GAP-44/FR-041 (feature 006): fall back to an environment variable when `name` isn't in
+        // the settings map itself — previously `${var}` only ever resolved against `lookup`.
+        let replacement = match lookup.get(name) {
+            Some(v) => v.clone(),
+            None => std::env::var(name).map_err(|_| ConfigError::UnresolvedVariable {
                 line: 0,
                 name: name.to_owned(),
-            })?;
-        result.push_str(replacement);
+            })?,
+        };
+        result.push_str(&replacement);
         rest = after.get(end + 1..).unwrap_or("");
     }
     result.push_str(rest);
@@ -300,6 +321,44 @@ Endpoint=${Host}:${Port}
         assert_eq!(
             s.sessions()[0].get("Endpoint"),
             Some(&"example.com:5001".to_string())
+        );
+    }
+
+    // --- T077 (US8, feature 006): ${var} environment-variable fallback (GAP-44/FR-041) ---
+    //
+    // `std::env::set_var`/`remove_var` require `unsafe` in this toolchain, which this workspace
+    // forbids everywhere (including tests, per `unsafe_code = "forbid"` — Constitution Principle
+    // I) — so these tests use `PATH`, a variable every test process already has set, rather than
+    // mutating the process environment themselves.
+
+    #[test]
+    fn variable_interpolation_falls_back_to_environment_variable() {
+        let expected_path = std::env::var("PATH").expect("PATH must be set in the test process");
+        let cfg = "\
+[SESSION]
+SenderCompID=A
+Endpoint=${PATH}
+";
+        let s = SessionSettings::parse(cfg).unwrap();
+        assert_eq!(s.sessions()[0].get("Endpoint"), Some(&expected_path));
+    }
+
+    #[test]
+    fn variable_interpolation_prefers_settings_map_over_environment() {
+        // PATH is (almost certainly) set in the environment too, but the settings map's own
+        // PATH key must win.
+        let cfg = "\
+[DEFAULT]
+PATH=from-settings-not-the-real-path
+
+[SESSION]
+SenderCompID=A
+Endpoint=${PATH}
+";
+        let s = SessionSettings::parse(cfg).unwrap();
+        assert_eq!(
+            s.sessions()[0].get("Endpoint"),
+            Some(&"from-settings-not-the-real-path".to_string())
         );
     }
 

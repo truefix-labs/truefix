@@ -316,3 +316,55 @@ async fn cfg_only_acceptor_rejects_a_dictionary_invalid_message() {
 
     engine.shutdown();
 }
+
+// --- T081 (US8, feature 006): `Log=Screen`/`Composite` (GAP-21) actually start an engine ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_starts_with_log_screen_selected_from_cfg() {
+    let port = free_port();
+    let cfg = format!(
+        "[DEFAULT]\n\
+         BeginString=FIX.4.4\n\
+         HeartBtInt=1\n\
+         ResetOnLogon=Y\n\
+         \n\
+         [SESSION]\n\
+         ConnectionType=acceptor\n\
+         SenderCompID=SERVER\n\
+         TargetCompID=CLIENT\n\
+         SocketAcceptAddress=127.0.0.1\n\
+         SocketAcceptPort={port}\n\
+         Log=Composite\n\
+         \n\
+         [SESSION]\n\
+         ConnectionType=initiator\n\
+         SenderCompID=CLIENT\n\
+         TargetCompID=SERVER\n\
+         SocketConnectHost=127.0.0.1\n\
+         SocketConnectPort={port}\n\
+         Log=Screen\n"
+    );
+
+    let settings = SessionSettings::parse(&cfg).expect("parse cfg");
+    let logons = Arc::new(AtomicU32::new(0));
+    let engine = Engine::start(
+        &settings,
+        Arc::new(App {
+            logons: logons.clone(),
+        }),
+    )
+    .await
+    .expect("engine starts with Log=Composite/Log=Screen selected");
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) && logons.load(Ordering::SeqCst) < 2 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        logons.load(Ordering::SeqCst),
+        2,
+        "both sessions should log on with non-default Log backends selected"
+    );
+
+    engine.shutdown();
+}

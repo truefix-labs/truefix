@@ -16,7 +16,6 @@
     )
 )]
 
-mod framing;
 mod metrics_export;
 mod proxy;
 mod tls_config;
@@ -39,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
-use truefix_core::{decode, Message};
+use truefix_core::{decode, decode_with_groups, DecodeError, Message};
 use truefix_log::Log;
 use truefix_session::{
     Action, Application, Event, Schedule, Session, SessionConfig, SessionId, SessionState,
@@ -47,7 +46,10 @@ use truefix_session::{
 };
 use truefix_store::MessageStore;
 
-use framing::frame_length;
+// B30 (feature 006): `truefix-transport` previously carried its own near-identical copy of
+// `frame_length` — de-duplicated in favor of `truefix-core`'s (already public and already used by
+// `truefix-at`), so the BUG-13 max-body-length bound only needs to be maintained in one place.
+use truefix_core::frame_length;
 
 /// TCP socket options applied to each connection (US10; FR-019).
 #[derive(Debug, Clone, Copy)]
@@ -205,6 +207,13 @@ pub struct Services {
     /// Optional inbound application-message validator (dictionary + toggles).
     pub validator: Option<(
         truefix_dict::DataDictionary,
+        truefix_dict::ValidationOptions,
+    )>,
+    /// A real FIXT 1.1 transport/application dictionary split (T079/GAP-18c part 2), taking
+    /// precedence over `validator` for application-message validation (see
+    /// `Session::set_fixt_dictionaries`'s doc) when set.
+    pub fixt_dictionaries: Option<(
+        truefix_dict::FixtDictionaries,
         truefix_dict::ValidationOptions,
     )>,
     /// Log a message via `log` when an inbound connection's Logon matches neither a static session
@@ -417,9 +426,37 @@ pub async fn connect_initiator_via_proxy<A>(
 where
     A: Application + 'static,
 {
-    let stream = proxy::connect_through_proxy(proxy, target_host, target_port).await?;
+    let stream =
+        connect_through_proxy_with_timeout(proxy, target_host, target_port, config.connect_timeout)
+            .await?;
     services.socket_options.apply(&stream);
     Ok(spawn_session_io(stream, config, app, services))
+}
+
+/// BUG-19 (feature 006): bound the proxy connect path by `connect_timeout`, matching the
+/// direct/TLS initiator paths (`tcp_connect`/`with_connect_timeout`) — a proxy that accepts the
+/// TCP connection but never completes its SOCKS/CONNECT handshake would otherwise hang the
+/// connect attempt indefinitely.
+async fn connect_through_proxy_with_timeout(
+    proxy: &ProxyConfig,
+    target_host: &str,
+    target_port: u16,
+    connect_timeout: Option<Duration>,
+) -> Result<TcpStream, ProxyError> {
+    match connect_timeout {
+        None => proxy::connect_through_proxy(proxy, target_host, target_port).await,
+        Some(dur) => tokio::time::timeout(
+            dur,
+            proxy::connect_through_proxy(proxy, target_host, target_port),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(ProxyError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "proxy connect timed out",
+            )))
+        }),
+    }
 }
 
 /// As [`connect_initiator_via_proxy`], but wraps the tunneled stream in TLS afterward (FR-016 +
@@ -438,7 +475,9 @@ pub async fn connect_initiator_via_proxy_tls<A>(
 where
     A: Application + 'static,
 {
-    let tcp = proxy::connect_through_proxy(proxy, target_host, target_port).await?;
+    let tcp =
+        connect_through_proxy_with_timeout(proxy, target_host, target_port, config.connect_timeout)
+            .await?;
     services.socket_options.apply(&tcp);
     let connector = tokio_rustls::TlsConnector::from(tls);
     let stream = connector
@@ -629,7 +668,9 @@ async fn run_connection<A, S>(
 {
     let in_chan_capacity = config.in_chan_capacity;
     let mut session = Session::new(config);
-    if let Some((dict, opts)) = &services.validator {
+    if let Some((dicts, opts)) = &services.fixt_dictionaries {
+        session.set_fixt_dictionaries(dicts.clone(), *opts);
+    } else if let Some((dict, opts)) = &services.validator {
         session.set_dictionary(dict.clone(), *opts);
     }
     let id = session.id().clone();
@@ -643,11 +684,21 @@ async fn run_connection<A, S>(
         // Re-hydrate previously-sent message bodies so a post-restart ResendRequest can replay them
         // (FR-001/002). The store is the source of truth; the session's in-memory map is rebuilt.
         if out > 1 {
-            if let Ok(stored) = store.get(1, out - 1).await {
-                let msgs = stored
-                    .into_iter()
-                    .filter_map(|(seq, bytes)| decode(&bytes).ok().map(|m| (seq, m)));
-                session.seed_sent_messages(msgs);
+            match store.get(1, out - 1).await {
+                Ok(stored) => {
+                    let msgs = stored
+                        .into_iter()
+                        .filter_map(|(seq, bytes)| decode(&bytes).ok().map(|m| (seq, m)));
+                    session.seed_sent_messages(msgs);
+                }
+                // BUG-08/FR-013 (feature 006): a failed resend re-hydration read previously
+                // failed silently, skipping re-hydration as if the store simply had nothing to
+                // offer — now routed through the log as an operator-visible event.
+                Err(e) => {
+                    if let Some(log) = &services.log {
+                        log.on_event(&format!("{id}: failed to re-hydrate sent messages: {e}"));
+                    }
+                }
             }
         }
         // ForceResendWhenCorruptedStore: recovered-but-untrusted history isn't safe to resend from,
@@ -656,7 +707,11 @@ async fn run_connection<A, S>(
         if store.was_corrupted() && session.force_resend_when_corrupted_store() {
             app.on_before_reset(&id).await;
             session.reset();
-            let _ = store.reset().await;
+            if let Err(e) = store.reset().await {
+                if let Some(log) = &services.log {
+                    log.on_event(&format!("{id}: store reset failed: {e}"));
+                }
+            }
         }
     }
 
@@ -757,7 +812,11 @@ async fn run_connection<A, S>(
                     app.on_before_reset(&id).await;
                     session.reset();
                     if let Some(store) = &services.store {
-                        let _ = store.reset().await;
+                        if let Err(e) = store.reset().await {
+                            if let Some(log) = &services.log {
+                                log.on_event(&format!("{id}: store reset failed: {e}"));
+                            }
+                        }
                     }
                     metrics_export::record_status(&id, &session.status());
                     if let Some(monitor) = &services.monitor {
@@ -921,7 +980,23 @@ fn classify_buffered(
         match frame_length(buf) {
             Ok(Some(total)) => {
                 let raw: Vec<u8> = buf.drain(..total).collect();
-                if let Ok(msg) = decode(&raw) {
+                // GAP-26/FR-032 (feature 006): when a dictionary is attached, decode with group
+                // awareness (`decode_with_groups`, already correct since feature 005 but never
+                // invoked from any production path until now) so a header/trailer repeating group
+                // (e.g. NoHops) is structured instead of silently misrouted to the flat body.
+                // Scoped to header/trailer groups only via `HeaderTrailerGroupsOnly` — the runtime
+                // `DataDictionary` also declares body-level groups (e.g. NoPartyIDs), and
+                // structuring those into `Member::Group` here would silently break
+                // `validate_groups`'s existing flat-`body.fields()`-based walk (and any codegen-
+                // generated accessor reading a body group's member tags directly) — a much larger,
+                // riskier change than this fix's actual scope (GAP-26 is specifically about
+                // header/trailer groups being invisible, not a mandate to restructure body-group
+                // handling too).
+                let decoded = match &services.validator {
+                    Some((dict, _)) => decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dict)),
+                    None => decode(&raw),
+                };
+                if let Ok(msg) = decoded {
                     metrics_export::record_received(id);
                     if let Some(log) = &services.log {
                         log.on_incoming(&String::from_utf8_lossy(&raw));
@@ -939,10 +1014,51 @@ fn classify_buffered(
                 }
             }
             Ok(None) => return Ok(()),
+            // BUG-13/FR-024 (feature 006): a declared BodyLength beyond the sane maximum closes
+            // the connection outright — this is the one framing error that must not just recover
+            // and keep the connection open, since it's the actual DoS signal.
+            Err(DecodeError::BodyLengthTooLarge { .. }) => return Err(()),
             Err(_) => {
-                buf.clear();
-                return Ok(());
+                // B14/FR-028 (feature 006): discard only the malformed prefix that caused this
+                // framing error, not the entire buffer — a legitimate message that happens to
+                // follow a few garbled/non-FIX bytes in the same read must not be discarded along
+                // with them. Recovery scans for the next plausible frame start (an SOH-delimited
+                // "8=") past at least one byte (guaranteeing forward progress); if none is found,
+                // nothing in the buffer is recoverable and it's cleared as before.
+                let skip = next_frame_start(buf).unwrap_or(buf.len());
+                buf.drain(..skip);
+                if buf.is_empty() {
+                    return Ok(());
+                }
+                // Otherwise loop and re-attempt framing on the remainder.
             }
+        }
+    }
+}
+
+/// Scan `buf` (from byte offset 1 onward, guaranteeing forward progress even when byte 0 itself
+/// looks like a frame start) for the next SOH-delimited `"8="` — a plausible start of a new FIX
+/// message, per [`classify_buffered`]'s malformed-prefix recovery (B14/FR-028, feature 006).
+fn next_frame_start(buf: &[u8]) -> Option<usize> {
+    (1..buf.len().saturating_sub(1)).find(|&i| {
+        buf.get(i..i + 2) == Some(b"8=") && buf.get(i - 1) == Some(&truefix_core::tags::SOH)
+    })
+}
+
+/// A [`truefix_core::GroupSpec`] adapter that only reports a group definition for count tags the
+/// version-agnostic codec already classifies as header/trailer (GAP-26/FR-032, feature 006) —
+/// every other (body-level) group is hidden, so `decode_with_groups` leaves the body exactly as
+/// flat as plain `decode()` would, preserving `validate_groups`'s existing body-group validation
+/// (which walks `body.fields()`, invisible to `Member::Group` entries) and every codegen-generated
+/// body-group accessor unchanged.
+struct HeaderTrailerGroupsOnly<'a>(&'a truefix_dict::DataDictionary);
+
+impl truefix_core::GroupSpec for HeaderTrailerGroupsOnly<'_> {
+    fn group_of(&self, count_tag: u32) -> Option<(u32, &[u32])> {
+        if truefix_core::tags::is_header(count_tag) || truefix_core::tags::is_trailer(count_tag) {
+            self.0.group_of(count_tag)
+        } else {
+            None
         }
     }
 }
@@ -1058,8 +1174,16 @@ where
 
     // Persist sequence numbers for restart continuity (best-effort).
     if let Some(store) = &services.store {
-        let _ = store.set_next_sender_seq(session.next_out_seq()).await;
-        let _ = store.set_next_target_seq(session.next_in_seq()).await;
+        if let Err(e) = store.set_next_sender_seq(session.next_out_seq()).await {
+            if let Some(log) = &services.log {
+                log.on_event(&format!("{id}: failed to persist next sender seq: {e}"));
+            }
+        }
+        if let Err(e) = store.set_next_target_seq(session.next_in_seq()).await {
+            if let Some(log) = &services.log {
+                log.on_event(&format!("{id}: failed to persist next target seq: {e}"));
+            }
+        }
     }
 
     metrics_export::record_status(id, &session.status());
@@ -1157,7 +1281,11 @@ where
                 // durable store itself is cleared (US10, FR-013).
                 app.on_before_reset(id).await;
                 if let Some(store) = &services.store {
-                    let _ = store.reset().await;
+                    if let Err(e) = store.reset().await {
+                        if let Some(log) = &services.log {
+                            log.on_event(&format!("{id}: store reset failed: {e}"));
+                        }
+                    }
                 }
             }
         }
@@ -1226,7 +1354,16 @@ async fn persist_sent(msg: &Message, bytes: &[u8], session: &Session, services: 
         .and_then(|f| f.as_int().ok())
         .filter(|&s| s > 0)
     {
-        let _ = store.save_and_advance_sender(seq as u64, bytes).await;
+        // BUG-08/FR-013 (feature 006): a failed persist previously failed silently, leaving the
+        // session believing a message was durably saved for resend when it wasn't.
+        if let Err(e) = store.save_and_advance_sender(seq as u64, bytes).await {
+            if let Some(log) = &services.log {
+                log.on_event(&format!(
+                    "{}: failed to persist sent message: {e}",
+                    session.id()
+                ));
+            }
+        }
     }
 }
 
@@ -1246,7 +1383,11 @@ where
     let actions = session.send_app(message);
     perform_actions(actions, session, stream, app, id, services).await?;
     if let Some(store) = &services.store {
-        let _ = store.set_next_sender_seq(session.next_out_seq()).await;
+        if let Err(e) = store.set_next_sender_seq(session.next_out_seq()).await {
+            if let Some(log) = &services.log {
+                log.on_event(&format!("{id}: failed to persist next sender seq: {e}"));
+            }
+        }
     }
     metrics_export::record_status(id, &session.status());
     if let Some(monitor) = &services.monitor {
@@ -1263,6 +1404,7 @@ struct Registry {
     sessions: HashMap<SessionId, SessionConfig>,
     template: Option<SessionConfig>,
     allowed_remotes: Option<Vec<IpAddr>>,
+    session_stores: HashMap<SessionId, Arc<dyn MessageStore>>,
 }
 
 /// Builds and serves a multi-session acceptor with optional dynamic sessions and allow-listing.
@@ -1274,12 +1416,22 @@ pub struct AcceptorBuilder<A: Application + 'static> {
     allowed_remotes: Option<Vec<IpAddr>>,
     services: Services,
     tls: Option<Arc<rustls::ServerConfig>>,
+    session_stores: HashMap<SessionId, Arc<dyn MessageStore>>,
 }
 
 impl<A: Application + 'static> AcceptorBuilder<A> {
     /// Bind a multi-session acceptor.
+    ///
+    /// Always binds with `SO_REUSEADDR` (`B11`/FR-012, feature 006) — unlike the single-session
+    /// [`Acceptor::bind_with`], which threads a per-caller `SocketReuseAddress` choice through
+    /// `Services` supplied before binding, this constructor takes no `Services`/socket-options
+    /// parameter at all (they're attached afterward via [`Self::with_services`]), so there is no
+    /// pre-bind signal to make this conditional on without a breaking signature change. Multi-
+    /// session acceptors are the operationally restart-sensitive case this bug describes, and
+    /// `SO_REUSEADDR` on a listening socket is a standard, safe default (matches QuickFIX/J's own
+    /// default).
     pub async fn bind(addr: SocketAddr, app: Arc<A>) -> io::Result<Self> {
-        let listener = TcpListener::bind(addr).await?;
+        let listener = bind_listener_with_options(addr, true)?;
         Ok(Self {
             listener,
             app,
@@ -1288,6 +1440,7 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
             allowed_remotes: None,
             services: Services::default(),
             tls: None,
+            session_stores: HashMap::new(),
         })
     }
 
@@ -1307,6 +1460,25 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
     #[must_use]
     pub fn with_session(mut self, config: SessionConfig) -> Self {
         self.sessions.insert(config.session_id(), config);
+        self
+    }
+
+    /// Attach a message store specific to one statically-registered session (keyed by its
+    /// SessionID), overriding the group-wide `Services.store` for that session only (found while
+    /// implementing US2/BUG-07, feature 006: grouped acceptor sessions previously always shared
+    /// one store instance via `Services`, which is correct for stateless per-connection concerns
+    /// like socket options but silently corrupts per-session sequence-number bookkeeping when two
+    /// sessions in one group are actually connected concurrently — each session's own store must
+    /// be independent, unlike the other group-shared services). Sessions not given their own store
+    /// here (including any connection matched via the dynamic template, which has no fixed
+    /// identity to key by) continue to use the group-wide `Services.store`.
+    #[must_use]
+    pub fn with_session_store(
+        mut self,
+        session_id: SessionId,
+        store: Arc<dyn MessageStore>,
+    ) -> Self {
+        self.session_stores.insert(session_id, store);
         self
     }
 
@@ -1350,6 +1522,7 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
             sessions: self.sessions,
             template: self.template,
             allowed_remotes: self.allowed_remotes,
+            session_stores: self.session_stores,
         });
         let app = self.app;
         let services = self.services;
@@ -1429,14 +1602,44 @@ async fn route_and_run<A, S>(
     let begin = logon.begin_string().unwrap_or_default().to_owned();
     let their_sender = field_str(&logon, 49);
     let their_target = field_str(&logon, 56);
-    // Our SessionID reverses the counterparty's comp IDs.
-    let sid = SessionId::new(begin.clone(), their_target.clone(), their_sender.clone());
+    // BUG-07/FR-010 (feature 006): also extract SubID/LocationID (tags 50/142/57/143) so a
+    // session registered with those fields populated (GAP-47, feature 005) is actually routable —
+    // the lookup key previously only used the 3 required fields, hardcoding the other 5 to `None`
+    // regardless of what the inbound Logon carried, so any SubID/LocationID-distinguished session
+    // could never match. Our SessionID reverses the counterparty's comp IDs, same as begin/target.
+    let their_sender_sub_id = field_opt_str(&logon, 50);
+    let their_sender_location_id = field_opt_str(&logon, 142);
+    let their_target_sub_id = field_opt_str(&logon, 57);
+    let their_target_location_id = field_opt_str(&logon, 143);
+    let sid = SessionId::new_full(
+        begin.clone(),
+        their_target.clone(),
+        their_target_sub_id.clone(),
+        their_target_location_id.clone(),
+        their_sender.clone(),
+        their_sender_sub_id.clone(),
+        their_sender_location_id.clone(),
+        None, // SessionQualifier has no wire tag; disambiguated by the group-uniqueness check
+              // enforced at config-resolve time instead (Engine::start).
+    );
 
     let config = registry.sessions.get(&sid).cloned().or_else(|| {
-        registry
-            .template
-            .as_ref()
-            .map(|t| dynamic_config(t, &begin, &their_target, &their_sender))
+        registry.template.as_ref().map(|t| {
+            dynamic_config(
+                t,
+                &begin,
+                (
+                    &their_target,
+                    their_target_sub_id.as_deref(),
+                    their_target_location_id.as_deref(),
+                ),
+                (
+                    &their_sender,
+                    their_sender_sub_id.as_deref(),
+                    their_sender_location_id.as_deref(),
+                ),
+            )
+        })
     });
     let Some(config) = config else {
         if services.log_message_when_session_not_found {
@@ -1448,6 +1651,16 @@ async fn route_and_run<A, S>(
         }
         return; // no static match and no template -> refuse
     };
+
+    // US2/BUG-07 (feature 006): a statically-registered session with its own store (attached via
+    // `AcceptorBuilder::with_session_store`) must use that store instead of the group-wide one —
+    // sharing one store instance across multiple concurrently-connected sessions in a group
+    // silently corrupts each session's own sequence-number bookkeeping (each is independent
+    // per-session state, unlike socket options/TLS material, which are legitimately group-wide).
+    let mut services = services;
+    if let Some(store) = registry.session_stores.get(&sid) {
+        services.store = Some(store.clone());
+    }
 
     let (control_tx, control_rx) = mpsc::channel(8);
     run_connection(stream, config, app, services, control_tx, control_rx, buf).await;
@@ -1461,16 +1674,39 @@ fn field_str(msg: &Message, tag: u32) -> String {
         .to_owned()
 }
 
+/// Like [`field_str`], but `None` when the tag is absent (for `SessionId::new_full`'s optional
+/// SubID/LocationID components) rather than collapsing absence to an empty string.
+fn field_opt_str(msg: &Message, tag: u32) -> Option<String> {
+    msg.header
+        .get(tag)
+        .and_then(|f| f.as_str().ok())
+        .map(str::to_owned)
+}
+
+/// Build a per-connection `SessionConfig` from a dynamic-session template (`AcceptorTemplate` /
+/// `DynamicSession`). GAP-19: the template acts as a wildcard match on all 7 identity fields, not
+/// just BeginString/SenderCompID/TargetCompID — SubID/LocationID from the inbound Logon are
+/// carried through too (`None` when the wire didn't send one), instead of silently staying
+/// whatever the template itself happened to have (typically `None`, since a template's whole
+/// point is that it doesn't know the counterparty's identity ahead of time).
+/// `(CompID, SubID, LocationID)` — groups GAP-19's wildcard identity fields so `dynamic_config`
+/// doesn't need 8 flat parameters (clippy's `too_many_arguments` caps at 7).
+type IdentityTriple<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
+
 fn dynamic_config(
     template: &SessionConfig,
     begin: &str,
-    our_sender: &str,
-    our_target: &str,
+    our_sender: IdentityTriple<'_>,
+    our_target: IdentityTriple<'_>,
 ) -> SessionConfig {
     let mut config = template.clone();
     config.begin_string = begin.to_owned();
-    config.sender_comp_id = our_sender.to_owned();
-    config.target_comp_id = our_target.to_owned();
+    config.sender_comp_id = our_sender.0.to_owned();
+    config.sender_sub_id = our_sender.1.map(str::to_owned);
+    config.sender_location_id = our_sender.2.map(str::to_owned);
+    config.target_comp_id = our_target.0.to_owned();
+    config.target_sub_id = our_target.1.map(str::to_owned);
+    config.target_location_id = our_target.2.map(str::to_owned);
     config
 }
 
@@ -1686,7 +1922,21 @@ where
     let id = config.session_id();
     let task = tokio::spawn(async move {
         let mut current: Option<SessionHandle> = None;
-        let mut was_in_session = false;
+        // BUG-09/GAP-48 (feature 006): seed `was_in_session` from the store's persisted
+        // creation time (already persisted correctly by every backend since GAP-38, feature 005,
+        // but never consulted anywhere until now) instead of hardcoding `false`. A process
+        // restart landing inside an already-active schedule window would otherwise be
+        // indistinguishable from a genuinely-new session entering the window for the first time
+        // — both produced `Enter` from `decide_schedule_action`, spuriously wiping sequence
+        // numbers and resend history on every routine restart that happens to land mid-window.
+        let mut was_in_session = if let Some(store) = &services.store {
+            match store.creation_time().await {
+                Ok(Some(created)) => schedule.non_stop || schedule.is_in_session(created),
+                Ok(None) | Err(_) => false,
+            }
+        } else {
+            false
+        };
         let mut connected_before = false;
         while !loop_stop.load(Ordering::SeqCst) {
             let now = time::OffsetDateTime::now_utc();
@@ -1695,7 +1945,11 @@ where
             match truefix_session::decide_schedule_action(&schedule, was_in_session, now) {
                 truefix_session::ScheduleAction::Enter => {
                     if let Some(store) = &services.store {
-                        let _ = store.reset().await;
+                        if let Err(e) = store.reset().await {
+                            if let Some(log) = &services.log {
+                                log.on_event(&format!("{id}: store reset failed: {e}"));
+                            }
+                        }
                     }
                 }
                 truefix_session::ScheduleAction::Exit => {

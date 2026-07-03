@@ -270,6 +270,129 @@ fn duplicate_logon_rejected(v: &str) -> Scenario {
     )
 }
 
+/// BUG-06 (006/US1) — a plain-mode SequenceReset missing NewSeqNo(36) entirely is rejected as a
+/// required-tag-missing violation, not silently skipped while still draining the queue.
+fn sequence_reset_reset_missing_new_seq_no_rejected(v: &str) -> Scenario {
+    let sr = client_message(v, "4", 2); // no NewSeqNo at all, no GapFillFlag
+    scenario(
+        "BUG06_SequenceResetMissingNewSeqNoRejected",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(sr),
+            Step::Expect(ExpectMsg::of("3").field(373, "1")), // RequiredTagMissing
+        ],
+    )
+}
+
+/// BUG-22 (006/US1) — a ResendRequest missing BeginSeqNo(7) entirely draws a required-tag-missing
+/// Reject instead of a silent non-response.
+fn resend_request_missing_begin_seq_no_rejected(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 2);
+    rr.body.set(Field::int(16, 5)); // EndSeqNo present; BeginSeqNo entirely absent
+    scenario(
+        "BUG22_ResendRequestMissingBeginSeqNoRejected",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(rr),
+            Step::Expect(
+                ExpectMsg::of("3")
+                    .field(373, "1") // RequiredTagMissing
+                    .field(371, "7"), // RefTagID = BeginSeqNo
+            ),
+        ],
+    )
+}
+
+/// BUG-22 (006/US1) — a ResendRequest missing EndSeqNo(16) entirely draws a required-tag-missing
+/// Reject instead of a silent non-response.
+fn resend_request_missing_end_seq_no_rejected(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 2);
+    rr.body.set(Field::int(7, 1)); // BeginSeqNo present; EndSeqNo entirely absent
+    scenario(
+        "BUG22_ResendRequestMissingEndSeqNoRejected",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(rr),
+            Step::Expect(
+                ExpectMsg::of("3")
+                    .field(373, "1") // RequiredTagMissing
+                    .field(371, "16"), // RefTagID = EndSeqNo
+            ),
+        ],
+    )
+}
+
+/// B3 (006/US1) — an invalid application message enqueued behind a gap is validated (and
+/// rejected) exactly like an in-order one when the gap is later filled and it's drained, instead
+/// of bypassing dictionary validation.
+fn gap_fill_drained_message_is_validated(v: &str) -> Scenario {
+    let mut invalid_order = new_order_single(3); // seq 3, arrives first -> queued (gap)
+    invalid_order.body.set(Field::string(54, "Z")); // invalid Side enum
+    scenario(
+        "B3_GapFillDrainedMessageIsValidated",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(invalid_order),
+            Step::Expect(ExpectMsg::of("2").field(7, "2")), // ResendRequest for the gap at seq 2
+            Step::Send(client_message(v, "0", 2)),          // fills the gap, drains queued seq 3
+            Step::Expect(ExpectMsg::of("3").field(373, "5")), // the drained seq-3 message is rejected
+        ],
+    )
+}
+
+/// B5 (006/US1) — a dictionary-validation failure with `DisconnectOnError` sends a Logout before
+/// disconnecting, matching the identity/latency disconnect paths, instead of dropping the
+/// connection with only a Reject sent.
+fn dictionary_failure_disconnect_sends_logout(v: &str) -> Scenario {
+    let mut invalid_order = new_order_single(2);
+    invalid_order.body.set(Field::string(54, "Z")); // invalid Side enum
+    scenario_with(
+        "B5_DictionaryFailureDisconnectSendsLogout",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(invalid_order),
+            Step::Expect(ExpectMsg::of("3").field(373, "5")), // session Reject
+            Step::Expect(ExpectMsg::of("5")),                 // Logout, before disconnecting
+            Step::ExpectDisconnect,
+        ],
+        SessionTweaks {
+            disconnect_on_error: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// B7 (006/US1) — an inbound message (here, the Logon itself) with an unparseable SendingTime
+/// fails the CheckLatency check, instead of silently bypassing it, and is aborted like any other
+/// latency failure (Logout + disconnect).
+fn unparseable_sending_time_fails_latency(v: &str) -> Scenario {
+    let mut bad_logon = logon(v, 1, true);
+    bad_logon.header.set(Field::string(52, "not-a-timestamp"));
+    scenario_with(
+        "B7_UnparseableSendingTimeFailsLatency",
+        v,
+        vec![
+            Step::Send(bad_logon),
+            Step::Expect(ExpectMsg::of("5")), // Logout: SendingTime accuracy problem
+            Step::ExpectDisconnect,
+        ],
+        SessionTweaks {
+            check_latency: true,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// 1d — with ResetOnLogon (default), the acceptor's Logon response carries ResetSeqNumFlag=Y.
 fn logon_response_carries_reset_flag(v: &str) -> Scenario {
     scenario(
@@ -716,6 +839,40 @@ fn valid_new_order_accepted(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("0").field(112, "ORDER-OK")),
         ],
     )
+}
+
+/// T084 (US9, feature 006): `MinQty` (tag 110) on a NewOrderSingle is accepted, not rejected as an
+/// undefined tag — `001.md` originally flagged tag 110 as absent from every bundled dictionary;
+/// 005's dictionary-coverage work resolved that, but the AT suite never grew a scenario actually
+/// exercising it (`docs/todo/003.md`'s own follow-up note). Confirmed via `dict-src/normalized/
+/// FIX44.fixdict`/`FIX42.fixdict`: tag 110 is `opt:` on NewOrderSingle (`message D`) in both.
+fn min_qty_field_accepted(name: &str, v: &str, order: Message) -> Scenario {
+    let mut tr = client_message(v, "1", 3); // order consumed seq 2
+    tr.body.set(Field::string(112, "MINQTY-OK"));
+    scenario(
+        name,
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Send(tr),
+            // A Heartbeat (not a Reject) proves MinQty was accepted as a recognized field.
+            Step::Expect(ExpectMsg::of("0").field(112, "MINQTY-OK")),
+        ],
+    )
+}
+
+fn min_qty_field_accepted_44() -> Scenario {
+    let mut order = new_order_single(2);
+    order.body.set(Field::int(110, 100)); // MinQty
+    min_qty_field_accepted("MinQty_FieldAccepted_44", "FIX.4.4", order)
+}
+
+fn min_qty_field_accepted_42() -> Scenario {
+    let mut order = new_order_single_42(2);
+    order.body.set(Field::int(110, 50)); // MinQty
+    min_qty_field_accepted("MinQty_FieldAccepted_42", "FIX.4.2", order)
 }
 
 /// A FIX.4.4 NewOrderSingle with the given repeating-group fields appended in wire order.
@@ -1360,12 +1517,13 @@ fn seq_reset_new_seq_no_equal(v: &str) -> Scenario {
 }
 
 /// 10 — a SequenceReset-Reset (not GapFill) with NewSeqNo *behind* the current expected sequence
-/// is still honored unconditionally (Reset, unlike GapFill, has no backward guard).
+/// is rejected (BUG-06/FR-002, feature 006), not honored — corrected from this scenario's prior
+/// (incorrect) assumption that Reset has no backward guard at all; a rewind here is exactly the
+/// anti-replay hole BUG-06 closed, reopening the window to replay/re-accept previously-processed
+/// sequence numbers.
 fn seq_reset_new_seq_no_less(v: &str) -> Scenario {
     let mut sr = client_message(v, "4", 99);
     sr.body.set(Field::int(36, 1)); // NewSeqNo=1, behind the current expected (2)
-    let mut tr = client_message(v, "1", 1); // now-expected sequence per the (backward) reset
-    tr.body.set(Field::string(112, "REWOUND"));
     scenario(
         "10_MsgSeqNumLess",
         v,
@@ -1373,8 +1531,7 @@ fn seq_reset_new_seq_no_less(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
-            Step::Send(tr),
-            Step::Expect(ExpectMsg::of("0").field(112, "REWOUND")),
+            Step::Expect(ExpectMsg::of("3").field(373, "5")), // ValueIsIncorrect
         ],
     )
 }
@@ -1704,7 +1861,10 @@ pub fn validate_checksum_suite() -> Vec<Scenario> {
 /// only exact-value matching; a disclosed harness-capability gap, not a protocol gap, tracked in
 /// `docs/todo/001.md`'s TODO-01). Reuses `check_latency_timestamps` as this suite's content.
 pub fn timestamps_suite() -> Vec<Scenario> {
-    vec![check_latency_timestamps("FIX.4.4")]
+    vec![
+        check_latency_timestamps("FIX.4.4"),
+        unparseable_sending_time_fails_latency("FIX.4.4"),
+    ]
 }
 
 /// Special suite — resynch: session resynchronization behavior (ResendRequest gap recovery,
@@ -1771,6 +1931,12 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(begin_string_value_unexpected(v));
         out.push(comp_id_does_not_match_profile(v));
         out.push(sending_time_value_out_of_range(v));
+        // 006 US1: session protocol-correctness fixes (T021). The decreasing-NewSeqNo case is
+        // covered by the corrected `10_MsgSeqNumLess` (`seq_reset_new_seq_no_less`) above, not a
+        // separate scenario.
+        out.push(sequence_reset_reset_missing_new_seq_no_rejected(v));
+        out.push(resend_request_missing_begin_seq_no_rejected(v));
+        out.push(resend_request_missing_end_seq_no_rejected(v));
     }
     // Field-validation scenarios for FIX.4.2 (its NewOrderSingle subset differs from 4.4).
     out.push(valid_new_order_accepted_42());
@@ -1819,5 +1985,12 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(only_admin_messages());
     out.push(only_application_messages());
     out.push(admin_and_application_messages());
+    // 006 US1: dictionary/tweak-dependent session protocol-correctness fixes (T021).
+    out.push(gap_fill_drained_message_is_validated("FIX.4.4"));
+    out.push(dictionary_failure_disconnect_sends_logout("FIX.4.4"));
+    out.push(unparseable_sending_time_fails_latency("FIX.4.4"));
+    // 006 US9 (T084): MinQty (tag 110) is a recognized, accepted field (BUG-17 MinQty follow-up).
+    out.push(min_qty_field_accepted_44());
+    out.push(min_qty_field_accepted_42());
     out
 }

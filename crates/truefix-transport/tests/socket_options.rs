@@ -56,3 +56,25 @@ struct NoopApp;
 
 #[async_trait::async_trait]
 impl truefix_session::Application for NoopApp {}
+
+// --- T025 (US2, feature 006): AcceptorBuilder::bind honors SO_REUSEADDR (B11/FR-012) ---
+
+#[tokio::test]
+async fn acceptor_builder_bind_allows_immediate_rebind() {
+    use truefix_transport::AcceptorBuilder;
+
+    // Bind via the multi-session AcceptorBuilder path specifically (distinct from
+    // Acceptor::bind_with, already covered by `reuse_address_allows_immediate_rebind` above),
+    // note the port, drop, then rebind the *same* port immediately.
+    let first = AcceptorBuilder::bind("127.0.0.1:0".parse().unwrap(), std::sync::Arc::new(NoopApp))
+        .await
+        .unwrap();
+    let addr = first.local_addr().unwrap();
+    drop(first);
+
+    let second = AcceptorBuilder::bind(addr, std::sync::Arc::new(NoopApp)).await;
+    assert!(
+        second.is_ok(),
+        "AcceptorBuilder::bind should honor SO_REUSEADDR and allow an immediate rebind"
+    );
+}

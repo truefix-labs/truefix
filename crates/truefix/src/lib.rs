@@ -134,6 +134,43 @@ fn build_log(
     )))
 }
 
+/// Build a `ScreenLog`/`TracingLog`/`CompositeLog` from a `.cfg`-resolved `LogKind` (GAP-21).
+/// `Composite` fans out to `Screen` + `Tracing`, plus `File` when `file_spec` is also present
+/// (`truefix_log::build_log`'s pre-existing `LogConfig::Composite` already does the fan-out; this
+/// only needed a `.cfg`-reachable trigger, confirmed via `truefix_log::LogConfig` before assuming
+/// new backend code was needed — GAP-21's own framing). The `Composite` branch's `File` component
+/// uses `FileLog::open`'s defaults (heartbeats/timestamp/milliseconds), not `file_spec`'s own
+/// output-switch values — `truefix_log::LogConfig::File` only carries a directory, and threading
+/// those switches through would mean extending `LogConfig` itself, out of scope for this narrow,
+/// carried-forward gap.
+fn build_log_kind(
+    kind: truefix_config::LogKind,
+    file_spec: &Option<truefix_config::LogSpec>,
+    session_id: &str,
+) -> Result<Arc<dyn truefix_log::Log>, EngineError> {
+    let log_config = match kind {
+        truefix_config::LogKind::Screen => truefix_log::LogConfig::Screen,
+        truefix_config::LogKind::Tracing => truefix_log::LogConfig::Tracing,
+        truefix_config::LogKind::Composite => {
+            let mut parts = vec![
+                truefix_log::LogConfig::Screen,
+                truefix_log::LogConfig::Tracing,
+            ];
+            if let Some(spec) = file_spec {
+                parts.push(truefix_log::LogConfig::File {
+                    dir: spec.dir.clone(),
+                });
+            }
+            truefix_log::LogConfig::Composite(parts)
+        }
+    };
+    let log = truefix_log::build_log(&log_config).map_err(|e| EngineError::Log(e.to_string()))?;
+    Ok(Arc::new(truefix_log::SessionPrefixLog::new(
+        session_id.to_owned(),
+        log,
+    )))
+}
+
 /// Build a `SqlLog`/`MssqlLog` from a `.cfg`-resolved `SqlLogSpec` (US3, feature 004, FR-003),
 /// dispatched by `url`'s scheme — the same scheme-sniffing `resolve_store`/`resolve_log` already do
 /// in `truefix-config`, duplicated here rather than shared, since these are small, crate-local
@@ -306,9 +343,14 @@ impl Engine {
             // the whole group's; a group whose members configure genuinely different stores has no
             // way to honor that today (same class of limitation as feature 004's JdbcURL
             // session_id-collision finding) — out of this feature's scope to lift.
+            // BUG-16/FR-022 (feature 006): strictest-member-wins — the group tolerates a startup
+            // failure only if EVERY member opts in, not just the first one. Resolved via
+            // `/speckit-clarify`: errs toward surfacing failures (Constitution Principle I,
+            // Production-Ready First) rather than one lenient member silently overriding a
+            // later, stricter member's preference.
             let continue_on_error = members
-                .first()
-                .is_some_and(|m| m.session.continue_initialization_on_error);
+                .iter()
+                .all(|m| m.session.continue_initialization_on_error);
             let result: Result<(), EngineError> = async {
                 let template_count = members.iter().filter(|m| m.acceptor_template).count();
                 if template_count > 1 {
@@ -316,19 +358,61 @@ impl Engine {
                         ConfigError::AmbiguousAcceptorTemplate { addr },
                     ));
                 }
+                // BUG-07/FR-011 (feature 006): SessionQualifier has no wire tag, so two sessions
+                // in this group whose wire-extractable identity (BeginString/Sender/Target/SubID/
+                // LocationID) is otherwise identical and differ only by SessionQualifier can never
+                // be disambiguated by a live inbound connection -- reject at resolve time instead
+                // of leaving one of them silently unroutable, resolved via `/speckit-clarify`.
+                for (i, a) in members.iter().enumerate() {
+                    for b in members.iter().skip(i + 1) {
+                        let wire_identity_matches = a.session.begin_string
+                            == b.session.begin_string
+                            && a.session.sender_comp_id == b.session.sender_comp_id
+                            && a.session.target_comp_id == b.session.target_comp_id
+                            && a.session.sender_sub_id == b.session.sender_sub_id
+                            && a.session.sender_location_id == b.session.sender_location_id
+                            && a.session.target_sub_id == b.session.target_sub_id
+                            && a.session.target_location_id == b.session.target_location_id;
+                        if wire_identity_matches
+                            && a.session.session_qualifier != b.session.session_qualifier
+                        {
+                            return Err(EngineError::Config(
+                                ConfigError::AmbiguousSessionQualifier {
+                                    addr,
+                                    session_a: format!(
+                                        "{}:{}->{}",
+                                        a.session.begin_string,
+                                        a.session.sender_comp_id,
+                                        a.session.target_comp_id
+                                    ),
+                                    session_b: format!(
+                                        "{}:{}->{}",
+                                        b.session.begin_string,
+                                        b.session.sender_comp_id,
+                                        b.session.target_comp_id
+                                    ),
+                                },
+                            ));
+                        }
+                    }
+                }
                 let primary = members.first().ok_or_else(|| {
                     EngineError::Io(format!("acceptor group at {addr} has no sessions"))
                 })?;
+                let primary_session_id = primary.session.session_id();
                 let session_id = format!(
                     "{}:{}->{}",
                     primary.session.begin_string,
                     primary.session.sender_comp_id,
                     primary.session.target_comp_id
                 );
-                let store = truefix_store::build_store(&primary.store)
-                    .await
-                    .map_err(|e| EngineError::Store(e.to_string()))?;
-                let log = if let Some(spec) = &primary.sql_log {
+                let primary_store: Arc<dyn truefix_store::MessageStore> =
+                    Arc::from(truefix_store::build_store(&primary.store).await.map_err(
+                        |e: truefix_store::StoreError| EngineError::Store(e.to_string()),
+                    )?);
+                let log = if let Some(kind) = primary.log_kind {
+                    Some(build_log_kind(kind, &primary.log, &session_id)?)
+                } else if let Some(spec) = &primary.sql_log {
                     Some(build_sql_log(spec, &session_id).await?)
                 } else if let Some(spec) = &primary.log {
                     Some(build_log(spec, &session_id)?)
@@ -336,12 +420,27 @@ impl Engine {
                     None
                 };
                 let services = Services {
-                    store: Some(Arc::from(store)),
+                    // Fallback for any connection matched via the dynamic template, which has no
+                    // fixed identity to key a per-session store by. Every statically-registered
+                    // member below gets its own independent store instead (BUG-07-adjacent
+                    // finding, feature 006: sharing one store instance across concurrently
+                    // connected sessions in a group corrupts each session's own sequence-number
+                    // bookkeeping — unlike socket options/TLS, store state is never legitimately
+                    // group-wide).
+                    store: Some(primary_store.clone()),
                     socket_options: to_transport_socket_options(primary.socket_options),
                     log,
                     trusted_proxy_addresses: primary.trusted_proxy_addresses.clone(),
                     sync_write_timeout: primary.sync_write_timeout,
                     validator: primary.validator.clone(),
+                    fixt_dictionaries: primary.fixt_dictionaries.clone().map(|dicts| {
+                        let opts =
+                            primary.validator.as_ref().map_or_else(
+                                truefix_dict::ValidationOptions::default,
+                                |(_, opts)| *opts,
+                            );
+                        (dicts, opts)
+                    }),
                     ..Services::default()
                 };
 
@@ -370,7 +469,25 @@ impl Engine {
                     if m.acceptor_template {
                         builder = builder.with_dynamic_template(m.session);
                     } else {
-                        builder = builder.with_session(m.session);
+                        let member_session_id = m.session.session_id();
+                        // Give every statically-registered member its own store: reuse the
+                        // already-built `primary_store` for the primary member (avoids building
+                        // it twice) and build a fresh one from each other member's own `.store`
+                        // config, closing the sequence-number cross-contamination this loop used
+                        // to allow (BUG-07-adjacent finding, feature 006).
+                        let member_store: Arc<dyn truefix_store::MessageStore> =
+                            if member_session_id == primary_session_id {
+                                primary_store.clone()
+                            } else {
+                                Arc::from(truefix_store::build_store(&m.store).await.map_err(
+                                    |e: truefix_store::StoreError| {
+                                        EngineError::Store(e.to_string())
+                                    },
+                                )?)
+                            };
+                        builder = builder
+                            .with_session_store(member_session_id, member_store)
+                            .with_session(m.session);
                     }
                 }
                 if let Some(tls) = &tls_spec {
@@ -390,6 +507,12 @@ impl Engine {
                         "skipping acceptor group after a startup error (ContinueInitializationOnError=Y)"
                     );
                 } else {
+                    // BUG-11/FR-021 (feature 006): clean up every session that already started
+                    // successfully before propagating the error, instead of dropping the local
+                    // handle `Vec`s and leaving them running (uncontrollable but not disconnected
+                    // — `JoinHandle::drop` doesn't abort a task, and `SessionHandle` has no
+                    // `Drop` impl).
+                    cleanup_partial_start(&acceptors, &initiators, &failover_initiators).await;
                     return Err(e);
                 }
             }
@@ -410,7 +533,9 @@ impl Engine {
                 let store = truefix_store::build_store(&rs.store)
                     .await
                     .map_err(|e| EngineError::Store(e.to_string()))?;
-                let log = if let Some(spec) = &rs.sql_log {
+                let log = if let Some(kind) = rs.log_kind {
+                    Some(build_log_kind(kind, &rs.log, &session_id)?)
+                } else if let Some(spec) = &rs.sql_log {
                     Some(build_sql_log(spec, &session_id).await?)
                 } else if let Some(spec) = &rs.log {
                     Some(build_log(spec, &session_id)?)
@@ -424,6 +549,13 @@ impl Engine {
                     trusted_proxy_addresses: rs.trusted_proxy_addresses.clone(),
                     sync_write_timeout: rs.sync_write_timeout,
                     validator: rs.validator.clone(),
+                    fixt_dictionaries: rs.fixt_dictionaries.clone().map(|dicts| {
+                        let opts = rs.validator.as_ref().map_or_else(
+                            truefix_dict::ValidationOptions::default,
+                            |(_, opts)| *opts,
+                        );
+                        (dicts, opts)
+                    }),
                     ..Services::default()
                 };
                 match rs.connection {
@@ -562,6 +694,9 @@ impl Engine {
                         "skipping session after a startup error (ContinueInitializationOnError=Y)"
                     );
                 } else {
+                    // BUG-11/FR-021 (feature 006): see the acceptor-group loop's identical
+                    // cleanup call above.
+                    cleanup_partial_start(&acceptors, &initiators, &failover_initiators).await;
                     return Err(e);
                 }
             }
@@ -588,12 +723,45 @@ impl Engine {
     }
 
     /// Abort all acceptor listeners and stop all failover-initiator reconnect loops.
+    ///
+    /// **Does not stop plain (non-failover) initiators** (`Self::initiators()`) — this method is
+    /// synchronous, but `SessionHandle::logout()` is async, so there is no way to stop them from
+    /// here without changing this method's signature (BUG-21/FR-023, feature 006, disclosed
+    /// rather than silently changed: earlier versions of this doc comment read as if this were a
+    /// full stop). Callers that also need to stop plain initiators must call `.logout().await` on
+    /// each handle from `Self::initiators()` themselves.
     pub fn shutdown(&self) {
-        for acceptor in &self.acceptors {
-            acceptor.abort();
-        }
-        for initiator in &self.failover_initiators {
-            initiator.stop();
-        }
+        abort_acceptors_and_stop_failover(&self.acceptors, &self.failover_initiators);
+    }
+}
+
+/// Shared by [`Engine::shutdown`] and [`Engine::start`]'s partial-failure cleanup: abort every
+/// acceptor listener and stop every failover-initiator reconnect loop. Synchronous, so it cannot
+/// also stop plain initiators (see [`Engine::shutdown`]'s doc comment) — [`cleanup_partial_start`]
+/// layers that on top for the one caller (`Engine::start`) that can afford to `.await` it.
+fn abort_acceptors_and_stop_failover(
+    acceptors: &[JoinHandle<()>],
+    failover_initiators: &[ReconnectHandle],
+) {
+    for acceptor in acceptors {
+        acceptor.abort();
+    }
+    for initiator in failover_initiators {
+        initiator.stop();
+    }
+}
+
+/// BUG-11/FR-021 (feature 006): clean up every session `Engine::start` already started
+/// successfully before it returns an error for a later session, so the caller never loses control
+/// of a running-but-unreachable session. Unlike [`Engine::shutdown`], this runs inside `start`'s
+/// own async context, so it can also gracefully log out plain (non-failover) initiators.
+async fn cleanup_partial_start(
+    acceptors: &[JoinHandle<()>],
+    initiators: &[SessionHandle],
+    failover_initiators: &[ReconnectHandle],
+) {
+    abort_acceptors_and_stop_failover(acceptors, failover_initiators);
+    for initiator in initiators {
+        initiator.logout().await;
     }
 }

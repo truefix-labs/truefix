@@ -49,6 +49,11 @@ pub enum TlsConfigError {
     /// The rustls configuration could not be built.
     #[error("rustls: {0}")]
     Rustls(#[from] rustls::Error),
+    /// `CipherSuites` (FR-017) matched none of the process-default provider's recognized suites
+    /// (GAP-53, feature 006) — previously silently produced a `CryptoProvider` with zero usable
+    /// cipher suites, surfacing only later as an opaque `rustls::Error` at handshake time.
+    #[error("CipherSuites {0:?} matched no recognized cipher suite")]
+    UnrecognizedCipherSuites(Vec<String>),
 }
 
 fn pem_err(path: &Path, source: rustls::pki_types::pem::Error) -> TlsConfigError {
@@ -158,12 +163,12 @@ fn protocol_versions(
 /// FR-017) — each entry matched case-insensitively against the suite's `Debug` name (e.g.
 /// `"TLS13_AES_128_GCM_SHA256"`). An empty `names` list preserves rustls's default suite set
 /// unchanged.
-fn crypto_provider(names: &[String]) -> Arc<CryptoProvider> {
+fn crypto_provider(names: &[String]) -> Result<Arc<CryptoProvider>, TlsConfigError> {
     let base = rustls::crypto::aws_lc_rs::default_provider();
     if names.is_empty() {
-        return Arc::new(base);
+        return Ok(Arc::new(base));
     }
-    let cipher_suites = base
+    let cipher_suites: Vec<_> = base
         .cipher_suites
         .iter()
         .filter(|suite| {
@@ -172,10 +177,15 @@ fn crypto_provider(names: &[String]) -> Arc<CryptoProvider> {
         })
         .copied()
         .collect();
-    Arc::new(CryptoProvider {
+    // GAP-53 (feature 006): a name that matches nothing (typo, unsupported suite) must be a
+    // clear configuration-time error, not a silently-empty (and thus non-functional) suite set.
+    if cipher_suites.is_empty() {
+        return Err(TlsConfigError::UnrecognizedCipherSuites(names.to_vec()));
+    }
+    Ok(Arc::new(CryptoProvider {
         cipher_suites,
         ..base
-    })
+    }))
 }
 
 /// Build a server-side (acceptor) TLS configuration from `spec` (FR-017), including mTLS when
@@ -186,7 +196,7 @@ pub fn build_server_config(spec: &TlsSpec) -> Result<Arc<ServerConfig>, TlsConfi
         return Err(TlsConfigError::NoCertificate(key_store_label(spec)));
     }
     let key = key_store_private_key(spec)?;
-    let provider = crypto_provider(&spec.cipher_suites);
+    let provider = crypto_provider(&spec.cipher_suites)?;
     let builder = ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(protocol_versions(spec.min_version))?;
 
@@ -208,7 +218,7 @@ pub fn build_server_config(spec: &TlsSpec) -> Result<Arc<ServerConfig>, TlsConfi
 /// certificate (mTLS).
 pub fn build_client_config(spec: &TlsSpec) -> Result<Arc<ClientConfig>, TlsConfigError> {
     let roots = trust_store(spec)?.unwrap_or_else(RootCertStore::empty);
-    let provider = crypto_provider(&spec.cipher_suites);
+    let provider = crypto_provider(&spec.cipher_suites)?;
     let builder = ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(protocol_versions(spec.min_version))?
         .with_root_certificates(roots);

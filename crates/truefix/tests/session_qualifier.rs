@@ -106,3 +106,54 @@ async fn two_sessions_differing_only_by_qualifier_both_start_and_log_on() {
 
     engine.shutdown();
 }
+
+// --- T024 (US2, feature 006): SessionQualifier-only-distinguished group is rejected (BUG-07/FR-011) ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_sessions_sharing_one_port_distinguished_only_by_qualifier_is_a_config_error() {
+    let port = free_port();
+    // Both acceptor sessions share BeginString/SenderCompID/TargetCompID *and* one
+    // SocketAcceptPort -- the only thing distinguishing them is SessionQualifier, which has no
+    // wire tag, so no live connection could ever disambiguate which one it's meant for.
+    let cfg = format!(
+        "[DEFAULT]\n\
+         BeginString=FIX.4.4\n\
+         HeartBtInt=1\n\
+         \n\
+         [SESSION]\n\
+         ConnectionType=acceptor\n\
+         SenderCompID=SERVER\n\
+         TargetCompID=CLIENT\n\
+         SessionQualifier=A\n\
+         SocketAcceptAddress=127.0.0.1\n\
+         SocketAcceptPort={port}\n\
+         \n\
+         [SESSION]\n\
+         ConnectionType=acceptor\n\
+         SenderCompID=SERVER\n\
+         TargetCompID=CLIENT\n\
+         SessionQualifier=B\n\
+         SocketAcceptAddress=127.0.0.1\n\
+         SocketAcceptPort={port}\n"
+    );
+
+    struct NoopApp;
+    #[async_trait::async_trait]
+    impl Application for NoopApp {
+        async fn on_logon(&self, _s: &SessionId) {}
+    }
+
+    let settings = SessionSettings::parse(&cfg).expect("parse cfg");
+    let result = Engine::start(&settings, Arc::new(NoopApp)).await;
+    let err = match result {
+        Ok(_) => panic!(
+            "two sessions sharing one port, distinguished only by SessionQualifier, must be \
+             rejected at resolve time -- not silently started with one of them unroutable"
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err}").contains("SessionQualifier"),
+        "expected an error naming the SessionQualifier conflict, got: {err}"
+    );
+}

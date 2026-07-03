@@ -20,3 +20,10 @@ pub(crate) const BUSINESS_REJECT_REASON: u32 = 380;
 pub(crate) const ENCRYPT_METHOD: u32 = 98;
 pub(crate) const HEART_BT_INT: u32 = 108;
 pub(crate) const SESSION_STATUS: u32 = 573; // US10, FR-013
+                                            // T078/T079/GAP-18c (feature 006, FIXT 1.1): 1128 ApplVerID is a per-message header field any
+                                            // message may carry to select its own application version; 1137 DefaultApplVerID appears only on
+                                            // Logon, negotiating the counterparty's default for the rest of the connection when no per-message
+                                            // 1128 is present. Confirmed via `dict-src/normalized/FIXT11.fixdict`'s own field/header/message
+                                            // definitions -- distinct fields, not synonyms.
+pub(crate) const APPL_VER_ID: u32 = 1128;
+pub(crate) const DEFAULT_APPL_VER_ID: u32 = 1137;

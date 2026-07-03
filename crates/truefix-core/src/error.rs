@@ -81,6 +81,17 @@ pub enum DecodeError {
     /// BodyLength (tag 9) is missing or not a valid number.
     #[error("missing or invalid BodyLength (tag 9)")]
     InvalidBodyLength,
+    /// BodyLength (tag 9) declares a frame larger than the configured/sane maximum (BUG-13/
+    /// FR-024, feature 006) — the connection must be closed instead of buffering unboundedly
+    /// while waiting for that much data to arrive (a memory-exhaustion DoS vector, reachable
+    /// pre- or post-Logon on any open acceptor port).
+    #[error("declared BodyLength {declared} exceeds the maximum frame size {max}")]
+    BodyLengthTooLarge {
+        /// Value declared in tag 9.
+        declared: usize,
+        /// The configured/sane maximum.
+        max: usize,
+    },
     /// The declared BodyLength does not match the actual body size.
     #[error("BodyLength mismatch: declared {declared}, actual {actual}")]
     BodyLengthMismatch {

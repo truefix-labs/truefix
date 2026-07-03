@@ -91,6 +91,42 @@ async fn exercise_creation_time_and_atomic_save(url: &str, unique_suffix: &str) 
     );
 }
 
+// --- T033 (US3, feature 006): identifier validation (BUG-14/FR-017) ---
+// Runs unconditionally (no DATABASE_URL_MSSQL needed): validation happens before any network
+// I/O, so an invalid identifier is rejected regardless of whether a real server is reachable.
+
+#[tokio::test]
+async fn invalid_sessions_table_identifier_is_rejected_before_connecting() {
+    let config = MssqlStoreConfig {
+        sessions_table: "not a valid identifier; DROP TABLE x".to_owned(),
+        ..MssqlStoreConfig::new("mssql://user:pass@localhost/db")
+    };
+    let err = match MssqlStore::connect_with_config(config).await {
+        Ok(_) => panic!("expected an identifier-validation error"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err}").contains("not a valid SQL table identifier"),
+        "expected a clean identifier-validation error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn invalid_messages_table_identifier_is_rejected_before_connecting() {
+    let config = MssqlStoreConfig {
+        messages_table: "1leading-digit".to_owned(),
+        ..MssqlStoreConfig::new("mssql://user:pass@localhost/db")
+    };
+    let err = match MssqlStore::connect_with_config(config).await {
+        Ok(_) => panic!("expected an identifier-validation error"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err}").contains("not a valid SQL table identifier"),
+        "expected a clean identifier-validation error, got: {err}"
+    );
+}
+
 #[tokio::test]
 async fn mssql_creation_time_and_atomic_save_if_available() {
     let Ok(url) = std::env::var("DATABASE_URL_MSSQL") else {

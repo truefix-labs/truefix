@@ -72,6 +72,11 @@ struct MessageDef {
     name: String,
     required: Vec<u32>,
     optional: Vec<u32>,
+    /// GAP-27/FR-031 (feature 006): mirrors `parser::MessageDef::field_order` (the runtime
+    /// track's identical field, already correctly parsed and consumed by `Message::encode_with_
+    /// order`) — codegen previously never parsed the `ordered` modifier at all, so a message
+    /// declaring it had zero effect on the codegen-generated `encode()` path.
+    field_order: Option<Vec<u32>>,
 }
 
 /// The whole parsed dictionary (fields/groups/messages only — codegen doesn't need
@@ -154,10 +159,15 @@ fn expand_members(
     Ok(out)
 }
 
+/// `(msg_type, name, required, optional, ordered)` — one raw, not-yet-component-expanded message
+/// declaration. `ordered` mirrors the `parser::MessageDef::field_order` modifier (GAP-27/FR-031,
+/// feature 006).
+type RawMessage = (String, String, Vec<RawMember>, Vec<RawMember>, bool);
+
 fn parse_dict(text: &str) -> Result<Dict, CodegenError> {
     let mut fields = BTreeMap::new();
     let mut groups_raw: BTreeMap<u32, (String, u32, Vec<RawMember>)> = BTreeMap::new();
-    let mut messages_raw: Vec<(String, String, Vec<RawMember>, Vec<RawMember>)> = Vec::new();
+    let mut messages_raw: Vec<RawMessage> = Vec::new();
     let mut components_raw: BTreeMap<String, Vec<RawMember>> = BTreeMap::new();
 
     for raw in text.lines() {
@@ -221,14 +231,23 @@ fn parse_dict(text: &str) -> Result<Dict, CodegenError> {
                 let Some(name) = tokens.next() else { continue };
                 let mut required = Vec::new();
                 let mut optional = Vec::new();
+                let mut ordered = false;
                 for tok in tokens {
-                    if let Some(list) = tok.strip_prefix("req:") {
+                    if tok == "ordered" {
+                        ordered = true;
+                    } else if let Some(list) = tok.strip_prefix("req:") {
                         required = parse_member_list_raw(list)?;
                     } else if let Some(list) = tok.strip_prefix("opt:") {
                         optional = parse_member_list_raw(list)?;
                     }
                 }
-                messages_raw.push((msg_type.to_owned(), name.to_owned(), required, optional));
+                messages_raw.push((
+                    msg_type.to_owned(),
+                    name.to_owned(),
+                    required,
+                    optional,
+                    ordered,
+                ));
             }
             _ => {}
         }
@@ -258,12 +277,17 @@ fn parse_dict(text: &str) -> Result<Dict, CodegenError> {
 
     let messages = messages_raw
         .into_iter()
-        .map(|(msg_type, name, req_raw, opt_raw)| {
+        .map(|(msg_type, name, req_raw, opt_raw, ordered)| {
+            let required = expand_members(&req_raw, &components)?;
+            let optional = expand_members(&opt_raw, &components)?;
+            let field_order =
+                ordered.then(|| required.iter().chain(optional.iter()).copied().collect());
             Ok(MessageDef {
                 msg_type,
                 name,
-                required: expand_members(&req_raw, &components)?,
-                optional: expand_members(&opt_raw, &components)?,
+                required,
+                optional,
+                field_order,
             })
         })
         .collect::<Result<_, CodegenError>>()?;
@@ -685,11 +709,37 @@ pub fn emit_version(code: &mut String, name: &str, bytes: &[u8]) -> Result<(), C
             code,
             "    /// Encode to wire bytes (byte-identical with the generic codec path)."
         );
-        let _ = writeln!(
-            code,
-            "    pub fn encode(&self) -> Vec<u8> {{ self.0.encode() }}"
-        );
-        let _ = writeln!(code, "}}");
+        // GAP-27/FR-031 (feature 006): a message declaring a custom `fieldOrder` in its
+        // dictionary now actually has that order reach the wire from the real (codegen-generated)
+        // encode path — previously `encode_with_order` was correct but never invoked from here,
+        // so declaring `ordered` in a dictionary had zero effect on any message TrueFix encoded.
+        match &m.field_order {
+            Some(order) if !order.is_empty() => {
+                let order_ident = format!("{}_FIELD_ORDER", struct_name.to_uppercase());
+                let order_list = order
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = writeln!(
+                    code,
+                    "    pub fn encode(&self) -> Vec<u8> {{ truefix_core::encode_with_order(&self.0, Some(&{order_ident})) }}"
+                );
+                let _ = writeln!(code, "}}");
+                let _ = writeln!(
+                    code,
+                    "const {order_ident}: [u32; {}] = [{order_list}];",
+                    order.len()
+                );
+            }
+            _ => {
+                let _ = writeln!(
+                    code,
+                    "    pub fn encode(&self) -> Vec<u8> {{ self.0.encode() }}"
+                );
+                let _ = writeln!(code, "}}");
+            }
+        }
         let _ = writeln!(
             code,
             "impl Default for {struct_name} {{ fn default() -> Self {{ Self::new() }} }}"

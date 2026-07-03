@@ -17,9 +17,24 @@ fn price_offset_accepts_decimals_and_rejects_non_numeric() {
 
 #[test]
 fn local_mkt_date_and_utc_date_are_format_accepted() {
-    // Date-shaped types are accepted as-is at this layer, matching UtcDateOnly's own behavior.
+    // LocalMktDate is accepted as-is at this layer (no format check); UtcDate IS now format-
+    // checked (BUG-12/FR-030, feature 006) -- this asserts the positive case still passes.
     assert!(FieldType::LocalMktDate.value_ok(&field("20240101")));
     assert!(FieldType::UtcDate.value_ok(&field("20240101")));
+}
+
+// --- T065 (US7, feature 006): UtcTimeOnly/UtcDate format validation (BUG-12/FR-030) ---
+
+#[test]
+fn utc_time_only_rejects_a_garbled_value() {
+    assert!(FieldType::UtcTimeOnly.value_ok(&field("12:00:00")));
+    assert!(!FieldType::UtcTimeOnly.value_ok(&field("not-a-time")));
+}
+
+#[test]
+fn utc_date_rejects_a_garbled_value() {
+    assert!(FieldType::UtcDate.value_ok(&field("20240101")));
+    assert!(!FieldType::UtcDate.value_ok(&field("not-a-date")));
 }
 
 #[test]
