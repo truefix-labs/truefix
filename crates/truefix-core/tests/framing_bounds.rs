@@ -2,7 +2,7 @@
 //! (BUG-100/FR-014) — a zero-length body previously framed and decoded as a valid (if empty)
 //! message, unlike QuickFIX/J (QFJ-903) and QuickFIX/Go, which both reject it.
 
-use truefix_core::{frame_length, DecodeError};
+use truefix_core::{DecodeError, frame_length};
 
 #[test]
 fn a_declared_body_length_of_zero_is_rejected() {

@@ -1,6 +1,6 @@
 //! T043 — dictionary parsing.
 
-use truefix_dict::{load_fix44, parse, FieldType};
+use truefix_dict::{FieldType, load_fix44, parse};
 
 #[test]
 fn parses_bundled_fix44() {
@@ -32,10 +32,10 @@ fn message_required_and_optional_fields() {
     let d = load_fix44().unwrap();
     let nos = d.message("D").unwrap();
     assert!(nos.required.contains(&11)); // ClOrdID
-                                         // Symbol(55) is a member of the `Instrument` component, which NewOrderSingle references
-                                         // as optional (US9, feature 005, FR-031/GAP-24: a component's own *individual* fields are
-                                         // never unconditionally required in the real QFJ schema, even when the component itself is
-                                         // referenced as `required='Y'` — see qfj_xml.rs's `"component"` conversion for the finding).
+    // Symbol(55) is a member of the `Instrument` component, which NewOrderSingle references
+    // as optional (US9, feature 005, FR-031/GAP-24: a component's own *individual* fields are
+    // never unconditionally required in the real QFJ schema, even when the component itself is
+    // referenced as `required='Y'` — see qfj_xml.rs's `"component"` conversion for the finding).
     assert!(nos.optional.contains(&55)); // Symbol
     assert!(nos.optional.contains(&44)); // Price
     assert!(nos.allows_tag(38)); // OrderQty (optional)

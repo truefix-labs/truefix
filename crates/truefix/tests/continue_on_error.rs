@@ -2,8 +2,8 @@
 //! and one misconfigured session starts every other, validly-configured session; the same file with
 //! the flag unset fails startup entirely, exactly as today (FR-005, SC-004).
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use truefix::config::SessionSettings;
 use truefix::{Application, Engine, SessionId};

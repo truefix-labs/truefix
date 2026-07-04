@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use truefix_core::{decode, frame_length, Field, Message};
+use truefix_core::{Field, Message, decode, frame_length};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::AcceptorBuilder;
 
@@ -129,15 +129,15 @@ pub async fn start_acceptor(
             message: &Message,
             id: &SessionId,
         ) -> Result<(), truefix_core::BusinessReject> {
-            if let Some(monitor) = &self.monitor {
-                if message.msg_type() == Some("D") {
-                    // A sentinel ClOrdID lets a scenario trigger an acceptor-initiated logout.
-                    let clordid = message.body.get(11).and_then(|f| f.as_str().ok());
-                    if clordid == Some("LOGOUT") {
-                        monitor.force_logout(id).await;
-                    } else {
-                        monitor.send_app(id, execution_report(message)).await;
-                    }
+            if let Some(monitor) = &self.monitor
+                && message.msg_type() == Some("D")
+            {
+                // A sentinel ClOrdID lets a scenario trigger an acceptor-initiated logout.
+                let clordid = message.body.get(11).and_then(|f| f.as_str().ok());
+                if clordid == Some("LOGOUT") {
+                    monitor.force_logout(id).await;
+                } else {
+                    monitor.send_app(id, execution_report(message)).await;
                 }
             }
             Ok(())

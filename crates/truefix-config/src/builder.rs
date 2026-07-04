@@ -462,7 +462,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
             return Err(ConfigError::UnknownConnectionType {
                 session,
                 value: other.to_owned(),
-            })
+            });
         }
     };
 
@@ -709,7 +709,7 @@ fn resolve_proxy(map: &Map, session: &str) -> Result<Option<ProxySpec>, ConfigEr
                 reason: format!(
                     "unknown proxy type {other:?} (expected Socks4, Socks5, or HttpConnect)"
                 ),
-            })
+            });
         }
     };
     let host = required(map, "ProxyHost", session)?.to_owned();
@@ -908,7 +908,7 @@ fn resolve_failover_addresses(map: &Map, session: &str) -> Result<Vec<SocketAddr
                     session: session.to_owned(),
                     reason: "both host and port must be set for a numbered backup endpoint"
                         .to_owned(),
-                })
+                });
             }
         };
         let port: u16 = port_str.parse().map_err(|_| ConfigError::InvalidValue {
@@ -973,7 +973,7 @@ fn resolve_local_bind_addr(map: &Map, session: &str) -> Result<Option<SocketAddr
                 key: "SocketLocalHost/SocketLocalPort".to_owned(),
                 session: session.to_owned(),
                 reason: "both SocketLocalHost and SocketLocalPort must be set together".to_owned(),
-            })
+            });
         }
     };
     let port: u16 = port_str.parse().map_err(|_| ConfigError::InvalidValue {
@@ -1015,7 +1015,7 @@ fn resolve_tls(map: &Map, session: &str) -> Result<Option<TlsSpec>, ConfigError>
             return Err(ConfigError::MissingRequired {
                 key: "SocketKeyStore or SocketKeyStoreBytes".to_owned(),
                 session: session.to_owned(),
-            })
+            });
         }
     };
     let trust_store_bytes = pem_bytes_key(map, "SocketTrustStoreBytes");
@@ -1412,7 +1412,7 @@ fn resolve_schedule(map: &Map, session: &str) -> Result<Option<Schedule>, Config
                 key: "StartTime/EndTime/StartDay/EndDay".to_owned(),
                 session: session.to_owned(),
                 reason: "StartDay/EndDay require both, alongside StartTime/EndTime".to_owned(),
-            })
+            });
         }
     };
 
@@ -1474,7 +1474,7 @@ fn parse_weekday(v: &str, key: &str, session: &str) -> Result<Weekday, ConfigErr
                 key: key.to_owned(),
                 session: session.to_owned(),
                 reason: format!("expected a weekday name, got {v:?}"),
-            })
+            });
         }
     };
     Ok(day)

@@ -2,8 +2,8 @@
 //! but distinct `SessionQualifier` both start as independently addressable sessions (GAP-47/
 //! FR-012/FR-013), rather than one silently shadowing or colliding with the other.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use truefix::config::SessionSettings;

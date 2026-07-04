@@ -2,8 +2,8 @@
 //! through a backup after the primary is unreachable, driven entirely by `Engine::start` (FR-001,
 //! SC-001), with no additional Rust code beyond `Application`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use truefix::config::SessionSettings;

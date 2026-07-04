@@ -31,9 +31,11 @@ fn timestamp_rejects_every_non_0_3_6_9_digit_count() {
 
 #[test]
 fn timestamp_accepts_exactly_0_3_6_9_digit_counts() {
-    assert!(Field::string(52, "20240101-12:00:00")
-        .as_utc_timestamp()
-        .is_ok());
+    assert!(
+        Field::string(52, "20240101-12:00:00")
+            .as_utc_timestamp()
+            .is_ok()
+    );
     for digits in [3, 6, 9] {
         let frac = format!(".{}", "1".repeat(digits));
         assert!(
@@ -100,8 +102,10 @@ fn time_only_leap_second_maps_to_59_and_max_fraction() {
 
 #[test]
 fn a_second_value_beyond_60_is_still_rejected() {
-    assert!(Field::string(52, "20240101-12:00:61")
-        .as_utc_timestamp()
-        .is_err());
+    assert!(
+        Field::string(52, "20240101-12:00:61")
+            .as_utc_timestamp()
+            .is_err()
+    );
     assert!(Field::string(273, "12:00:61").as_utc_time_only().is_err());
 }

@@ -1,6 +1,6 @@
 //! T036 (US6) — `DataDictionary::extend` merge semantics (FR-010).
 
-use truefix_dict::{parse, DictMergeConflict};
+use truefix_dict::{DictMergeConflict, parse};
 
 const BASE: &str = "\
 version FIX.4.4

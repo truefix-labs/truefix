@@ -1,6 +1,6 @@
 //! T012 — repeating-group model + encode (dictionary-driven group *parsing* is Stage S4).
 
-use truefix_core::{decode, encode, Field, FieldMap, Group, Message};
+use truefix_core::{Field, FieldMap, Group, Message, decode, encode};
 
 #[test]
 fn build_group_encodes_to_known_vector() {

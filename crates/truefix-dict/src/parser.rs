@@ -247,7 +247,7 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                 return Err(ParseError::Malformed {
                     line: line_no,
                     reason: "unknown directive",
-                })
+                });
             }
         }
     }

@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use truefix_store::{
-    build_store, CachedFileStore, FileStore, FileStoreOptions, MemoryStore, MessageStore,
-    NoopStore, StoreConfig,
+    CachedFileStore, FileStore, FileStoreOptions, MemoryStore, MessageStore, NoopStore,
+    StoreConfig, build_store,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);

@@ -5,8 +5,8 @@
 //! acceptor whose inbound Logon was received) but never completed the handshake silently skipped
 //! the callback, unlike QFJ (`logonReceived || logonSent`) and QFGo.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::net::TcpListener;

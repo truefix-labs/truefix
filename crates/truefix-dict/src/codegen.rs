@@ -643,7 +643,10 @@ fn emit_group_structs(
         }
     }
     let _ = writeln!(code, "}}");
-    let _ = writeln!(code, "impl From<truefix_core::FieldMap> for {struct_name} {{ fn from(m: truefix_core::FieldMap) -> Self {{ Self(m) }} }}");
+    let _ = writeln!(
+        code,
+        "impl From<truefix_core::FieldMap> for {struct_name} {{ fn from(m: truefix_core::FieldMap) -> Self {{ Self(m) }} }}"
+    );
 }
 
 /// Generate the code for one dictionary version and append it to `code` (used to concatenate
@@ -692,10 +695,10 @@ pub fn emit_version(code: &mut String, name: &str, bytes: &[u8]) -> Result<(), C
         }
     }
     for &tag in &used_tags {
-        if let Some(field) = dict.fields.get(&tag) {
-            if let Some(enum_name) = emit_field_enum(code, field, &message_names) {
-                enum_names.insert(tag, enum_name);
-            }
+        if let Some(field) = dict.fields.get(&tag)
+            && let Some(enum_name) = emit_field_enum(code, field, &message_names)
+        {
+            enum_names.insert(tag, enum_name);
         }
     }
 
@@ -789,7 +792,10 @@ pub fn emit_version(code: &mut String, name: &str, bytes: &[u8]) -> Result<(), C
             code,
             "impl From<Message> for {struct_name} {{ fn from(m: Message) -> Self {{ Self(m) }} }}"
         );
-        let _ = writeln!(code, "impl From<{struct_name}> for Message {{ fn from(t: {struct_name}) -> Self {{ t.0 }} }}");
+        let _ = writeln!(
+            code,
+            "impl From<{struct_name}> for Message {{ fn from(t: {struct_name}) -> Self {{ t.0 }} }}"
+        );
     }
 
     // The per-version typed handler trait + dispatcher (MessageCracker-style; FR-022).

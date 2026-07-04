@@ -6,7 +6,7 @@
 //! - `BUG-49`: a length field carrying a non-numeric value must fail decoding cleanly, not silently
 //!   skip setting `pending_data_len` and let the following data field be misparsed as plain text.
 
-use truefix_core::{decode, Field, Message};
+use truefix_core::{Field, Message, decode};
 
 fn base_message() -> Message {
     let mut m = Message::new();

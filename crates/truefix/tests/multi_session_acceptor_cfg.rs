@@ -4,8 +4,8 @@
 //! one `SocketAcceptPort` would fail outright (`Engine::start` called `Acceptor::bind_with` once per
 //! session, so the second bind hit "address already in use").
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use truefix::config::SessionSettings;

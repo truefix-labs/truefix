@@ -1,7 +1,7 @@
 //! T064 (US9, feature 005) — `encode_with_order` emits body fields in a configured tag order,
 //! byte-for-byte, with unlisted/UDF fields appended after (FR-027).
 
-use truefix_core::{encode, encode_with_order, Field, Message};
+use truefix_core::{Field, Message, encode, encode_with_order};
 
 fn msg() -> Message {
     let mut m = Message::new();

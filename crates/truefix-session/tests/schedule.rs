@@ -4,7 +4,7 @@
 
 use time::macros::{date, datetime, time};
 use time::{Time, Weekday};
-use truefix_session::{decide_recurring_reset, Schedule};
+use truefix_session::{Schedule, decide_recurring_reset};
 
 #[test]
 fn non_stop_is_always_in_session() {

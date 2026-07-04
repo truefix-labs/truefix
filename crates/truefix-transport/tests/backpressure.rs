@@ -2,14 +2,14 @@
 //! without dropping messages, while concurrent administrative traffic (a heartbeat reply) is
 //! still processed promptly (FR-019, Acceptance Scenario 1; "must not starve admin" Clarification).
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use truefix_core::{decode, BusinessReject, Field, Message};
+use truefix_core::{BusinessReject, Field, Message, decode};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::Acceptor;
 

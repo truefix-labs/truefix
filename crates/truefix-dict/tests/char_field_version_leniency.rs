@@ -11,7 +11,7 @@
 //! applies from FIX.4.2 onward.
 
 use truefix_core::{Field, Message};
-use truefix_dict::{load_fix40, load_fix41, load_fix44, ValidationOptions};
+use truefix_dict::{ValidationOptions, load_fix40, load_fix41, load_fix44};
 
 fn heartbeat_with_extra_field(begin: &str, tag: u32, value: &str) -> Message {
     let mut m = Message::new();

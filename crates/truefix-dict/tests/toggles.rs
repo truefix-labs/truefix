@@ -1,7 +1,7 @@
 //! T044 — validation toggles (one case per toggle).
 
 use truefix_core::{Field, Message};
-use truefix_dict::{load_fix44, DataDictionary, RejectReason, ValidationOptions};
+use truefix_dict::{DataDictionary, RejectReason, ValidationOptions, load_fix44};
 
 fn nos() -> Message {
     let mut m = Message::new();
@@ -29,9 +29,11 @@ fn dict() -> DataDictionary {
 
 #[test]
 fn valid_message_passes() {
-    assert!(dict()
-        .validate(&nos(), &ValidationOptions::default())
-        .is_ok());
+    assert!(
+        dict()
+            .validate(&nos(), &ValidationOptions::default())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -75,7 +77,7 @@ fn unknown_tag_rejected_unless_allowed() {
 fn user_defined_field_skipped_unless_validated() {
     let mut m = nos();
     m.body.set(Field::string(6001, "custom")); // UDF (>= 5000)
-                                               // default: UDFs skipped -> ok
+    // default: UDFs skipped -> ok
     assert!(dict().validate(&m, &ValidationOptions::default()).is_ok());
     // validate UDFs -> unknown tag rejected
     let strict = ValidationOptions {

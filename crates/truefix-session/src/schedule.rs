@@ -122,10 +122,10 @@ impl Schedule {
             return in_weekly_window(local, start_day, start_time, end_day, end_time);
         }
 
-        if let Some(days) = &self.weekdays {
-            if !days.contains(&local.weekday()) {
-                return false;
-            }
+        if let Some(days) = &self.weekdays
+            && !days.contains(&local.weekday())
+        {
+            return false;
         }
         match (self.start_time, self.end_time) {
             (Some(start), Some(end)) => in_window(local.time(), start, end),

@@ -1,12 +1,12 @@
 //! T078 — Logon Username/Password authentication via toAdmin/fromAdmin.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use truefix_core::{Field, Message, Reject};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator, AcceptorBuilder};
+use truefix_transport::{AcceptorBuilder, connect_initiator};
 
 /// Initiator that stamps Username(553)/Password(554) onto its Logon.
 struct InitApp {

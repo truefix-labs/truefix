@@ -83,7 +83,9 @@ fn main() {
 
     let per_iter = elapsed / n;
     let iters_per_sec = f64::from(n) / elapsed.as_secs_f64();
-    println!("session round-trip mix: Heartbeat(in) + TestRequest(in)->Heartbeat(out) + NewOrderSingle(out)");
+    println!(
+        "session round-trip mix: Heartbeat(in) + TestRequest(in)->Heartbeat(out) + NewOrderSingle(out)"
+    );
     println!("  {n} iterations in {elapsed:?}");
     println!("  {iters_per_sec:>12.0} iterations/s   ({per_iter:?}/iteration)");
 }

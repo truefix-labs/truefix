@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use truefix_log::Log;
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_store::{FileStore, MessageStore};
-use truefix_transport::{connect_initiator_with, Acceptor, AcceptorBuilder, Services};
+use truefix_transport::{Acceptor, AcceptorBuilder, Services, connect_initiator_with};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 

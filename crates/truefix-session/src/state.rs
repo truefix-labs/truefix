@@ -275,18 +275,17 @@ impl Session {
             return true;
         }
         let mt = msg.msg_type();
-        if mt != Some("A") && mt != Some("4") {
-            if let Some(seq) = msg
+        if mt != Some("A")
+            && mt != Some("4")
+            && let Some(seq) = msg
                 .header
                 .get(MSG_SEQ_NUM)
                 .and_then(|f| f.as_int().ok())
                 .filter(|&s| s > 0)
-            {
-                let poss_dup =
-                    msg.header.get(POSS_DUP_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
-                if !poss_dup && (seq as u64) < self.next_in_seq {
-                    return true;
-                }
+        {
+            let poss_dup = msg.header.get(POSS_DUP_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
+            if !poss_dup && (seq as u64) < self.next_in_seq {
+                return true;
             }
         }
         false
@@ -519,15 +518,14 @@ impl Session {
             let last = self.next_in_seq.saturating_sub(1);
             msg.header.set(Field::int(369, last as i64));
         }
-        if self.config.persist_messages {
-            if let Some(seq) = msg
+        if self.config.persist_messages
+            && let Some(seq) = msg
                 .header
                 .get(MSG_SEQ_NUM)
                 .and_then(|f| f.as_int().ok())
                 .filter(|&s| s > 0)
-            {
-                self.store.insert(seq as u64, msg.clone());
-            }
+        {
+            self.store.insert(seq as u64, msg.clone());
         }
         Action::Send(msg)
     }
@@ -582,23 +580,23 @@ impl Session {
 
     /// Detect a BeginString or CompID mismatch (CheckCompID). Returns a Logout reason on failure.
     fn identity_problem(&self, msg: &Message) -> Option<&'static str> {
-        if let Some(bs) = msg.header.get(8).and_then(|f| f.as_str().ok()) {
-            if bs != self.config.begin_string {
-                return Some("Incorrect BeginString");
-            }
+        if let Some(bs) = msg.header.get(8).and_then(|f| f.as_str().ok())
+            && bs != self.config.begin_string
+        {
+            return Some("Incorrect BeginString");
         }
         if self.config.check_comp_id {
             // Inbound SenderCompID(49) is the peer's sender = our target; TargetCompID(56) = ours.
             // Only a present-but-mismatched value is a CompID problem (absence is a separate concern).
-            if let Some(sender) = msg.header.get(49).and_then(|f| f.as_str().ok()) {
-                if sender != self.config.target_comp_id {
-                    return Some("CompID problem");
-                }
+            if let Some(sender) = msg.header.get(49).and_then(|f| f.as_str().ok())
+                && sender != self.config.target_comp_id
+            {
+                return Some("CompID problem");
             }
-            if let Some(target) = msg.header.get(56).and_then(|f| f.as_str().ok()) {
-                if target != self.config.sender_comp_id {
-                    return Some("CompID problem");
-                }
+            if let Some(target) = msg.header.get(56).and_then(|f| f.as_str().ok())
+                && target != self.config.sender_comp_id
+            {
+                return Some("CompID problem");
             }
         }
         None
@@ -777,10 +775,8 @@ impl Session {
         // the too-low-specific missing-tag case) — by the time it does, this check has already
         // handled the falsification signal, so that call only meaningfully covers the missing-tag
         // case from here on.
-        if poss_dup {
-            if let Some(reject) = self.poss_dup_falsification_check(&msg) {
-                return self.reject_logon(&reject);
-            }
+        if poss_dup && let Some(reject) = self.poss_dup_falsification_check(&msg) {
+            return self.reject_logon(&reject);
         }
 
         match seq.cmp(&self.next_in_seq) {
@@ -1192,17 +1188,17 @@ impl Session {
             return self.drain_queue();
         }
 
-        if let Some(ns) = new_seq {
-            if ns >= self.next_in_seq {
-                self.next_in_seq = ns;
-                // BUG-96/FR-027 (feature 007): a gap-fill jump discards any queued out-of-order
-                // messages it skips over (matching QFJ's `dequeueMessagesUpTo(newSequence)`) --
-                // `drain_queue` below only ever removes an entry exactly matching the *current*
-                // `next_in_seq`, so a queued message whose sequence falls below this jump's target
-                // (but isn't part of the contiguous run `drain_queue` walks) would otherwise never
-                // match `next_in_seq` again and stay in the queue forever.
-                self.queue.retain(|&seq, _| seq >= ns);
-            }
+        if let Some(ns) = new_seq
+            && ns >= self.next_in_seq
+        {
+            self.next_in_seq = ns;
+            // BUG-96/FR-027 (feature 007): a gap-fill jump discards any queued out-of-order
+            // messages it skips over (matching QFJ's `dequeueMessagesUpTo(newSequence)`) --
+            // `drain_queue` below only ever removes an entry exactly matching the *current*
+            // `next_in_seq`, so a queued message whose sequence falls below this jump's target
+            // (but isn't part of the contiguous run `drain_queue` walks) would otherwise never
+            // match `next_in_seq` again and stay in the queue forever.
+            self.queue.retain(|&seq, _| seq >= ns);
         }
         self.drain_queue()
     }
@@ -1292,15 +1288,15 @@ impl Session {
         // adoption below silently ignores a negative value (leaving whatever heartbeat interval
         // this session started with in place) instead of treating it as the protocol violation it
         // is.
-        if let Some(hbi) = msg.body.get(HEART_BT_INT).and_then(|f| f.as_int().ok()) {
-            if hbi < 0 {
-                return self.reject_logon(&truefix_core::Reject {
-                    reason: 0,
-                    ref_tag: None,
-                    text: Some("HeartBtInt must not be negative".to_owned()),
-                    session_status: None,
-                });
-            }
+        if let Some(hbi) = msg.body.get(HEART_BT_INT).and_then(|f| f.as_int().ok())
+            && hbi < 0
+        {
+            return self.reject_logon(&truefix_core::Reject {
+                reason: 0,
+                ref_tag: None,
+                text: Some("HeartBtInt must not be negative".to_owned()),
+                session_status: None,
+            });
         }
 
         // BUG-43/FR-019 (feature 007): reject a Logon whose NextExpectedMsgSeqNum(789) is higher
@@ -1314,31 +1310,28 @@ impl Session {
             .and_then(|f| f.as_int().ok())
             .filter(|&n| n > 0)
             .map(|n| n as u64)
+            && next_expected > self.next_out_seq
         {
-            if next_expected > self.next_out_seq {
-                return self.reject_logon(&truefix_core::Reject {
-                    reason: 0,
-                    ref_tag: None,
-                    text: Some("Tag 789 is higher than expected".to_owned()),
-                    session_status: None,
-                });
-            }
+            return self.reject_logon(&truefix_core::Reject {
+                reason: 0,
+                ref_tag: None,
+                text: Some("Tag 789 is higher than expected".to_owned()),
+                session_status: None,
+            });
         }
 
         // BUG-86/FR-015 (feature 007): reject a Logon arriving outside a configured activity
         // schedule (trading-hours window) — same Logout+disconnect path as the other Logon
         // rejections above, before any reset/state-transition side effects run.
-        if let Some(schedule) = &self.config.schedule {
-            if !schedule.is_in_session(time::OffsetDateTime::now_utc()) {
-                return self.reject_logon(&truefix_core::Reject {
-                    reason: 0,
-                    ref_tag: None,
-                    text: Some(
-                        "Logon attempted outside of the configured session schedule".to_owned(),
-                    ),
-                    session_status: None,
-                });
-            }
+        if let Some(schedule) = &self.config.schedule
+            && !schedule.is_in_session(time::OffsetDateTime::now_utc())
+        {
+            return self.reject_logon(&truefix_core::Reject {
+                reason: 0,
+                ref_tag: None,
+                text: Some("Logon attempted outside of the configured session schedule".to_owned()),
+                session_status: None,
+            });
         }
 
         // BUG-89/FR-011 (feature 007): a dictionary-invalid Logon (missing required field, bad
@@ -1464,10 +1457,10 @@ impl Session {
             Some(Ordering::Equal) => actions.extend(self.drain_queue()),
             Some(Ordering::Greater) if !self.resend_requested => {
                 self.resend_requested = true;
-                if self.config.resend_request_chunk_size > 0 {
-                    if let Some(s) = logon_seq {
-                        self.resend_target = Some(self.resend_target.map_or(s, |t| t.max(s)));
-                    }
+                if self.config.resend_request_chunk_size > 0
+                    && let Some(s) = logon_seq
+                {
+                    self.resend_target = Some(self.resend_target.map_or(s, |t| t.max(s)));
                 }
                 let begin = self.next_in_seq;
                 actions.push(self.request_resend(begin));
@@ -1483,11 +1476,10 @@ impl Session {
             .and_then(|f| f.as_int().ok())
             .filter(|&n| n > 0)
             .map(|n| n as u64)
+            && next_expected < self.next_out_seq
         {
-            if next_expected < self.next_out_seq {
-                let end = self.next_out_seq.saturating_sub(1);
-                actions.extend(self.build_resend(next_expected, end));
-            }
+            let end = self.next_out_seq.saturating_sub(1);
+            actions.extend(self.build_resend(next_expected, end));
         }
 
         actions

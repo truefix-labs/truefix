@@ -16,7 +16,7 @@
 //! `crates/truefix-transport/tests/header_trailer_groups_production.rs` for the real,
 //! production-path version of this test.
 
-use truefix_core::{decode_with_groups, encode, Field, FieldMap, Group, GroupSpec, Message};
+use truefix_core::{Field, FieldMap, Group, GroupSpec, Message, decode_with_groups, encode};
 
 /// Declares tag 128 as a repeating-group count tag (delimiter 115, member [115]) — both already
 /// classified as header fields by `tags::is_header`.

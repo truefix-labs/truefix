@@ -15,7 +15,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use crate::{is_heartbeat, Log, LogError};
+use crate::{Log, LogError, is_heartbeat};
 
 fn io_err<E: std::fmt::Display>(e: E) -> LogError {
     LogError::Io(e.to_string())

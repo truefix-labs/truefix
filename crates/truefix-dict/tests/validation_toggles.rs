@@ -1,8 +1,8 @@
 //! T019 (US8) — the four extra validation toggles: `validate_checksum`,
 //! `validate_incoming_message`, `allow_pos_dup`, `requires_orig_sending_time` (FR-007).
 
-use truefix_core::{decode, Field, Message};
-use truefix_dict::{load_fix44, ValidationOptions};
+use truefix_core::{Field, Message, decode};
+use truefix_dict::{ValidationOptions, load_fix44};
 
 fn nos() -> Message {
     let mut m = Message::new();
@@ -58,10 +58,12 @@ fn validate_incoming_message_true_default_still_checks() {
         }
         b
     };
-    assert!(load_fix44()
-        .unwrap()
-        .validate(&m, &ValidationOptions::default())
-        .is_err());
+    assert!(
+        load_fix44()
+            .unwrap()
+            .validate(&m, &ValidationOptions::default())
+            .is_err()
+    );
 }
 
 // --- allow_pos_dup ---
@@ -88,10 +90,12 @@ fn poss_dup_rejected_when_not_allowed() {
 
 #[test]
 fn poss_dup_accepted_by_default() {
-    assert!(load_fix44()
-        .unwrap()
-        .validate(&poss_dup_message(), &ValidationOptions::default())
-        .is_ok());
+    assert!(
+        load_fix44()
+            .unwrap()
+            .validate(&poss_dup_message(), &ValidationOptions::default())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -123,10 +127,12 @@ fn poss_dup_with_orig_sending_time_accepted_when_required() {
         requires_orig_sending_time: true,
         ..ValidationOptions::default()
     };
-    assert!(load_fix44()
-        .unwrap()
-        .validate(&poss_dup_message(), &opts)
-        .is_ok());
+    assert!(
+        load_fix44()
+            .unwrap()
+            .validate(&poss_dup_message(), &opts)
+            .is_ok()
+    );
 }
 
 #[test]

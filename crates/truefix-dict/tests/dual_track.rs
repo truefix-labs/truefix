@@ -1,8 +1,8 @@
 //! T047 — the dual-track invariant: codegen and runtime derive from the same source.
 
 use truefix_dict::{
-    fix44_msgs, fix50_msgs, fixt11_msgs, load_fix44, load_fix50, load_fixt11, FIX44_DICT_HASH,
-    FIX50_DICT_HASH, FIXT11_DICT_HASH,
+    FIX44_DICT_HASH, FIX50_DICT_HASH, FIXT11_DICT_HASH, fix44_msgs, fix50_msgs, fixt11_msgs,
+    load_fix44, load_fix50, load_fixt11,
 };
 
 #[test]

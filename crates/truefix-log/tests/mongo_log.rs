@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use mongodb::bson::{doc, Document};
+use mongodb::bson::{Document, doc};
 use mongodb::{Client, Collection};
 use truefix_log::{Log, MongoLog, MongoLogConfig};
 

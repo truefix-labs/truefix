@@ -37,11 +37,11 @@ impl FieldMap {
     /// Set a top-level field, replacing an existing one with the same tag, else appending.
     pub fn set(&mut self, field: Field) {
         for m in &mut self.members {
-            if let Member::Field(existing) = m {
-                if existing.tag() == field.tag() {
-                    *existing = field;
-                    return;
-                }
+            if let Member::Field(existing) = m
+                && existing.tag() == field.tag()
+            {
+                *existing = field;
+                return;
             }
         }
         self.members.push(Member::Field(field));

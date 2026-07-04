@@ -64,7 +64,7 @@ fn high_seq_triggers_resend_request_and_queues() {
     let rr = out[0];
     assert_eq!(rr.msg_type(), Some("2")); // ResendRequest
     assert_eq!(rr.body.get(7).unwrap().as_int().unwrap(), 2); // BeginSeqNo = expected
-                                                              // still expecting 2 (the high message is queued, not processed)
+    // still expecting 2 (the high message is queued, not processed)
     assert_eq!(s.next_in_seq(), 2);
 }
 
@@ -72,7 +72,7 @@ fn high_seq_triggers_resend_request_and_queues() {
 fn gap_fills_then_queued_message_processed() {
     let mut s = logged_on_acceptor();
     s.handle(Event::Received(msg("0", 5))); // queue 5, request resend from 2
-                                            // peer gap-fills 2..5 via SequenceReset-GapFill NewSeqNo=5
+    // peer gap-fills 2..5 via SequenceReset-GapFill NewSeqNo=5
     let sr = with(with(msg("4", 2), 123, "Y"), 36, "5");
     s.handle(Event::Received(sr));
     // now expected should have advanced through the queued 5 -> 6
@@ -159,7 +159,7 @@ fn resend_request_resends_app_with_possdup_and_gapfills_admin() {
     let mut s = Session::new(cfg(Role::Initiator));
     s.handle(Event::Connected); // logon seq 1 (admin)
     s.send_app(with(msg("D", 0), 55, "AAPL")); // app seq 2 (seq stamped by engine)
-                                               // log on so test requests/heartbeats are valid; simulate counter logon
+    // log on so test requests/heartbeats are valid; simulate counter logon
     let logon = with(with(msg("A", 1), 108, "30"), 141, "Y");
     s.handle(Event::Received(logon));
 
@@ -312,7 +312,7 @@ fn multi_chunk_inbound_resend_auto_continues_without_an_external_resend_request(
 #[test]
 fn sequence_reset_reset_mode_sets_expected() {
     let mut s = logged_on_acceptor(); // expected 2
-                                      // Reset mode (no GapFill): NewSeqNo=10 authoritative
+    // Reset mode (no GapFill): NewSeqNo=10 authoritative
     let sr = with(msg("4", 99), 36, "10");
     s.handle(Event::Received(sr));
     assert_eq!(s.next_in_seq(), 10);
@@ -522,8 +522,8 @@ fn invalid_message_drained_from_queue_after_a_gap_is_rejected_like_an_in_order_o
 // --- T009 (US1, feature 006): stale chunked-resend tracking across a reconnect (B4/FR-007) ---
 
 #[test]
-fn reconnecting_clears_stale_chunked_resend_tracking_so_a_fresh_connection_does_not_spuriously_request_a_resend(
-) {
+fn reconnecting_clears_stale_chunked_resend_tracking_so_a_fresh_connection_does_not_spuriously_request_a_resend()
+ {
     let mut c = cfg(Role::Acceptor);
     c.resend_request_chunk_size = 3;
     let mut s = Session::new(c);

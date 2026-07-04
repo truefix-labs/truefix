@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_store::{MessageStore, StoreError};
-use truefix_transport::{connect_initiator_with, Acceptor, Services};
+use truefix_transport::{Acceptor, Services, connect_initiator_with};
 
 /// A `MessageStore` that succeeds on reads but fails on every write, so every currently-swallowed
 /// call site (`set_next_sender_seq`/`set_next_target_seq`/`reset`/`save_and_advance_sender`)

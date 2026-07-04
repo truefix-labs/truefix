@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use truefix_core::{decode, encode, Field, Message};
+use truefix_core::{Field, Message, decode, encode};
 
 fn sample() -> Message {
     let mut m = Message::new();

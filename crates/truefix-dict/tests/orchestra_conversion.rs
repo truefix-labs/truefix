@@ -1,7 +1,7 @@
 //! T043 (US9) — Orchestra XML → normalized `.fixdict` conversion tool.
 #![cfg(feature = "dict-tooling")]
 
-use truefix_dict::orchestra::{convert, OrchestraError};
+use truefix_dict::orchestra::{OrchestraError, convert};
 
 const MINIMAL_FIXTURE: &str = r#"<?xml version="1.0"?>
 <fixr:repository xmlns:fixr="http://fixprotocol.io/2020/orchestra/repository" version="FIX.Latest">

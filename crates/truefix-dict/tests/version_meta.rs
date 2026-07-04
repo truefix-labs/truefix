@@ -2,7 +2,7 @@
 //! (FR-028/FR-029), including the no-op-when-absent Edge Case.
 
 use truefix_core::{Field, Message};
-use truefix_dict::{parse, RejectReason, ValidationOptions};
+use truefix_dict::{RejectReason, ValidationOptions, parse};
 
 const HEADER_TRAILER_FIELDS: &str = "field 8 BeginString STRING\n\
      field 9 BodyLength LENGTH\n\
@@ -58,9 +58,10 @@ fn version_meta_with_service_and_extension_pack() {
 #[test]
 fn a_matching_begin_string_passes() {
     let d = parse(&dict_with_meta()).unwrap();
-    assert!(d
-        .validate(&heartbeat("FIX.4.4"), &ValidationOptions::default())
-        .is_ok());
+    assert!(
+        d.validate(&heartbeat("FIX.4.4"), &ValidationOptions::default())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -79,9 +80,10 @@ fn no_version_meta_means_the_check_is_a_no_op() {
     // via this mechanism, regardless of what BeginString the message carries.
     let d = parse(&dict_without_meta()).unwrap();
     assert!(d.version_meta().is_none());
-    assert!(d
-        .validate(&heartbeat("FIX.9.9"), &ValidationOptions::default())
-        .is_ok());
+    assert!(
+        d.validate(&heartbeat("FIX.9.9"), &ValidationOptions::default())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -89,7 +91,8 @@ fn a_non_fix_dot_shaped_begin_string_is_also_a_no_op() {
     // FIXT.1.1 (FIX 5.0+ transport) resolves its version via ApplVerID, a separate mechanism —
     // this check simply doesn't apply to it, not a false-positive mismatch.
     let d = parse(&dict_with_meta()).unwrap();
-    assert!(d
-        .validate(&heartbeat("FIXT.1.1"), &ValidationOptions::default())
-        .is_ok());
+    assert!(
+        d.validate(&heartbeat("FIXT.1.1"), &ValidationOptions::default())
+            .is_ok()
+    );
 }

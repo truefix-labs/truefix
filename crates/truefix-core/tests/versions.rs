@@ -4,7 +4,7 @@
 //! encode/decode handles every BeginString. FIX 5.0/5.0SP1/5.0SP2 ride on the FIXT.1.1 wire
 //! BeginString; the application version is carried by ApplVerID, not BeginString.
 
-use truefix_core::{decode, encode, Field, Message};
+use truefix_core::{Field, Message, decode, encode};
 
 const WIRE_BEGIN_STRINGS: &[&str] = &[
     "FIX.4.0", "FIX.4.1", "FIX.4.2", "FIX.4.3", "FIX.4.4", "FIXT.1.1",

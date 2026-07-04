@@ -14,7 +14,7 @@ use std::sync::Arc;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use tokio::sync::mpsc;
 
-use crate::{is_heartbeat, Log, LogError};
+use crate::{Log, LogError, is_heartbeat};
 
 /// GAP-41/FR-019 (feature 005): the value type widened from bare `&str` to
 /// `(logged_at: Unix seconds, session_id, text)`, so a row can be audited/replayed on its own

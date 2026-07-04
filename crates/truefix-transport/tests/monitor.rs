@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator, AcceptorBuilder, Monitor, Services};
+use truefix_transport::{AcceptorBuilder, Monitor, Services, connect_initiator};
 
 struct NoopApp;
 

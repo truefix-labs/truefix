@@ -10,8 +10,8 @@ use crate::field_map::FieldMap;
 use crate::group::{Group, GroupSpec};
 use crate::message::Message;
 use crate::tags::{
-    data_field_for_length, is_header, is_trailer, BEGIN_STRING, BODY_LENGTH, CHECK_SUM, MSG_TYPE,
-    SOH,
+    BEGIN_STRING, BODY_LENGTH, CHECK_SUM, MSG_TYPE, SOH, data_field_for_length, is_header,
+    is_trailer,
 };
 
 /// A tokenized field: tag, raw value bytes, and the byte offset where the field began.
@@ -277,7 +277,7 @@ fn tokenize(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
                     return Err(DecodeError::GarbledField {
                         offset: val_end,
                         reason: "data field not terminated by SOH",
-                    })
+                    });
                 }
             }
         } else {

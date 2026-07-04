@@ -1,6 +1,6 @@
 //! T020 (US3) — dictionary-driven structured group decode + byte-identical round-trip (FR-004/021).
 
-use truefix_core::{decode_with_groups, Field, FieldMap, Group, Message};
+use truefix_core::{Field, FieldMap, Group, Message, decode_with_groups};
 use truefix_dict::load_fix44;
 
 fn entry(fields: &[(u32, &str)]) -> FieldMap {

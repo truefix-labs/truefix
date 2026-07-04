@@ -171,10 +171,10 @@ pub(crate) fn reject(
     let mut m = base(config, "3", seq);
     m.body.set(Field::int(REF_SEQ_NUM, ref_seq as i64));
     // BUG-58/FR-023 (feature 007): RefMsgType(372), FIX.4.2+ only.
-    if let Some(mt) = ref_msg_type {
-        if ref_msg_type_applies(config) {
-            m.body.set(Field::string(REF_MSG_TYPE, mt));
-        }
+    if let Some(mt) = ref_msg_type
+        && ref_msg_type_applies(config)
+    {
+        m.body.set(Field::string(REF_MSG_TYPE, mt));
     }
     m.body.set(Field::string(TEXT, text));
     m
@@ -194,10 +194,10 @@ pub(crate) fn reject_with_reason(
     let mut m = base(config, "3", seq);
     m.body.set(Field::int(REF_SEQ_NUM, ref_seq as i64));
     // BUG-58/FR-023 (feature 007): RefMsgType(372), FIX.4.2+ only.
-    if let Some(mt) = ref_msg_type {
-        if ref_msg_type_applies(config) {
-            m.body.set(Field::string(REF_MSG_TYPE, mt));
-        }
+    if let Some(mt) = ref_msg_type
+        && ref_msg_type_applies(config)
+    {
+        m.body.set(Field::string(REF_MSG_TYPE, mt));
     }
     if let Some(t) = ref_tag {
         m.body.set(Field::int(REF_TAG_ID, i64::from(t)));

@@ -1,12 +1,12 @@
 //! T063 (US12) — TLS establishes from inline PEM bytes (no file path involved); a restricted
 //! cipher-suite list is honored in the handshake (FR-017).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{build_client_config, build_server_config, TlsSpec, TlsVersion};
+use truefix_transport::{TlsSpec, TlsVersion, build_client_config, build_server_config};
 
 struct FlagApp {
     on: Arc<AtomicBool>,

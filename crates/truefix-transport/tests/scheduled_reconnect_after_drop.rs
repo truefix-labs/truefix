@@ -3,12 +3,12 @@
 //! fixed 200ms interval (BUG-94).
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use truefix_session::{Application, Role, Schedule, SessionConfig, SessionId};
-use truefix_transport::{run_scheduled_initiator, AcceptorBuilder, Services};
+use truefix_transport::{AcceptorBuilder, Services, run_scheduled_initiator};
 
 struct FlagApp {
     on: Arc<AtomicBool>,

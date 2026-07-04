@@ -1,16 +1,16 @@
 //! T061 (US9) — exported metrics reflect real session state over a logon->traffic->reconnect
 //! cycle (FR-023; SC-010; Constitution Principle I observability).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 use metrics_util::CompositeKey;
+use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
 use truefix_core::{Field, Message};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator_reconnecting, AcceptorBuilder, Monitor, Services};
+use truefix_transport::{AcceptorBuilder, Monitor, Services, connect_initiator_reconnecting};
 
 struct FlagApp {
     logged_on: Arc<AtomicBool>,

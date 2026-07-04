@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 
 use truefix_at::scenarios::{
-    resynch_suite, server_suite, timestamps_suite, validate_checksum_suite, SUITE_VERSIONS,
+    SUITE_VERSIONS, resynch_suite, server_suite, timestamps_suite, validate_checksum_suite,
 };
 
 #[test]

@@ -1,6 +1,6 @@
 //! T030 (US5) — the `component` directive: flat, nested, and cycle-detection cases (FR-009).
 
-use truefix_dict::{parse, ParseError};
+use truefix_dict::{ParseError, parse};
 
 const HEADER_TRAILER: &str = "\
 header 8 9 35 49 56 34 52

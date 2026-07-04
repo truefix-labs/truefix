@@ -3,7 +3,7 @@
 //! `V_RAW` is a known-good wire vector (FIX-spec-determined data, BodyLength 21, CheckSum 086)
 //! used as an external anchor. The QuickFIX/J cross-vectors (T099) are a later supplement.
 
-use truefix_core::{decode, encode, Field, Message};
+use truefix_core::{Field, Message, decode, encode};
 
 const V_RAW: &[u8] = b"8=FIX.4.4\x019=21\x0135=A\x0195=7\x0196=rawdata\x0110=086\x01";
 

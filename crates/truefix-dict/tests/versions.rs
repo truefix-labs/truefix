@@ -2,9 +2,9 @@
 
 use truefix_core::{Field, Message};
 use truefix_dict::{
-    load_fix40, load_fix41, load_fix42, load_fix43, load_fix44, load_fix50, load_fix50sp1,
-    load_fix50sp2, load_fixlatest, load_fixt11, parse, DataDictionary, ParseError,
-    ValidationOptions, ALL_DICTS,
+    ALL_DICTS, DataDictionary, ParseError, ValidationOptions, load_fix40, load_fix41, load_fix42,
+    load_fix43, load_fix44, load_fix50, load_fix50sp1, load_fix50sp2, load_fixlatest, load_fixt11,
+    parse,
 };
 
 type Loader = fn() -> Result<DataDictionary, ParseError>;
@@ -58,9 +58,10 @@ fn fix4x_versions_validate_a_logon() {
 fn fixt_logon_requires_default_appl_ver_id() {
     let d = load_fixt11().unwrap();
     // Without DefaultApplVerID(1137) -> RequiredTagMissing.
-    assert!(d
-        .validate(&logon("FIXT.1.1"), &ValidationOptions::default())
-        .is_err());
+    assert!(
+        d.validate(&logon("FIXT.1.1"), &ValidationOptions::default())
+            .is_err()
+    );
     // With it -> valid.
     let mut m = logon("FIXT.1.1");
     m.body.set(Field::string(1137, "9"));

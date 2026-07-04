@@ -1,7 +1,7 @@
 //! T065 / T071 — initiator reconnect, and socket-option application.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
@@ -9,7 +9,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::{
-    connect_initiator_reconnecting, connect_initiator_with, Services, SocketOptions,
+    Services, SocketOptions, connect_initiator_reconnecting, connect_initiator_with,
 };
 
 struct NoopApp;

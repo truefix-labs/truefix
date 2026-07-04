@@ -59,21 +59,29 @@ fn utc_timestamp_accepts_only_0_3_6_9_fractional_digits() {
 #[test]
 fn invalid_timestamp_errors() {
     assert!(Field::string(52, "not-a-time").as_utc_timestamp().is_err());
-    assert!(Field::string(52, "20121331-10:15:30") // month 13
-        .as_utc_timestamp()
-        .is_err());
-    assert!(Field::string(52, "20120331-25:00:00") // hour 25
-        .as_utc_timestamp()
-        .is_err());
+    assert!(
+        Field::string(52, "20121331-10:15:30") // month 13
+            .as_utc_timestamp()
+            .is_err()
+    );
+    assert!(
+        Field::string(52, "20120331-25:00:00") // hour 25
+            .as_utc_timestamp()
+            .is_err()
+    );
     // BUG-48/FR-046 (feature 007): only 0/3/6/9 fractional digits are accepted, matching QFJ --
     // a single digit and picosecond (12-digit) precision must both now be rejected, not silently
     // accepted (the latter was previously truncated to nanoseconds instead).
-    assert!(Field::string(52, "20120331-10:15:30.1")
-        .as_utc_timestamp()
-        .is_err());
-    assert!(Field::string(52, "20120331-10:15:30.123456789012")
-        .as_utc_timestamp()
-        .is_err());
+    assert!(
+        Field::string(52, "20120331-10:15:30.1")
+            .as_utc_timestamp()
+            .is_err()
+    );
+    assert!(
+        Field::string(52, "20120331-10:15:30.123456789012")
+            .as_utc_timestamp()
+            .is_err()
+    );
 }
 
 #[test]
@@ -129,12 +137,16 @@ fn utc_date_only_round_trips_the_fix_wire_format() {
 #[test]
 fn utc_date_only_invalid_values_error_never_panic() {
     assert!(Field::string(453, "not-a-date").as_utc_date_only().is_err());
-    assert!(Field::string(453, "20121331") // month 13
-        .as_utc_date_only()
-        .is_err());
-    assert!(Field::string(453, "2012033") // too short
-        .as_utc_date_only()
-        .is_err());
+    assert!(
+        Field::string(453, "20121331") // month 13
+            .as_utc_date_only()
+            .is_err()
+    );
+    assert!(
+        Field::string(453, "2012033") // too short
+            .as_utc_date_only()
+            .is_err()
+    );
     assert!(Field::string(453, "").as_utc_date_only().is_err());
 }
 
@@ -160,16 +172,20 @@ fn utc_time_only_accepts_no_fraction_and_0_3_6_9_digit_fractions() {
 #[test]
 fn utc_time_only_invalid_values_error_never_panic() {
     assert!(Field::string(273, "not-a-time").as_utc_time_only().is_err());
-    assert!(Field::string(273, "25:00:00") // hour 25
-        .as_utc_time_only()
-        .is_err());
+    assert!(
+        Field::string(273, "25:00:00") // hour 25
+            .as_utc_time_only()
+            .is_err()
+    );
     assert!(Field::string(273, "").as_utc_time_only().is_err());
     // BUG-48/FR-046 (feature 007): picosecond (12-digit) precision, previously silently
     // truncated to nanoseconds, must now be rejected -- not representable by any
     // `TimeStampPrecision` TrueFix actually supports.
-    assert!(Field::string(273, "10:15:30.123456789012")
-        .as_utc_time_only()
-        .is_err());
+    assert!(
+        Field::string(273, "10:15:30.123456789012")
+            .as_utc_time_only()
+            .is_err()
+    );
 }
 
 #[test]

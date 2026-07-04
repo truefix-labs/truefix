@@ -23,5 +23,5 @@ pub mod runner;
 pub mod scenarios;
 
 pub use runner::{
-    run_report, run_scenario, start_acceptor, ExpectMsg, Scenario, ScenarioResult, Step,
+    ExpectMsg, Scenario, ScenarioResult, Step, run_report, run_scenario, start_acceptor,
 };

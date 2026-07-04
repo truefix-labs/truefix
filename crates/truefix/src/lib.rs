@@ -17,14 +17,14 @@
 )]
 
 pub use truefix_core::{
-    self as core, decode, encode, DecodeError, Field, FieldError, FieldMap, Group, Message,
-    MessageCracker, MessageFactory,
+    self as core, DecodeError, Field, FieldError, FieldMap, Group, Message, MessageCracker,
+    MessageFactory, decode, encode,
 };
 pub use truefix_session::{
     self as session, Action, Application, Event, Role, Session, SessionConfig, SessionId,
     SessionState,
 };
-pub use truefix_transport::{self as transport, connect_initiator, Acceptor, SessionHandle};
+pub use truefix_transport::{self as transport, Acceptor, SessionHandle, connect_initiator};
 
 pub use truefix_config as config;
 pub use truefix_dict as dict;
@@ -40,10 +40,10 @@ use truefix_config::{
     SocketOptionsSpec,
 };
 use truefix_transport::{
+    AcceptorBuilder, ProxyConfig, ProxyType, ReconnectHandle, Services, SocketOptions,
     build_client_config, build_server_config, connect_initiator_reconnecting_multi,
     connect_initiator_reconnecting_multi_tls, connect_initiator_tls, connect_initiator_via_proxy,
-    connect_initiator_via_proxy_tls, connect_initiator_with, AcceptorBuilder, ProxyConfig,
-    ProxyType, ReconnectHandle, Services, SocketOptions,
+    connect_initiator_via_proxy_tls, connect_initiator_with,
 };
 
 fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {

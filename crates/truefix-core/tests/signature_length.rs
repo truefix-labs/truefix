@@ -6,7 +6,7 @@
 //! `Signature` value containing an embedded SOH byte would be mis-tokenized (split at the first SOH
 //! instead of consuming exactly `SignatureLength` bytes).
 
-use truefix_core::{decode, encode, Field, Message};
+use truefix_core::{Field, Message, decode, encode};
 
 #[test]
 fn signature_with_embedded_soh_round_trips_using_signature_length() {

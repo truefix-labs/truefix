@@ -1,7 +1,7 @@
 //! T045 — two rejection layers: session-level (dictionary/validation) vs business-level.
 
 use truefix_core::{Field, Message};
-use truefix_dict::{load_fix44, RejectReason, ValidationOptions};
+use truefix_dict::{RejectReason, ValidationOptions, load_fix44};
 
 fn base(msg_type: &str) -> Message {
     let mut m = Message::new();

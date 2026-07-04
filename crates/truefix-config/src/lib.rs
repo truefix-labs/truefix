@@ -27,7 +27,7 @@ pub use builder::{
     ConnectionType, LenientResolve, LogKind, LogSpec, ProxyKind, ProxySpec, ResolvedSession,
     SocketOptionsSpec, SqlLogSpec, TlsSpec, TlsVersion,
 };
-pub use keys::{key_info, KeyInfo, Stance, APPENDIX_A_KEYS};
+pub use keys::{APPENDIX_A_KEYS, KeyInfo, Stance, key_info};
 
 /// An error parsing a settings document.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

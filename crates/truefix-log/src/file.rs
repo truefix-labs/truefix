@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use time::OffsetDateTime;
 
-use crate::{is_heartbeat, Log, LogError};
+use crate::{Log, LogError, is_heartbeat};
 
 /// Output switches for [`FileLog`] (FR-026): `FileLogHeartbeats`/`FileIncludeMilliseconds`/
 /// `FileIncludeTimeStampForMessages`.

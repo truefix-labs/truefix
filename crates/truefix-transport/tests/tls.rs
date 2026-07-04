@@ -1,14 +1,14 @@
 //! T077 — TLS handshake (initiator + acceptor) over rustls with a self-signed cert.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator_tls, AcceptorBuilder, Services};
+use truefix_transport::{AcceptorBuilder, Services, connect_initiator_tls};
 
 struct FlagApp {
     on: Arc<AtomicBool>,

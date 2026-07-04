@@ -6,7 +6,7 @@
 //! `mongodb` future here is ever wrapped in `tokio::time::timeout`/raced in a `select!`.
 
 use async_trait::async_trait;
-use mongodb::bson::{doc, spec::BinarySubtype, Binary};
+use mongodb::bson::{Binary, doc, spec::BinarySubtype};
 use mongodb::options::IndexOptions;
 use mongodb::{Client, Collection, IndexModel};
 use serde::{Deserialize, Serialize};

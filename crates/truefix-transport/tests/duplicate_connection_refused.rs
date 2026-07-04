@@ -7,12 +7,12 @@
 //! `AcceptorBuilder`/`route_and_run` path (`Registry.active`) and the single-session `Acceptor`
 //! path (`Acceptor::serve`'s own active-flag), since `docs/todo/004.md`'s BUG-32 names both.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator, Acceptor, AcceptorBuilder};
+use truefix_transport::{Acceptor, AcceptorBuilder, connect_initiator};
 
 struct CountApp {
     logons: Arc<AtomicUsize>,

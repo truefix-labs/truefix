@@ -2,8 +2,8 @@
 //! endpoint after the primary fails, extending `reconnect.rs`'s existing plain-TCP
 //! bare-listener-forces-a-reconnect pattern with a real TLS handshake on the backup (FR-001).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
@@ -11,7 +11,7 @@ use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio::net::TcpListener;
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator_reconnecting_multi_tls, AcceptorBuilder, Services};
+use truefix_transport::{AcceptorBuilder, Services, connect_initiator_reconnecting_multi_tls};
 
 struct FlagApp {
     on: Arc<AtomicBool>,

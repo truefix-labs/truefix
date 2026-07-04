@@ -1,15 +1,15 @@
 //! T007 (US1) — start a working acceptor + initiator entirely from a `.cfg`, with no code beyond
 //! providing the Application (FR-013/014; SC-001).
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use truefix::config::SessionSettings;
-use truefix::{decode, Application, Engine, Field, Message, SessionId};
+use truefix::{Application, Engine, Field, Message, SessionId, decode};
 #[cfg(feature = "sql")]
 use truefix_store::MessageStore;
 

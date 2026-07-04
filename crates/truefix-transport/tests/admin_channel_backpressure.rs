@@ -12,8 +12,8 @@
 //! deliberately stalled (an `Application::from_admin` that never returns), and what's under test is
 //! whether the *test client's* writes eventually block -- proof that this side stopped reading.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

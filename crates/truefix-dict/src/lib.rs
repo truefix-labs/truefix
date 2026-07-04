@@ -38,7 +38,7 @@ pub use model::{
     ComponentDef, DataDictionary, DictMergeConflict, FieldDef, FieldType, GroupDef, MessageDef,
     RejectReason, ValidationError, ValidationOptions,
 };
-pub use parser::{parse, ParseError};
+pub use parser::{ParseError, parse};
 
 /// An error loading a dictionary file from disk (FR-010).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

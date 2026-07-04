@@ -3,8 +3,8 @@
 //! `session.handle`) has accepted the message (BUG-34/FR-010) — previously the callback ran first,
 //! so it could observe (and act on) a message the session layer was about to reject outright.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;

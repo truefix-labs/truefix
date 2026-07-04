@@ -3,14 +3,14 @@
 //! the only place in this crate an IP-based decision is actually made from the resolved address.
 
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use truefix_core::{decode, Field, Message};
+use truefix_core::{Field, Message, decode};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_transport::AcceptorBuilder;
 

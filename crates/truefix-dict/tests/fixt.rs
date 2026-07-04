@@ -1,6 +1,6 @@
 //! T046 — FIXT 1.1 transport/application split + DefaultApplVerID resolution.
 
-use truefix_dict::{load_fix50, load_fixt11, FixtDictionaries};
+use truefix_dict::{FixtDictionaries, load_fix50, load_fixt11};
 
 #[test]
 fn transport_and_application_dictionaries_are_separate() {

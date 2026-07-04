@@ -1,7 +1,7 @@
 //! T030 (US4) — repeated-tag detection outside repeating groups (FR-007; SessionRejectReason=13).
 
 use truefix_core::{Field, Message};
-use truefix_dict::{load_fix44, ValidationOptions};
+use truefix_dict::{ValidationOptions, load_fix44};
 
 fn nos_with_extra(extra: &[(u32, &str)]) -> Message {
     let mut m = Message::new();

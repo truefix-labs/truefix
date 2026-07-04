@@ -1,8 +1,8 @@
 //! T052/T053 (US6, feature 006): bounded frame size (BUG-13/FR-024) and precise malformed-prefix
 //! recovery (B14/FR-028).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

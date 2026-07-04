@@ -1,14 +1,14 @@
 //! T070 — schedule-driven initiator: connect only while in session.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use time::Time;
 use truefix_session::{Application, Role, Schedule, SessionConfig, SessionId};
 use truefix_store::{FileStore, MessageStore};
-use truefix_transport::{run_scheduled_initiator, AcceptorBuilder, Services};
+use truefix_transport::{AcceptorBuilder, Services, run_scheduled_initiator};
 
 struct FlagApp {
     on: Arc<AtomicBool>,

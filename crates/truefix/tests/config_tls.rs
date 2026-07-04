@@ -2,8 +2,8 @@
 //! via `Engine::start`, with no code-level TLS construction at all (FR-017; SC-008).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use truefix::config::SessionSettings;

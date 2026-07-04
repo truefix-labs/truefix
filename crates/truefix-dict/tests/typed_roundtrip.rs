@@ -2,7 +2,7 @@
 //! (FR-021): the typed struct is a thin wrapper over the same `Message`, so there is no separate
 //! wire representation to drift.
 
-use truefix_core::{decode, Field};
+use truefix_core::{Field, decode};
 use truefix_dict::fix44::{NewOrderSingle, Side};
 
 #[test]

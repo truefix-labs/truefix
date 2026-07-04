@@ -1,7 +1,7 @@
 //! T021 (US3) — dictionary-driven repeating-group validation (FR-004/005).
 
 use truefix_core::{Field, Message};
-use truefix_dict::{load_fix44, ValidationOptions};
+use truefix_dict::{ValidationOptions, load_fix44};
 
 /// A FIX.4.4 NewOrderSingle whose body carries the given (flat, wire-ordered) group fields after the
 /// required fields — i.e. exactly what a flat decode produces.

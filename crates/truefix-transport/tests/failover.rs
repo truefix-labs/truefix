@@ -1,12 +1,12 @@
 //! T064 (US10) — multi-endpoint initiator failover: the primary is unreachable, so the initiator
 //! rotates to a configured backup endpoint (FR-019).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator_reconnecting_multi, Acceptor, Services};
+use truefix_transport::{Acceptor, Services, connect_initiator_reconnecting_multi};
 
 struct FlagApp {
     on: Arc<AtomicBool>,

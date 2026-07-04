@@ -2,12 +2,12 @@
 //! code-level `rustls::{Server,Client}Config` construction (FR-017; SC-008).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{build_client_config, build_server_config, TlsConfigError, TlsSpec};
+use truefix_transport::{TlsConfigError, TlsSpec, build_client_config, build_server_config};
 
 struct FlagApp {
     on: Arc<AtomicBool>,

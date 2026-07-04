@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use truefix_config::{key_info, Stance, APPENDIX_A_KEYS};
+use truefix_config::{APPENDIX_A_KEYS, Stance, key_info};
 
 #[test]
 fn appendix_a_is_covered() {

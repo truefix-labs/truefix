@@ -45,18 +45,16 @@ impl DataDictionary {
         // (spec.md Edge Case) or the message's BeginString doesn't have the plain "FIX.M.N" shape
         // (e.g. FIXT.1.1, whose version is instead resolved via ApplVerID — a separate mechanism,
         // see `fixt.rs` — not this per-message BeginString check).
-        if let Some(vm) = self.version_meta {
-            if let Some(bs) = message.header.get(8).and_then(|f| f.as_str().ok()) {
-                if let Some((major, minor)) = parse_fix_begin_string(bs) {
-                    if major != vm.major || minor != vm.minor {
-                        return Err(ValidationError::session(
-                            RejectReason::ValueIsIncorrect,
-                            Some(8),
-                            "BeginString does not match the loaded dictionary's version",
-                        ));
-                    }
-                }
-            }
+        if let Some(vm) = self.version_meta
+            && let Some(bs) = message.header.get(8).and_then(|f| f.as_str().ok())
+            && let Some((major, minor)) = parse_fix_begin_string(bs)
+            && (major != vm.major || minor != vm.minor)
+        {
+            return Err(ValidationError::session(
+                RejectReason::ValueIsIncorrect,
+                Some(8),
+                "BeginString does not match the loaded dictionary's version",
+            ));
         }
 
         if opts.validate_fields_out_of_order && message.fields_out_of_order() {
@@ -177,14 +175,14 @@ impl DataDictionary {
                                 "value has incorrect data format",
                             ));
                         }
-                        if let Ok(value) = field.as_str() {
-                            if !fdef.allows(value) {
-                                return Err(ValidationError::session(
-                                    RejectReason::ValueIsIncorrect,
-                                    Some(tag),
-                                    "value is not an allowed enumeration",
-                                ));
-                            }
+                        if let Ok(value) = field.as_str()
+                            && !fdef.allows(value)
+                        {
+                            return Err(ValidationError::session(
+                                RejectReason::ValueIsIncorrect,
+                                Some(tag),
+                                "value is not an allowed enumeration",
+                            ));
                         }
                     }
 
@@ -287,10 +285,10 @@ impl DataDictionary {
                     if let Some(nested_entries) = entry.group(tag) {
                         self.validate_structured_group(nested_entries, tag, opts)?;
                     }
-                } else if opts.check_field_types {
-                    if let Some(field) = entry.get(tag) {
-                        self.check_group_field_value(gdef, field)?;
-                    }
+                } else if opts.check_field_types
+                    && let Some(field) = entry.get(tag)
+                {
+                    self.check_group_field_value(gdef, field)?;
                 }
             }
             if opts.check_required_fields {
@@ -444,14 +442,14 @@ impl DataDictionary {
                 "group field value has incorrect data format",
             ));
         }
-        if let Ok(value) = field.as_str() {
-            if !fdef.allows(value) {
-                return Err(ValidationError::session(
-                    RejectReason::ValueIsIncorrect,
-                    Some(tag),
-                    "group field value is not an allowed enumeration",
-                ));
-            }
+        if let Ok(value) = field.as_str()
+            && !fdef.allows(value)
+        {
+            return Err(ValidationError::session(
+                RejectReason::ValueIsIncorrect,
+                Some(tag),
+                "group field value is not an allowed enumeration",
+            ));
         }
         Ok(())
     }

@@ -5,8 +5,8 @@
 //! though only a Logon carries the right semantics), and tried to resolve a session -- a
 //! non-Logon first message would either silently fail routing or (worse) be misinterpreted.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

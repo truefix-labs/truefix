@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use truefix_core::{Field, Message, Reject};
-use truefix_dict::{load_fix44, ValidationOptions};
+use truefix_dict::{ValidationOptions, load_fix44};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator_with, AcceptorBuilder, Monitor, Services};
+use truefix_transport::{AcceptorBuilder, Monitor, Services, connect_initiator_with};
 
 /// The acceptor sends this once logged on: structurally valid, but `Side` (54) carries an enum
 /// value ("Z") the FIX.4.4 dictionary doesn't recognize — the same malformed input

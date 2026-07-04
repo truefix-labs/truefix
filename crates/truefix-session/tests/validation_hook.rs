@@ -1,7 +1,7 @@
 //! T052 — dictionary validation wired into the session inbound path.
 
 use truefix_core::{Field, Message};
-use truefix_dict::{load_fix44, load_fixt11, FixtDictionaries, ValidationOptions};
+use truefix_dict::{FixtDictionaries, ValidationOptions, load_fix44, load_fixt11};
 use truefix_session::{Action, Event, Role, Session, SessionConfig, SessionState};
 
 fn cfg() -> SessionConfig {
@@ -68,7 +68,7 @@ fn logged_on() -> Session {
 fn valid_app_message_is_accepted() {
     let mut s = logged_on();
     let actions = s.handle(Event::Received(new_order("1", 2))); // valid Side
-                                                                // no reject emitted; sequence advanced
+    // no reject emitted; sequence advanced
     assert!(sent(&actions).iter().all(|m| m.msg_type() != Some("3")));
     assert_eq!(s.next_in_seq(), 3);
 }

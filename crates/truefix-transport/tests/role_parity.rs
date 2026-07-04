@@ -21,18 +21,18 @@
 //! roles via direct `Role::Acceptor`/`Role::Initiator` construction.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use truefix_core::{decode, Field, Message};
-use truefix_dict::{load_fix44, ValidationOptions};
+use truefix_core::{Field, Message, decode};
+use truefix_dict::{ValidationOptions, load_fix44};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
 use truefix_store::{FileStore, MessageStore};
-use truefix_transport::{connect_initiator_with, Acceptor, Monitor, Services};
+use truefix_transport::{Acceptor, Monitor, Services, connect_initiator_with};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 

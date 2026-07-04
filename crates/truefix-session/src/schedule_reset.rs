@@ -70,8 +70,8 @@ pub fn decide_recurring_reset(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::macros::{date, datetime, time};
     use time::Weekday;
+    use time::macros::{date, datetime, time};
 
     fn window() -> Schedule {
         Schedule::weekly(Weekday::Monday, time!(9:00), Weekday::Friday, time!(17:00))

@@ -1,6 +1,6 @@
 //! Console log.
 
-use crate::{is_heartbeat, Log};
+use crate::{Log, is_heartbeat};
 
 /// Output switches for [`ScreenLog`] (FR-026): `ScreenLogShowEvents`/`ScreenLogShowHeartBeats`/
 /// `ScreenLogShowIncoming`/`ScreenLogShowOutgoing`/`ScreenIncludeMilliseconds`.

@@ -9,7 +9,7 @@
 
 use truefix_core::{Field, Message};
 
-use crate::runner::{client_message, ExpectMsg, Scenario, SessionTweaks, Step};
+use crate::runner::{ExpectMsg, Scenario, SessionTweaks, Step, client_message};
 
 /// The FIX versions the server suite is exercised against (FR-002; US9 adds `FIX.Latest`, the
 /// tenth dictionary — the whole version-agnostic core (logon/sequencing/resend/admin) runs

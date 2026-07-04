@@ -3,13 +3,13 @@
 //! Runs an acceptor and an initiator on loopback and drives a full session handshake, sustained
 //! heartbeats, and a graceful bilateral logout. Validated on FIX 4.2 and FIX 4.4.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use truefix_core::{Message, Reject};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator, Acceptor};
+use truefix_transport::{Acceptor, connect_initiator};
 
 #[derive(Default)]
 struct Counters {

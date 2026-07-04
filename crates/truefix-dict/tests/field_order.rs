@@ -3,7 +3,7 @@
 //! sectioning is violated). FR-006.
 
 use truefix_core::decode;
-use truefix_dict::{load_fix44, ValidationOptions};
+use truefix_dict::{ValidationOptions, load_fix44};
 
 /// A well-formed FIX.4.4 NewOrderSingle, with `rest` controlling the field order after
 /// BeginString/BodyLength (which `decode` requires to always be first two). BodyLength/CheckSum
@@ -61,10 +61,12 @@ fn out_of_order_fields_accepted_when_toggle_disabled_default() {
     let msg = decode(&raw_new_order_single(OUT_OF_ORDER)).unwrap();
     assert!(msg.fields_out_of_order());
     // Default ValidationOptions has validate_fields_out_of_order = false.
-    assert!(load_fix44()
-        .unwrap()
-        .validate(&msg, &ValidationOptions::default())
-        .is_ok());
+    assert!(
+        load_fix44()
+            .unwrap()
+            .validate(&msg, &ValidationOptions::default())
+            .is_ok()
+    );
 }
 
 #[test]

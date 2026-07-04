@@ -132,7 +132,7 @@ fn generate_dict(args: &[String]) -> Result<(), String> {
         Some(other) => {
             return Err(format!(
                 "unknown --format {other:?} (expected orchestra or fix-repository)"
-            ))
+            ));
         }
     };
     std::fs::write(out, &dict_text).map_err(|e| format!("writing {out}: {e}"))?;

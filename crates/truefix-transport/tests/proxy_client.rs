@@ -5,15 +5,15 @@
 //! the tunneled stream carries the actual FIX traffic end-to-end.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator_via_proxy, Acceptor, ProxyConfig, ProxyType};
+use truefix_transport::{Acceptor, ProxyConfig, ProxyType, connect_initiator_via_proxy};
 
 struct FlagApp {
     on: Arc<AtomicBool>,

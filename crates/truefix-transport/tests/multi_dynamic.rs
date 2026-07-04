@@ -1,11 +1,11 @@
 //! T062 / T063 — multi-session routing, dynamic sessions, and allow-listing (SC-003).
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator, AcceptorBuilder, SessionHandle};
+use truefix_transport::{AcceptorBuilder, SessionHandle, connect_initiator};
 
 struct CountApp {
     logons: Arc<AtomicUsize>,

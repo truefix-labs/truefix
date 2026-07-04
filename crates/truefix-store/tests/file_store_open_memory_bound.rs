@@ -55,11 +55,11 @@ fn unique_dir(name: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!(
+
+    std::env::temp_dir().join(format!(
         "truefix-store-membound-{name}-{}-{nanos}",
         std::process::id()
-    ));
-    dir
+    ))
 }
 
 const RECORD_COUNT: u64 = 60_000;

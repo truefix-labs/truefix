@@ -2,7 +2,7 @@
 //! `data_field_for_length` (B22/FR-033): embedded SOH bytes in their content must not corrupt
 //! message framing, mirroring `signature_length.rs`'s established pattern for this class of bug.
 
-use truefix_core::{decode, encode, Field, Message};
+use truefix_core::{Field, Message, decode, encode};
 
 fn base_message() -> Message {
     let mut m = Message::new();

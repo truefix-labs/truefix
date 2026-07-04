@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator, AcceptorBuilder, Services};
+use truefix_transport::{AcceptorBuilder, Services, connect_initiator};
 
 struct CollectingLog {
     events: Mutex<Vec<String>>,

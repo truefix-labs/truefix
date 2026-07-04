@@ -117,7 +117,7 @@ fn logged_on_session_is_disconnected_once_the_schedule_window_elapses() {
     let now = OffsetDateTime::now_utc();
     let mut c = cfg(Role::Acceptor);
     c.heartbeat_interval = 30; // long enough that heartbeat-timeout doesn't also fire
-                               // A daily window that ends ~1 real second from now, so a short sleep genuinely crosses it.
+    // A daily window that ends ~1 real second from now, so a short sleep genuinely crosses it.
     let end = (now + time::Duration::seconds(1)).time();
     let start = (now - time::Duration::minutes(5)).time();
     c.schedule = Some(Schedule::daily(start, end));
@@ -187,9 +187,11 @@ fn admin_messages_are_resent_not_gap_filled_when_force_resend_when_corrupted_sto
         "both admin messages must be resent, not gap-filled, when \
          ForceResendWhenCorruptedStore is set -- got actions {actions:?}"
     );
-    assert!(resent
-        .iter()
-        .all(|m| matches!(m.msg_type(), Some("0" | "1"))));
+    assert!(
+        resent
+            .iter()
+            .all(|m| matches!(m.msg_type(), Some("0" | "1")))
+    );
 }
 
 #[test]

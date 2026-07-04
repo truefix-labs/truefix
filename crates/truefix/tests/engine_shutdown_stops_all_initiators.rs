@@ -3,8 +3,8 @@
 //! reconnect loops were actually stopped by `shutdown()`; plain initiators kept running forever
 //! with no way to reach them from the public API.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use truefix::config::SessionSettings;

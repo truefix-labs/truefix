@@ -5,7 +5,7 @@
 //! unvalidated regardless of whether a dictionary was attached.
 
 use truefix_core::{Field, Message};
-use truefix_dict::{load_fix44, ValidationOptions};
+use truefix_dict::{ValidationOptions, load_fix44};
 use truefix_session::{Action, Event, Role, Session, SessionConfig, SessionState};
 
 fn cfg() -> SessionConfig {

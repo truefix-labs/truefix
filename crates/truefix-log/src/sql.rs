@@ -17,7 +17,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Database, MySqlPool, PgPool, SqlitePool};
 use tokio::sync::mpsc;
 
-use crate::{is_heartbeat, Log, LogError};
+use crate::{Log, LogError, is_heartbeat};
 
 fn io_err<E: std::fmt::Display>(e: E) -> LogError {
     LogError::Io(e.to_string())

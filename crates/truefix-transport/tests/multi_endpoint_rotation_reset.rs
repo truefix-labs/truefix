@@ -5,13 +5,13 @@
 //! non-primary endpoint dropped, the next reconnect attempt continued rotating forward instead of
 //! preferring the primary.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::net::TcpListener;
 use truefix_session::{Application, Role, SessionConfig};
-use truefix_transport::{connect_initiator_reconnecting_multi, Services};
+use truefix_transport::{Services, connect_initiator_reconnecting_multi};
 
 struct NoopApp;
 #[async_trait::async_trait]

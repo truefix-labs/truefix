@@ -1,6 +1,6 @@
 //! T011 — negative codec tests: typed errors, never panic (FR-B8, SC-005).
 
-use truefix_core::{decode, DecodeError};
+use truefix_core::{DecodeError, decode};
 
 #[test]
 fn empty_input() {

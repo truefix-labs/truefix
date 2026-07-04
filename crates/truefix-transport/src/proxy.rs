@@ -9,7 +9,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use ppp::{v1, v2, HeaderResult};
+use ppp::{HeaderResult, v1, v2};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 

@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use truefix_dict::{load_from_file, DictLoadError};
+use truefix_dict::{DictLoadError, load_from_file};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -56,7 +56,8 @@ fn malformed_contents_is_a_typed_parse_error() {
 fn error_messages_name_the_offending_path() {
     let missing = std::env::temp_dir().join("truefix-does-not-exist-67890.fixdict");
     let err = load_from_file(&missing).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("truefix-does-not-exist-67890.fixdict"));
+    assert!(
+        err.to_string()
+            .contains("truefix-does-not-exist-67890.fixdict")
+    );
 }

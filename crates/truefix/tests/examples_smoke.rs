@@ -1,12 +1,12 @@
 //! T101 — smoke tests proving the example scenarios run end-to-end.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use truefix_core::{BusinessReject, Field, Message};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator, AcceptorBuilder, Monitor, Services};
+use truefix_transport::{AcceptorBuilder, Monitor, Services, connect_initiator};
 
 async fn wait_until<F: Fn() -> bool>(cond: F, timeout: Duration) -> bool {
     let start = std::time::Instant::now();

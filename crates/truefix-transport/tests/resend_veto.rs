@@ -4,16 +4,16 @@
 //! controlling exactly when the `ResendRequest` is sent) with an `Application::to_app` that vetoes
 //! one specific stale order.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use truefix_core::{decode, DoNotSend, Field, Message};
+use truefix_core::{DoNotSend, Field, Message, decode};
 use truefix_session::{Application, Role, SessionConfig, SessionId};
-use truefix_transport::{connect_initiator_with, Monitor, Services};
+use truefix_transport::{Monitor, Services, connect_initiator_with};
 
 #[derive(Default)]
 struct Flags {

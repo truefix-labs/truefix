@@ -1,6 +1,6 @@
 //! `tracing`-facade log (the SLF4J-equivalent).
 
-use crate::{is_heartbeat, Log};
+use crate::{Log, is_heartbeat};
 
 /// Output switches for [`TracingLog`] (FR-026): `SLF4JLogHeartbeats`. Session-ID prefixing
 /// (`SLF4JLogPrependSessionID`) is provided generically by wrapping in [`crate::SessionPrefixLog`]

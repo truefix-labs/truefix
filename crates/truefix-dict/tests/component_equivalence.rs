@@ -3,7 +3,7 @@
 //! convenience, expanded away before decode/validate ever see them.
 
 use truefix_core::{Field, Message};
-use truefix_dict::{parse, ValidationOptions};
+use truefix_dict::{ValidationOptions, parse};
 
 const COMMON: &str = "\
 version FIX.4.4

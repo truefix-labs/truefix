@@ -19,7 +19,7 @@ fn routing_fields_are_reversed_onto_the_reply() {
     assert_eq!(reply.header.get(128).unwrap().as_str().unwrap(), "BROKER"); // DeliverToCompID
     assert_eq!(reply.header.get(129).unwrap().as_str().unwrap(), "SUB1"); // DeliverToSubID
     assert_eq!(reply.header.get(145).unwrap().as_str().unwrap(), "LOC1"); // DeliverToLocationID
-                                                                          // No OnBehalfOf* fields should appear on the reply (only their DeliverTo counterparts).
+    // No OnBehalfOf* fields should appear on the reply (only their DeliverTo counterparts).
     assert!(reply.header.get(115).is_none());
 }
 

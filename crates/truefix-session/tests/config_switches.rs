@@ -304,8 +304,8 @@ fn closed_resend_interval_defaults_false_and_has_no_observable_effect() {
 }
 
 #[test]
-fn reject_message_on_unhandled_exception_and_max_scheduled_write_requests_and_continue_initialization_on_error_round_trip(
-) {
+fn reject_message_on_unhandled_exception_and_max_scheduled_write_requests_and_continue_initialization_on_error_round_trip()
+ {
     let mut cfg = acc_cfg();
     cfg.reject_message_on_unhandled_exception = true;
     cfg.max_scheduled_write_requests = Some(100);

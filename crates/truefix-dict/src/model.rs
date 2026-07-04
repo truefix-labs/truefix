@@ -364,43 +364,43 @@ impl DataDictionary {
     /// codegen↔runtime provenance the hash proves).
     pub fn extend(&mut self, other: &DataDictionary) -> Result<(), DictMergeConflict> {
         for (tag, def) in &other.fields {
-            if let Some(existing) = self.fields.get(tag) {
-                if existing != def {
-                    return Err(DictMergeConflict {
-                        kind: "field",
-                        key: tag.to_string(),
-                    });
-                }
+            if let Some(existing) = self.fields.get(tag)
+                && existing != def
+            {
+                return Err(DictMergeConflict {
+                    kind: "field",
+                    key: tag.to_string(),
+                });
             }
         }
         for (msg_type, def) in &other.messages {
-            if let Some(existing) = self.messages.get(msg_type) {
-                if existing != def {
-                    return Err(DictMergeConflict {
-                        kind: "message",
-                        key: msg_type.clone(),
-                    });
-                }
+            if let Some(existing) = self.messages.get(msg_type)
+                && existing != def
+            {
+                return Err(DictMergeConflict {
+                    kind: "message",
+                    key: msg_type.clone(),
+                });
             }
         }
         for (count_tag, def) in &other.groups {
-            if let Some(existing) = self.groups.get(count_tag) {
-                if existing != def {
-                    return Err(DictMergeConflict {
-                        kind: "group",
-                        key: count_tag.to_string(),
-                    });
-                }
+            if let Some(existing) = self.groups.get(count_tag)
+                && existing != def
+            {
+                return Err(DictMergeConflict {
+                    kind: "group",
+                    key: count_tag.to_string(),
+                });
             }
         }
         for (name, def) in &other.components {
-            if let Some(existing) = self.components.get(name) {
-                if existing != def {
-                    return Err(DictMergeConflict {
-                        kind: "component",
-                        key: name.clone(),
-                    });
-                }
+            if let Some(existing) = self.components.get(name)
+                && existing != def
+            {
+                return Err(DictMergeConflict {
+                    kind: "component",
+                    key: name.clone(),
+                });
             }
         }
 

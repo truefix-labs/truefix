@@ -72,7 +72,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "RejectMessageOnUnhandledException",
         "validation",
-        Unsup("TrueFix's typed-error architecture (Constitution Principle I: no panics on critical paths) has no unhandled-exception class this would apply to"),
+        Unsup(
+            "TrueFix's typed-error architecture (Constitution Principle I: no panics on critical paths) has no unhandled-exception class this would apply to",
+        ),
     ),
     k("FirstFieldInGroupIsDelimiter", "validation", Impl),
     // Session behavior
@@ -94,7 +96,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "ClosedResendInterval",
         "session",
-        Unsup("TrueFix's session state machine processes one event at a time with no concurrent resend-servicing path, so there is no open/closed-interval race for this to resolve"),
+        Unsup(
+            "TrueFix's session state machine processes one event at a time with no concurrent resend-servicing path, so there is no open/closed-interval race for this to resolve",
+        ),
     ),
     k("EnableLastMsgSeqNumProcessed", "session", Impl),
     k("EnableNextExpectedMsgSeqNum", "session", Impl),
@@ -106,7 +110,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "MaxScheduledWriteRequests",
         "session",
-        Unsup("the session state machine returns actions synchronously for the transport to write immediately; there is no internal outbound write queue for this to bound"),
+        Unsup(
+            "the session state machine returns actions synchronously for the transport to write immediately; there is no internal outbound write queue for this to bound",
+        ),
     ),
     // US4, feature 004 (FR-005): `.cfg` → `SessionConfig.continue_initialization_on_error`, and
     // `Engine::start`'s multi-session bring-up (both config-resolution and runtime startup
@@ -132,7 +138,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "SocketAcceptProtocol",
         "acceptor",
-        Unsup("selects between QFJ's SOCKET and VM_PIPE (in-JVM-process) transport factories; VM_PIPE has no meaningful Rust equivalent (US8, feature 005)"),
+        Unsup(
+            "selects between QFJ's SOCKET and VM_PIPE (in-JVM-process) transport factories; VM_PIPE has no meaningful Rust equivalent (US8, feature 005)",
+        ),
     ),
     // `AcceptorTemplate`/`DynamicSession`/`AllowedRemoteAddresses` were already marked `Impl`
     // before feature 005, but `builder.rs` never read any of the three and `Engine::start` only
@@ -160,7 +168,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "SocketConnectProtocol",
         "initiator",
-        Unsup("selects between QFJ's SOCKET and VM_PIPE (in-JVM-process) transport factories; VM_PIPE has no meaningful Rust equivalent (US8, feature 005)"),
+        Unsup(
+            "selects between QFJ's SOCKET and VM_PIPE (in-JVM-process) transport factories; VM_PIPE has no meaningful Rust equivalent (US8, feature 005)",
+        ),
     ),
     k("SocketConnectTimeout", "initiator", Impl),
     k("SocketLocalHost", "initiator", Impl),
@@ -226,7 +236,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "ProxyVersion",
         "proxy",
-        Unsup("superseded by ProxyType (Socks4/Socks5/HttpConnect covers this project's proxy-type scope)"),
+        Unsup(
+            "superseded by ProxyType (Socks4/Socks5/HttpConnect covers this project's proxy-type scope)",
+        ),
     ),
     k("ProxyHost", "proxy", Impl),
     k("ProxyPort", "proxy", Impl),
@@ -235,12 +247,16 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "ProxyDomain",
         "proxy",
-        Unsup("Windows NTLM-proxy-specific field; out of this project's proxy-type scope (SOCKS4/SOCKS5/HTTP CONNECT)"),
+        Unsup(
+            "Windows NTLM-proxy-specific field; out of this project's proxy-type scope (SOCKS4/SOCKS5/HTTP CONNECT)",
+        ),
     ),
     k(
         "ProxyWorkstation",
         "proxy",
-        Unsup("Windows NTLM-proxy-specific field; out of this project's proxy-type scope (SOCKS4/SOCKS5/HTTP CONNECT)"),
+        Unsup(
+            "Windows NTLM-proxy-specific field; out of this project's proxy-type scope (SOCKS4/SOCKS5/HTTP CONNECT)",
+        ),
     ),
     // File store (FR-025)
     k("FileStorePath", "file-store", Impl),
@@ -316,7 +332,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "JdbcDataSourceName",
         "sql",
-        Unsup("part of QFJ's JNDI DataSource lookup mechanism, same as JndiContextFactory/JndiProviderURL below — JNDI has no Rust equivalent (US8, feature 005)"),
+        Unsup(
+            "part of QFJ's JNDI DataSource lookup mechanism, same as JndiContextFactory/JndiProviderURL below — JNDI has no Rust equivalent (US8, feature 005)",
+        ),
     ),
     k("JdbcStoreMessagesTableName", "sql", Impl),
     k("JdbcStoreSessionsTableName", "sql", Impl),
@@ -337,7 +355,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k(
         "JdbcConnectionTestQuery",
         "sql",
-        Unsup("sqlx's pool already validates connection liveliness automatically before handing one out (test_before_acquire, default true) — no string-based custom-query hook is exposed at the .cfg level for this to map onto (US8, feature 005)"),
+        Unsup(
+            "sqlx's pool already validates connection liveliness automatically before handing one out (test_before_acquire, default true) — no string-based custom-query hook is exposed at the .cfg level for this to map onto (US8, feature 005)",
+        ),
     ),
     k("JdbcSessionIdDefaultPropertyValue", "sql", Impl),
     k(

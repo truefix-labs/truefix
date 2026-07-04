@@ -10,8 +10,8 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use truefix_session::{Application, Role, SessionConfig};
-use truefix_transport::connect_initiator_reconnecting_multi;
 use truefix_transport::Services;
+use truefix_transport::connect_initiator_reconnecting_multi;
 
 struct NoopApp;
 #[async_trait::async_trait]

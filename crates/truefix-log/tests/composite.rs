@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use truefix_log::{build_log, CompositeLog, Log, LogConfig};
+use truefix_log::{CompositeLog, Log, LogConfig, build_log};
 
 #[derive(Default, Clone)]
 struct CapturingLog {

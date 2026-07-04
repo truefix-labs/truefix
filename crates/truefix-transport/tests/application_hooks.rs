@@ -9,8 +9,8 @@
 //! signal for every other internally-triggered reset — logon-time `ResetSeqNumFlag`,
 //! `ResetOnLogout`/`ResetOnDisconnect`).
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use truefix_session::{Application, Role, SessionConfig, SessionId};

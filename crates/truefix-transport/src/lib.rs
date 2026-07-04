@@ -22,7 +22,7 @@ mod tls_config;
 
 pub use proxy::{ProxyConfig, ProxyError, ProxyType};
 pub use tls_config::{
-    build_client_config, build_server_config, TlsConfigError, TlsSpec, TlsVersion,
+    TlsConfigError, TlsSpec, TlsVersion, build_client_config, build_server_config,
 };
 
 use std::collections::HashMap;
@@ -32,13 +32,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{self, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::{MissedTickBehavior, interval};
 
-use truefix_core::{decode, decode_with_groups, DecodeError, Message};
+use truefix_core::{DecodeError, Message, decode, decode_with_groups};
 use truefix_log::Log;
 use truefix_session::{
     Action, Application, Event, Schedule, Session, SessionConfig, SessionId, SessionState,
@@ -274,18 +274,18 @@ impl Monitor {
     }
 
     fn update(&self, id: &SessionId, status: SessionStatus) {
-        if let Ok(mut map) = self.inner.lock() {
-            if let Some(entry) = map.get_mut(id) {
-                entry.status = status;
-            }
+        if let Ok(mut map) = self.inner.lock()
+            && let Some(entry) = map.get_mut(id)
+        {
+            entry.status = status;
         }
     }
 
     fn mark_disconnected(&self, id: &SessionId) {
-        if let Ok(mut map) = self.inner.lock() {
-            if let Some(entry) = map.get_mut(id) {
-                entry.connected = false;
-            }
+        if let Ok(mut map) = self.inner.lock()
+            && let Some(entry) = map.get_mut(id)
+        {
+            entry.connected = false;
         }
     }
 
@@ -781,10 +781,10 @@ async fn run_connection<A, S>(
         if store.was_corrupted() && session.force_resend_when_corrupted_store() {
             app.on_before_reset(&id).await;
             session.reset();
-            if let Err(e) = store.reset().await {
-                if let Some(log) = &services.log {
-                    log.on_event(&format!("{id}: store reset failed: {e}"));
-                }
+            if let Err(e) = store.reset().await
+                && let Some(log) = &services.log
+            {
+                log.on_event(&format!("{id}: store reset failed: {e}"));
             }
         }
     }
@@ -908,13 +908,11 @@ async fn run_connection<A, S>(
                 Some(Control::Reset) => {
                     app.on_before_reset(&id).await;
                     session.reset();
-                    if let Some(store) = &services.store {
-                        if let Err(e) = store.reset().await {
-                            if let Some(log) = &services.log {
+                    if let Some(store) = &services.store
+                        && let Err(e) = store.reset().await
+                            && let Some(log) = &services.log {
                                 log.on_event(&format!("{id}: store reset failed: {e}"));
                             }
-                        }
-                    }
                     metrics_export::record_status(&id, &session.status());
                     if let Some(monitor) = &services.monitor {
                         monitor.update(&id, session.status());
@@ -1308,18 +1306,18 @@ where
         *logged_on = true;
         // RefreshOnLogon: re-sync sequence numbers from the durable store right at logon
         // completion, in case it changed between connect time and logon (FR-008).
-        if session.refresh_on_logon() {
-            if let Some(store) = &services.store {
-                let out = store
-                    .next_sender_seq()
-                    .await
-                    .unwrap_or(session.next_out_seq());
-                let inn = store
-                    .next_target_seq()
-                    .await
-                    .unwrap_or(session.next_in_seq());
-                session.refresh_sequences(out, inn);
-            }
+        if session.refresh_on_logon()
+            && let Some(store) = &services.store
+        {
+            let out = store
+                .next_sender_seq()
+                .await
+                .unwrap_or(session.next_out_seq());
+            let inn = store
+                .next_target_seq()
+                .await
+                .unwrap_or(session.next_in_seq());
+            session.refresh_sequences(out, inn);
         }
         app.on_logon(id).await;
         if let Some(log) = &services.log {
@@ -1331,15 +1329,15 @@ where
 
     // Persist sequence numbers for restart continuity (best-effort).
     if let Some(store) = &services.store {
-        if let Err(e) = store.set_next_sender_seq(session.next_out_seq()).await {
-            if let Some(log) = &services.log {
-                log.on_event(&format!("{id}: failed to persist next sender seq: {e}"));
-            }
+        if let Err(e) = store.set_next_sender_seq(session.next_out_seq()).await
+            && let Some(log) = &services.log
+        {
+            log.on_event(&format!("{id}: failed to persist next sender seq: {e}"));
         }
-        if let Err(e) = store.set_next_target_seq(session.next_in_seq()).await {
-            if let Some(log) = &services.log {
-                log.on_event(&format!("{id}: failed to persist next target seq: {e}"));
-            }
+        if let Err(e) = store.set_next_target_seq(session.next_in_seq()).await
+            && let Some(log) = &services.log
+        {
+            log.on_event(&format!("{id}: failed to persist next target seq: {e}"));
         }
     }
 
@@ -1437,12 +1435,11 @@ where
                 // the transport learns of an internally-triggered reset, immediately before the
                 // durable store itself is cleared (US10, FR-013).
                 app.on_before_reset(id).await;
-                if let Some(store) = &services.store {
-                    if let Err(e) = store.reset().await {
-                        if let Some(log) = &services.log {
-                            log.on_event(&format!("{id}: store reset failed: {e}"));
-                        }
-                    }
+                if let Some(store) = &services.store
+                    && let Err(e) = store.reset().await
+                    && let Some(log) = &services.log
+                {
+                    log.on_event(&format!("{id}: store reset failed: {e}"));
                 }
             }
         }
@@ -1513,13 +1510,13 @@ async fn persist_sent(msg: &Message, bytes: &[u8], session: &Session, services: 
     {
         // BUG-08/FR-013 (feature 006): a failed persist previously failed silently, leaving the
         // session believing a message was durably saved for resend when it wasn't.
-        if let Err(e) = store.save_and_advance_sender(seq as u64, bytes).await {
-            if let Some(log) = &services.log {
-                log.on_event(&format!(
-                    "{}: failed to persist sent message: {e}",
-                    session.id()
-                ));
-            }
+        if let Err(e) = store.save_and_advance_sender(seq as u64, bytes).await
+            && let Some(log) = &services.log
+        {
+            log.on_event(&format!(
+                "{}: failed to persist sent message: {e}",
+                session.id()
+            ));
         }
     }
 }
@@ -1539,12 +1536,11 @@ where
 {
     let actions = session.send_app(message);
     perform_actions(actions, session, stream, app, id, services).await?;
-    if let Some(store) = &services.store {
-        if let Err(e) = store.set_next_sender_seq(session.next_out_seq()).await {
-            if let Some(log) = &services.log {
-                log.on_event(&format!("{id}: failed to persist next sender seq: {e}"));
-            }
-        }
+    if let Some(store) = &services.store
+        && let Err(e) = store.set_next_sender_seq(session.next_out_seq()).await
+        && let Some(log) = &services.log
+    {
+        log.on_event(&format!("{id}: failed to persist next sender seq: {e}"));
     }
     metrics_export::record_status(id, &session.status());
     if let Some(monitor) = &services.monitor {
@@ -1731,10 +1727,10 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
                 )
                 .await
                 .ip();
-                if let Some(allowed) = &registry.allowed_remotes {
-                    if !allowed.contains(&effective_ip) {
-                        continue; // refuse: not in the allow-list
-                    }
+                if let Some(allowed) = &registry.allowed_remotes
+                    && !allowed.contains(&effective_ip)
+                {
+                    continue; // refuse: not in the allow-list
                 }
                 services.socket_options.apply(&stream);
                 let registry = registry.clone();
@@ -1840,12 +1836,12 @@ async fn route_and_run<A, S>(
         })
     });
     let Some(config) = config else {
-        if services.log_message_when_session_not_found {
-            if let Some(log) = &services.log {
-                log.on_event(&format!(
+        if services.log_message_when_session_not_found
+            && let Some(log) = &services.log
+        {
+            log.on_event(&format!(
                     "no session found for BeginString={begin} SenderCompID={their_sender} TargetCompID={their_target}"
                 ));
-            }
         }
         return; // no static match and no template -> refuse
     };
@@ -2296,12 +2292,11 @@ where
             // tested function in truefix-session (FR-018/FR-E3).
             match truefix_session::decide_schedule_action(&schedule, was_in_session, now) {
                 truefix_session::ScheduleAction::Enter => {
-                    if let Some(store) = &services.store {
-                        if let Err(e) = store.reset().await {
-                            if let Some(log) = &services.log {
-                                log.on_event(&format!("{id}: store reset failed: {e}"));
-                            }
-                        }
+                    if let Some(store) = &services.store
+                        && let Err(e) = store.reset().await
+                        && let Some(log) = &services.log
+                    {
+                        log.on_event(&format!("{id}: store reset failed: {e}"));
                     }
                 }
                 truefix_session::ScheduleAction::Exit => {
