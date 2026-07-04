@@ -21,6 +21,9 @@ pub struct ExpectMsg {
     pub msg_type: String,
     /// `(tag, value)` pairs that must be present (in header or body) with the given value.
     pub fields: Vec<(u32, String)>,
+    /// Tags that must be absent entirely (T015, feature 007 — e.g. confirming a Logon response
+    /// does NOT echo `ResetSeqNumFlag` when the inbound Logon never carried it).
+    pub fields_absent: Vec<u32>,
 }
 
 impl ExpectMsg {
@@ -29,6 +32,7 @@ impl ExpectMsg {
         Self {
             msg_type: msg_type.to_owned(),
             fields: Vec::new(),
+            fields_absent: Vec::new(),
         }
     }
 
@@ -36,6 +40,13 @@ impl ExpectMsg {
     #[must_use]
     pub fn field(mut self, tag: u32, value: &str) -> Self {
         self.fields.push((tag, value.to_owned()));
+        self
+    }
+
+    /// Require a tag to be entirely absent from the message.
+    #[must_use]
+    pub fn without_field(mut self, tag: u32) -> Self {
+        self.fields_absent.push(tag);
         self
     }
 }
@@ -153,7 +164,12 @@ pub async fn start_acceptor(
         }
     }
 
-    let mut template = SessionConfig::new(version, "SERVER", "CLIENT", Role::Acceptor);
+    let mut template = SessionConfig::new(
+        wire_begin_string(version),
+        "SERVER",
+        "CLIENT",
+        Role::Acceptor,
+    );
     template.heartbeat_interval = 30;
     // Scenarios use fixed timestamps, so CheckLatency is off unless a scenario opts in.
     template.check_latency = tweaks.check_latency;
@@ -297,6 +313,11 @@ fn check_match(msg: &Message, expect: &ExpectMsg) -> Result<(), String> {
             return Err(format!("tag {tag}: expected {want:?}, got {got:?}"));
         }
     }
+    for tag in &expect.fields_absent {
+        if let Some(got) = field_value(msg, *tag) {
+            return Err(format!("tag {tag}: expected absent, got {got:?}"));
+        }
+    }
     Ok(())
 }
 
@@ -331,10 +352,25 @@ async fn read_message(
     }
 }
 
+/// `SUITE_VERSIONS`' `"FIX.Latest"` entry is a version-agnostic-testing label, not a real wire
+/// `BeginString` (feature 007, BUG-79/FR-048's stricter `frame_length` format check would
+/// otherwise reject it outright, unlike every real value in `SUITE_VERSIONS`) — this maps it to
+/// a real, well-formed `BeginString` for anywhere actual wire bytes get constructed, leaving every
+/// other version untouched. The bundled `FIXLATEST` dictionary's own `.version` field is a
+/// separate, unrelated label (only ever compared via `version_meta`, which no bundled dictionary
+/// populates) — not affected by this translation.
+pub fn wire_begin_string(version: &str) -> &str {
+    if version == "FIX.Latest" {
+        "FIX.5.0SP2"
+    } else {
+        version
+    }
+}
+
 /// Helper to build a client-side message with the standard header.
 pub fn client_message(version: &str, msg_type: &str, seq: i64) -> Message {
     let mut m = Message::new();
-    m.header.set(Field::string(8, version));
+    m.header.set(Field::string(8, wire_begin_string(version)));
     m.header.set(Field::string(35, msg_type));
     m.header.set(Field::int(34, seq));
     m.header.set(Field::string(49, "CLIENT"));

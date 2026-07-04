@@ -337,12 +337,15 @@ impl Engine {
         }
 
         for (addr, members) in acceptor_groups {
-            // `AcceptorBuilder` shares one `Services` (store/log/validator/...) across every
-            // session it serves — a pre-existing constraint of the multi-session acceptor API, not
-            // introduced here. The first group member's store/log/socket-options/validator become
-            // the whole group's; a group whose members configure genuinely different stores has no
-            // way to honor that today (same class of limitation as feature 004's JdbcURL
-            // session_id-collision finding) — out of this feature's scope to lift.
+            // BUG-61/FR-022 (feature 007): store (feature 006, BUG-07) and now
+            // log/validator/fixt_dictionaries are each resolved per statically-registered member
+            // via `AcceptorBuilder::with_session_store`/`with_session_services` below, rather than
+            // silently inherited from the group-wide `Services` built from `primary` alone.
+            // `socket_options`/TLS remain a disclosed group-wide simplification (one physical
+            // accept loop per group; see the per-session-services doc in `truefix-transport` for
+            // why socket options specifically can't be safely resolved this late without unsafe
+            // raw-fd handling), same as any session matched via the dynamic template (which has no
+            // fixed identity to key a per-session override by in the first place).
             // BUG-16/FR-022 (feature 006): strictest-member-wins — the group tolerates a startup
             // failure only if EVERY member opts in, not just the first one. Resolved via
             // `/speckit-clarify`: errs toward surfacing failures (Constitution Principle I,
@@ -485,6 +488,44 @@ impl Engine {
                                     },
                                 )?)
                             };
+                        // BUG-61/FR-022 (feature 007): also resolve this member's own
+                        // log/validator/fixt_dictionaries instead of silently inheriting the
+                        // group-wide (primary's) ones -- the primary member itself is skipped here
+                        // since `services` above was already built from it directly.
+                        if member_session_id != primary_session_id {
+                            let member_session_id_str = format!(
+                                "{}:{}->{}",
+                                m.session.begin_string,
+                                m.session.sender_comp_id,
+                                m.session.target_comp_id
+                            );
+                            let member_log = if let Some(kind) = m.log_kind {
+                                Some(build_log_kind(kind, &m.log, &member_session_id_str)?)
+                            } else if let Some(spec) = &m.sql_log {
+                                Some(build_sql_log(spec, &member_session_id_str).await?)
+                            } else if let Some(spec) = &m.log {
+                                Some(build_log(spec, &member_session_id_str)?)
+                            } else {
+                                None
+                            };
+                            let member_fixt_dictionaries =
+                                m.fixt_dictionaries.clone().map(|dicts| {
+                                    let opts = m.validator.as_ref().map_or_else(
+                                        truefix_dict::ValidationOptions::default,
+                                        |(_, opts)| *opts,
+                                    );
+                                    (dicts, opts)
+                                });
+                            builder = builder.with_session_services(
+                                member_session_id.clone(),
+                                Services {
+                                    log: member_log,
+                                    validator: m.validator.clone(),
+                                    fixt_dictionaries: member_fixt_dictionaries,
+                                    ..Services::default()
+                                },
+                            );
+                        }
                         builder = builder
                             .with_session_store(member_session_id, member_store)
                             .with_session(m.session);
@@ -722,16 +763,42 @@ impl Engine {
         &self.failover_initiators
     }
 
-    /// Abort all acceptor listeners and stop all failover-initiator reconnect loops.
+    /// Abort all acceptor listeners, stop all failover-initiator reconnect loops, and (BUG-27/
+    /// FR-013, feature 007) abort every plain (non-failover) initiator too — every session task
+    /// this `Engine` started is stopped when this returns.
     ///
-    /// **Does not stop plain (non-failover) initiators** (`Self::initiators()`) — this method is
-    /// synchronous, but `SessionHandle::logout()` is async, so there is no way to stop them from
-    /// here without changing this method's signature (BUG-21/FR-023, feature 006, disclosed
-    /// rather than silently changed: earlier versions of this doc comment read as if this were a
-    /// full stop). Callers that also need to stop plain initiators must call `.logout().await` on
-    /// each handle from `Self::initiators()` themselves.
+    /// The plain-initiator stop is a synchronous, non-graceful `SessionHandle::abort()` (no
+    /// Logout is sent) — this method's own signature stays synchronous (BUG-21/FR-023, feature
+    /// 006's doc-comment-accuracy fix predates this: earlier versions read as if this were already
+    /// a full stop, before BUG-27 actually made it one). Callers wanting a *graceful* stop for
+    /// plain initiators should call `.logout().await` on each handle from `Self::initiators()`
+    /// themselves, before calling `shutdown()`.
     pub fn shutdown(&self) {
-        abort_acceptors_and_stop_failover(&self.acceptors, &self.failover_initiators);
+        abort_everything(&self.acceptors, &self.initiators, &self.failover_initiators);
+    }
+}
+
+impl Drop for Engine {
+    /// BUG-27/FR-013 (feature 007): a safety net for callers that drop an `Engine` value without
+    /// calling `shutdown()` explicitly — previously every spawned task (acceptors, initiators,
+    /// failover loops) was silently detached and kept running forever. `Drop::drop` cannot
+    /// `.await`, so this performs the same synchronous, non-graceful abort `shutdown()` does, not
+    /// a substitute for calling `shutdown()` (or logging out gracefully) when that's possible.
+    fn drop(&mut self) {
+        abort_everything(&self.acceptors, &self.initiators, &self.failover_initiators);
+    }
+}
+
+/// Shared by [`Engine::shutdown`] and `impl Drop for Engine` (BUG-27/FR-013, feature 007):
+/// synchronously, non-gracefully stop every session task this `Engine` started.
+fn abort_everything(
+    acceptors: &[JoinHandle<()>],
+    initiators: &[SessionHandle],
+    failover_initiators: &[ReconnectHandle],
+) {
+    abort_acceptors_and_stop_failover(acceptors, failover_initiators);
+    for initiator in initiators {
+        initiator.abort();
     }
 }
 

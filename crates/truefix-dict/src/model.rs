@@ -110,8 +110,12 @@ impl FieldType {
         })
     }
 
-    /// Whether `field`'s value is well-formed for this type.
-    pub fn value_ok(self, field: &Field) -> bool {
+    /// Whether `field`'s value is well-formed for this type. `legacy_char_lenient` (BUG-62/
+    /// FR-035, feature 007) skips the single-character check for [`Self::Char`] — QFJ's own
+    /// `CharConverter` validation is skipped entirely for FIX.4.0/4.1 (treating `CHAR` fields as
+    /// plain strings on those versions), so a multi-character value that QFJ accepts must not be
+    /// rejected here. Callers pass `true` only when validating against a FIX.4.0/4.1 dictionary.
+    pub fn value_ok(self, field: &Field, legacy_char_lenient: bool) -> bool {
         match self {
             Self::Int | Self::Length | Self::SeqNum | Self::NumInGroup | Self::DayOfMonth => {
                 field.as_int().is_ok()
@@ -122,6 +126,7 @@ impl FieldType {
             | Self::Amt
             | Self::Percentage
             | Self::PriceOffset => field.as_decimal().is_ok(),
+            Self::Char if legacy_char_lenient => field.as_str().is_ok(),
             Self::Char => field.as_char().is_ok(),
             Self::MultipleCharValue => field
                 .as_str()
@@ -494,6 +499,12 @@ pub struct GroupDef {
     pub delimiter: u32,
     /// The ordered member tags of each entry (including the delimiter first).
     pub members: Vec<u32>,
+    /// BUG-54/FR-034 (feature 007): the subset of `members` that are required in every entry
+    /// (parsed from a group line's own `req:`/`opt:` tokens, mirroring `MessageDef::required`'s
+    /// syntax). Empty when the dictionary source doesn't declare a split (the pre-existing,
+    /// still-valid plain member-list form) — meaning no group-level required-field enforcement for
+    /// that group, the same as today's behavior, rather than guessing.
+    pub required: Vec<u32>,
     /// A nested dictionary scoped to just this group's own member fields (and, transitively,
     /// nested groups' own child dictionaries) — US9, feature 005, FR-024. Built during
     /// dictionary construction by projecting `members` into a minimal `DataDictionary` (reusing

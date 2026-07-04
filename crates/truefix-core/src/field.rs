@@ -76,9 +76,9 @@ impl Field {
         Self::string(tag, &format_utc_time_only_millis(value))
     }
 
-    /// The value as a UTC time-only (`HH:MM:SS[.fraction]`; FR-011). Accepts up to picosecond
-    /// fractional digits and truncates to nanosecond resolution, matching
-    /// [`Self::as_utc_timestamp`]'s tolerance.
+    /// The value as a UTC time-only (`HH:MM:SS[.fraction]`; FR-011). Accepts only 0/3/6/9
+    /// fractional digits (BUG-48/FR-046, feature 007) and maps a leap second to `59` plus the
+    /// maximum sub-second fraction (BUG-78), matching [`Self::as_utc_timestamp`]'s tolerance.
     pub fn as_utc_time_only(&self) -> Result<time::Time, FieldError> {
         let s = self.as_str()?;
         parse_utc_time_only(s).ok_or_else(|| FieldError::NotTimeOnly {
@@ -145,8 +145,9 @@ impl Field {
         }
     }
 
-    /// The value as a UTC timestamp. Accepts up to picosecond fractional digits and
-    /// truncates to nanosecond resolution (FR-B7).
+    /// The value as a UTC timestamp (FR-B7). Accepts only 0/3/6/9 fractional digits (BUG-48/
+    /// FR-046, feature 007), matching QFJ; a leap second (`sec == 60`) maps to `59` plus the
+    /// maximum sub-second fraction (BUG-78), matching QFJ's explicit handling.
     pub fn as_utc_timestamp(&self) -> Result<OffsetDateTime, FieldError> {
         let s = self.as_str()?;
         parse_utc_timestamp(s).ok_or_else(|| FieldError::NotTimestamp {
@@ -192,23 +193,32 @@ fn parse_utc_timestamp(s: &str) -> Option<OffsetDateTime> {
         return None;
     }
 
-    // Accept >= 1 fractional digits up to picosecond; truncate to nanosecond (first 9 digits).
+    // BUG-48/FR-046 (feature 007): only 0 (no fraction)/3/6/9 fractional digits are accepted,
+    // matching QFJ -- previously any digit count >= 1 was accepted (e.g. a single-digit
+    // `.1`), which QFJ rejects. TrueFix's own `TimeStampPrecision` only goes up to nanoseconds (9
+    // digits) in the first place, so 12 (picoseconds) isn't representable regardless.
     let nanos: u32 = match frac {
         None => 0,
-        Some(f) => {
-            if f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
+        Some(f) if matches!(f.len(), 3 | 6 | 9) && f.bytes().all(|b| b.is_ascii_digit()) => {
             let mut buf = [b'0'; 9];
             for (slot, digit) in buf.iter_mut().zip(f.bytes()) {
                 *slot = digit;
             }
             core::str::from_utf8(&buf).ok()?.parse().ok()?
         }
+        Some(_) => return None,
     };
 
     let month = time::Month::try_from(month).ok()?;
     let date = time::Date::from_calendar_date(year, month, day).ok()?;
+    // BUG-78/FR-046 (feature 007): a leap second (`sec == 60`) maps to `59` seconds plus the
+    // maximum sub-second fraction, matching QFJ's explicit `s == 60` handling -- `time::Time::
+    // from_hms_nano` otherwise rejects `sec == 60` outright, unlike QFJ which tolerates it.
+    let (sec, nanos) = if sec == 60 {
+        (59, 999_999_999)
+    } else {
+        (sec, nanos)
+    };
     let time = time::Time::from_hms_nano(hour, min, sec, nanos).ok()?;
     Some(time::PrimitiveDateTime::new(date, time).assume_utc())
 }
@@ -246,9 +256,9 @@ fn format_utc_time_only_millis(t: time::Time) -> String {
     )
 }
 
-/// Parse `HH:MM:SS[.fraction]` as a UTC time-only. Returns `None` on any malformation. Accepts one
-/// or more fractional digits up to picosecond, truncating to nanosecond resolution (matching
-/// `parse_utc_timestamp`'s tolerance).
+/// Parse `HH:MM:SS[.fraction]` as a UTC time-only. Returns `None` on any malformation. Accepts
+/// only 0/3/6/9 fractional digits, and maps a leap second (`sec == 60`) to `59` plus the maximum
+/// sub-second fraction (matching `parse_utc_timestamp`'s BUG-48/BUG-78 tolerance, FR-046).
 fn parse_utc_time_only(s: &str) -> Option<time::Time> {
     let (hms, frac) = match s.split_once('.') {
         Some((h, f)) => (h, Some(f)),
@@ -264,17 +274,20 @@ fn parse_utc_time_only(s: &str) -> Option<time::Time> {
 
     let nanos: u32 = match frac {
         None => 0,
-        Some(f) => {
-            if f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
+        Some(f) if matches!(f.len(), 3 | 6 | 9) && f.bytes().all(|b| b.is_ascii_digit()) => {
             let mut buf = [b'0'; 9];
             for (slot, digit) in buf.iter_mut().zip(f.bytes()) {
                 *slot = digit;
             }
             core::str::from_utf8(&buf).ok()?.parse().ok()?
         }
+        Some(_) => return None,
     };
 
+    let (sec, nanos) = if sec == 60 {
+        (59, 999_999_999)
+    } else {
+        (sec, nanos)
+    };
     time::Time::from_hms_nano(hour, min, sec, nanos).ok()
 }

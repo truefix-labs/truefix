@@ -66,7 +66,7 @@ fn matching_identity_logs_on() {
 #[test]
 fn heartbeat_timeout_multiplier_controls_disconnect() {
     let mut c = acc_cfg();
-    c.heartbeat_timeout_multiplier = 1; // disconnect at hb*1 + 2 = 3 idle ticks
+    c.heartbeat_timeout_multiplier = 1.0; // disconnect at hb*1 + 2 = 3 idle ticks
     let mut s = Session::new(c);
     s.handle(Event::Connected);
     s.handle(Event::Received(logon("FIX.4.4", "CLIENT", "SERVER")));

@@ -60,7 +60,11 @@ pub struct SessionConfig {
     pub test_request_delay_multiplier: f64,
     /// Heartbeat-interval multiplier after which a silent peer is disconnected
     /// (HeartBeatTimeoutMultiplier; the timeout is `heartbeat_interval * this + 2` ticks).
-    pub heartbeat_timeout_multiplier: u32,
+    /// BUG-36/FR-033 (feature 007): `f64`, not `u32` — QFJ's own `HeartBtIntTimeoutMultiplier` is a
+    /// `double` (default `1.4`), so a `.cfg` value with fractional precision (e.g. `1.4`) must be
+    /// honored rather than truncated to `1`, which would silently produce a shorter timeout than
+    /// configured.
+    pub heartbeat_timeout_multiplier: f64,
     /// Precision of the SendingTime the engine emits (TimeStampPrecision).
     pub timestamp_precision: TimeStampPrecision,
     /// Seconds to wait for the Logon handshake before giving up (LogonTimeout).
@@ -192,7 +196,7 @@ impl SessionConfig {
             check_comp_id: true,
             reject_garbled_message: false,
             test_request_delay_multiplier: 1.0,
-            heartbeat_timeout_multiplier: 2,
+            heartbeat_timeout_multiplier: 2.0,
             timestamp_precision: TimeStampPrecision::Milliseconds,
             logon_timeout: 10,
             logout_timeout: 10,

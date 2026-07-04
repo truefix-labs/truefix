@@ -314,6 +314,33 @@ fn bool_key(map: &Map, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// As [`bool_key`], but a value that's present and neither a recognized affirmative (`Y`) nor
+/// negative (`N`) form is a typed [`ConfigError`] (BUG-64/FR-036, feature 007) rather than
+/// silently treated as `false` — e.g. `SocketUseSSL=true` would otherwise silently disable TLS
+/// with no diagnostic at all. Deliberately a *separate* function from `bool_key`, not a blanket
+/// conversion of it: `resolve_lenient`'s own `ContinueInitializationOnError` read (this file, near
+/// the top) is intentionally a "simple, never-failing boolean key" — it's consulted specifically
+/// to decide whether to tolerate *another* key's failure in the same session, so making it
+/// fallible too would undermine the fallback path it exists for. Applied narrowly to
+/// `SocketUseSSL` (BUG-64's own named example) rather than every boolean key in this file.
+fn strict_bool_key(
+    map: &Map,
+    key: &str,
+    session: &str,
+    default: bool,
+) -> Result<bool, ConfigError> {
+    match map.get(key).map(String::as_str) {
+        None => Ok(default),
+        Some(v) if v.eq_ignore_ascii_case("Y") => Ok(true),
+        Some(v) if v.eq_ignore_ascii_case("N") => Ok(false),
+        Some(other) => Err(ConfigError::InvalidValue {
+            key: key.to_owned(),
+            session: session.to_owned(),
+            reason: format!("expected Y/N, got {other:?}"),
+        }),
+    }
+}
+
 /// `LogonTag=<tag>=<value>`, `LogonTag1=<tag>=<value>`, `LogonTag2=<tag>=<value>`, … (e.g.
 /// `LogonTag=9001=HOUSE-ID`), each appended to every outbound Logon in ascending numeric-suffix
 /// order (`LogonTag` itself sorts first, GAP-12); none present → empty `Vec`.
@@ -398,16 +425,23 @@ fn precision_key(
     session: &str,
     default: TimeStampPrecision,
 ) -> Result<TimeStampPrecision, ConfigError> {
-    match map.get(key).map(String::as_str) {
+    // BUG-63/FR-036 (feature 007): case-insensitive, matching every other parser in this file
+    // (`bool_key`/`strict_bool_key`'s `eq_ignore_ascii_case`) — previously required exact
+    // uppercase, so a perfectly reasonable `.cfg` value like `TimeStampPrecision=seconds` failed
+    // with `InvalidValue` even though it's unambiguous.
+    match map.get(key).map(|v| v.to_ascii_uppercase()).as_deref() {
         None => Ok(default),
         Some("SECONDS") => Ok(TimeStampPrecision::Seconds),
         Some("MILLIS") => Ok(TimeStampPrecision::Milliseconds),
         Some("MICROS") => Ok(TimeStampPrecision::Microseconds),
         Some("NANOS") => Ok(TimeStampPrecision::Nanoseconds),
-        Some(other) => Err(ConfigError::InvalidValue {
+        Some(_) => Err(ConfigError::InvalidValue {
             key: key.to_owned(),
             session: session.to_owned(),
-            reason: format!("expected SECONDS/MILLIS/MICROS/NANOS, got {other:?}"),
+            reason: format!(
+                "expected SECONDS/MILLIS/MICROS/NANOS, got {:?}",
+                map.get(key).map(String::as_str).unwrap_or_default()
+            ),
         }),
     }
 }
@@ -450,7 +484,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.enable_next_expected_msg_seq_num = bool_key(map, "EnableNextExpectedMsgSeqNum", false);
     cfg.check_comp_id = bool_key(map, "CheckCompID", cfg.check_comp_id);
     cfg.reject_garbled_message = bool_key(map, "RejectGarbledMessage", cfg.reject_garbled_message);
-    cfg.heartbeat_timeout_multiplier = u32_key(
+    cfg.heartbeat_timeout_multiplier = f64_key(
         map,
         "HeartBeatTimeoutMultiplier",
         &session,
@@ -970,7 +1004,7 @@ fn pem_bytes_key(map: &Map, key: &str) -> Option<Vec<u8>> {
 /// Resolve TLS settings when `SocketUseSSL=Y` (FR-017): key/trust-store paths (or inline PEM
 /// bytes — US12), mTLS, minimum version, cipher suites, and SNI.
 fn resolve_tls(map: &Map, session: &str) -> Result<Option<TlsSpec>, ConfigError> {
-    if !bool_key(map, "SocketUseSSL", false) {
+    if !strict_bool_key(map, "SocketUseSSL", session, false)? {
         return Ok(None);
     }
     let key_store_bytes = pem_bytes_key(map, "SocketKeyStoreBytes");

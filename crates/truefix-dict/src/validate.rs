@@ -1,6 +1,6 @@
 //! Runtime message validation against a [`DataDictionary`].
 
-use truefix_core::{Field, GroupSpec, Message};
+use truefix_core::{Field, FieldMap, GroupSpec, Message};
 
 use crate::model::{DataDictionary, GroupDef, RejectReason, ValidationError, ValidationOptions};
 
@@ -16,6 +16,17 @@ impl GroupSpec for DataDictionary {
 const UDF_START: u32 = 5000;
 
 impl DataDictionary {
+    /// BUG-62/FR-035 (feature 007): whether this dictionary's version is FIX.4.0/4.1 — QFJ skips
+    /// `CharConverter` (single-character) validation entirely for those versions, treating `CHAR`
+    /// fields as plain strings, so a multi-character value must be accepted rather than rejected.
+    /// Deliberately parses `self.version` (the plain `version FIX.M.N` directive every bundled
+    /// dictionary declares) rather than `self.version_meta` (the separate, optional `version-meta`
+    /// directive that, as of this writing, *no* bundled dictionary actually declares — relying on
+    /// it here would make this check silently inert for every real dictionary shipped today).
+    fn is_legacy_char_lenient(&self) -> bool {
+        parse_fix_begin_string(&self.version).is_some_and(|(major, minor)| major == 4 && minor <= 1)
+    }
+
     /// Validate `message` against this dictionary using `opts`.
     ///
     /// Returns the first failure found. Field-membership/format/required failures are
@@ -108,7 +119,17 @@ impl DataDictionary {
                 ));
             }
 
-            if opts.validate_fields_have_values && field.value_bytes().is_empty() {
+            // BUG-89/FR-011 (feature 007): now that admin messages are dictionary-validated too
+            // (previously skipped entirely), the six Appendix-B "ReverseRoute" routing tags need
+            // an explicit exception here — FIX legitimately allows these present-but-empty
+            // (`Message::reverse_route`'s own "presence — not content — governs" reversal rule,
+            // exercised by the `ReverseRouteWithEmptyRoutingTags` AT scenario), unlike every other
+            // field, where an empty value is a genuine `TagSpecifiedWithoutValue` violation.
+            const REVERSE_ROUTE_TAGS: [u32; 6] = [115, 116, 128, 129, 144, 145];
+            if opts.validate_fields_have_values
+                && field.value_bytes().is_empty()
+                && !REVERSE_ROUTE_TAGS.contains(&tag)
+            {
                 return Err(ValidationError::session(
                     RejectReason::TagSpecifiedWithoutValue,
                     Some(tag),
@@ -146,7 +167,10 @@ impl DataDictionary {
                     let is_envelope_framing_field = tag == truefix_core::tags::BEGIN_STRING
                         || tag == truefix_core::tags::CHECK_SUM;
                     if opts.check_field_types && !is_envelope_framing_field {
-                        if !fdef.field_type.value_ok(field) {
+                        if !fdef
+                            .field_type
+                            .value_ok(field, self.is_legacy_char_lenient())
+                        {
                             return Err(ValidationError::session(
                                 RejectReason::IncorrectDataFormat,
                                 Some(tag),
@@ -205,6 +229,20 @@ impl DataDictionary {
         message: &Message,
         opts: &ValidationOptions,
     ) -> Result<(), ValidationError> {
+        // BUG-55/FR-034 (feature 007): first, structurally validate any body-level group this
+        // message already carries as `Member::Group` — reachable when `decode_with_groups` was
+        // called with a `GroupSpec` covering body groups too (the production transport path scopes
+        // it to header/trailer groups only via `HeaderTrailerGroupsOnly`, but `decode_with_groups`
+        // and `DataDictionary`'s own unrestricted `GroupSpec` impl are both public APIs a caller
+        // can combine directly). `FieldMap::fields()` (the flat walk below) skips `Member::Group`
+        // entirely, so without this, such a message's group entries would never be validated at
+        // all — not even a structural/count check, let alone type/enum or required-field checks.
+        for &count_tag in self.groups.keys() {
+            if let Some(entries) = message.body.group(count_tag) {
+                self.validate_structured_group(entries, count_tag, opts)?;
+            }
+        }
+
         let body: Vec<&Field> = message.body.fields().collect();
         let mut pos = 0usize;
         while let Some(f) = body.get(pos) {
@@ -213,6 +251,58 @@ impl DataDictionary {
                 self.validate_group(&body, &mut pos, tag, opts)?;
             } else {
                 pos += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `tag` is present in a structured group `entry` — a plain field lookup, except when
+    /// `tag` is itself a nested group's count tag, in which case presence means that nested group
+    /// has at least one entry (used by `validate_structured_group`'s required-field check).
+    fn present_in_structured_entry(&self, entry: &FieldMap, tag: u32) -> bool {
+        if self.groups.contains_key(&tag) {
+            entry.group(tag).is_some_and(|entries| !entries.is_empty())
+        } else {
+            entry.get(tag).is_some()
+        }
+    }
+
+    /// BUG-55/FR-034 (feature 007): structural counterpart to [`Self::validate_group`] for a body
+    /// group that's already `Member::Group`-structured (see [`Self::validate_groups`]'s doc for
+    /// when this is reachable). Each entry's own fields are type/enum-checked and its required
+    /// fields (`gdef.required`, BUG-54) are confirmed present; nested groups recurse via the
+    /// entry's own [`FieldMap::group`].
+    fn validate_structured_group(
+        &self,
+        entries: &[FieldMap],
+        count_tag: u32,
+        opts: &ValidationOptions,
+    ) -> Result<(), ValidationError> {
+        let Some(gdef) = self.groups.get(&count_tag) else {
+            return Ok(());
+        };
+        for entry in entries {
+            for &tag in &gdef.members {
+                if self.groups.contains_key(&tag) {
+                    if let Some(nested_entries) = entry.group(tag) {
+                        self.validate_structured_group(nested_entries, tag, opts)?;
+                    }
+                } else if opts.check_field_types {
+                    if let Some(field) = entry.get(tag) {
+                        self.check_group_field_value(gdef, field)?;
+                    }
+                }
+            }
+            if opts.check_required_fields {
+                for &req_tag in &gdef.required {
+                    if !self.present_in_structured_entry(entry, req_tag) {
+                        return Err(ValidationError::session(
+                            RejectReason::RequiredTagMissing,
+                            Some(req_tag),
+                            "group entry missing a required field",
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -260,6 +350,14 @@ impl DataDictionary {
             found += 1;
             *pos += 1; // consume delimiter
 
+            // BUG-54/FR-034 (feature 007): tags actually present in this entry, checked against
+            // `gdef.required` once the entry ends — QFJ's `checkHasRequired` recurses into each
+            // group entry the same way; TrueFix previously only checked `mdef.required` at the
+            // message body level, never anything within an entry (so an entry missing a required
+            // member, other than the delimiter itself, was never caught as long as the NoXxx count
+            // matched the number of entries actually present).
+            let mut seen_in_entry: Vec<u32> = vec![gdef.delimiter];
+
             let mut last_idx = 0usize; // the delimiter is members[0]
             while let Some(mf) = body.get(*pos) {
                 let t = mf.tag();
@@ -282,6 +380,7 @@ impl DataDictionary {
                     ));
                 }
                 last_idx = idx;
+                seen_in_entry.push(t);
                 if self.groups.contains_key(&t) {
                     self.validate_group(body, pos, t, opts)?; // nested group
                 } else {
@@ -291,6 +390,18 @@ impl DataDictionary {
                         self.check_group_field_value(gdef, mf)?;
                     }
                     *pos += 1;
+                }
+            }
+
+            if opts.check_required_fields {
+                for &req_tag in &gdef.required {
+                    if !seen_in_entry.contains(&req_tag) {
+                        return Err(ValidationError::session(
+                            RejectReason::RequiredTagMissing,
+                            Some(req_tag),
+                            "group entry missing a required field",
+                        ));
+                    }
                 }
             }
         }
@@ -323,7 +434,10 @@ impl DataDictionary {
         else {
             return Ok(()); // unknown-tag policy is the top-level loop's job, not this one's
         };
-        if !fdef.field_type.value_ok(field) {
+        if !fdef
+            .field_type
+            .value_ok(field, self.is_legacy_char_lenient())
+        {
             return Err(ValidationError::session(
                 RejectReason::IncorrectDataFormat,
                 Some(tag),

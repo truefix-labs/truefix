@@ -95,7 +95,7 @@ fn redundant_resend_requests_sent_when_enabled() {
 fn heartbeat_timeout_disconnects_by_default() {
     let mut cfg = acc_cfg();
     cfg.heartbeat_interval = 1;
-    cfg.heartbeat_timeout_multiplier = 1;
+    cfg.heartbeat_timeout_multiplier = 1.0;
     let mut s = Session::new(cfg);
     s.handle(Event::Connected);
     s.handle(Event::Received(logon(1, 1)));
@@ -117,7 +117,7 @@ fn heartbeat_timeout_disconnects_by_default() {
 fn disable_heart_beat_check_never_times_out() {
     let mut cfg = acc_cfg();
     cfg.heartbeat_interval = 1;
-    cfg.heartbeat_timeout_multiplier = 1;
+    cfg.heartbeat_timeout_multiplier = 1.0;
     cfg.disable_heart_beat_check = true;
     let mut s = Session::new(cfg);
     s.handle(Event::Connected);

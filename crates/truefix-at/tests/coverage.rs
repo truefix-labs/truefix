@@ -38,13 +38,16 @@ fn server_suite_scenario_run_count_does_not_regress() {
     let scenarios = server_suite();
     let total_runs: usize = scenarios.iter().map(|s| s.versions.len()).sum();
     assert!(
-        total_runs >= 405,
-        "server_suite() produced {total_runs} scenario runs, below the 405-run floor established \
-         at 006 US9 closeout (T084's MinQty scenario, tag 110, +2 runs — FIX.4.2 and FIX.4.4 — on \
-         top of the 403-run floor from US1 closeout: session protocol-correctness fixes BUG-06/\
-         BUG-22/B3/B5/B7, up from 373 at 005 closeout) — a drop usually means a scenario or version \
-         was accidentally dropped rather than intentionally deferred (deferrals are tracked in \
-         docs/todo/001.md's TODO-01, not by shrinking this suite)"
+        total_runs >= 424,
+        "server_suite() produced {total_runs} scenario runs, below the 424-run floor established \
+         at 007 Polish closeout (T116) — up from the 405-run floor at 006 US9 closeout (T084's \
+         MinQty scenario, tag 110, +2 runs — FIX.4.2 and FIX.4.4 — on top of the 403-run floor \
+         from US1 closeout: session protocol-correctness fixes BUG-06/BUG-22/B3/B5/B7, up from 373 \
+         at 005 closeout). The +19 runs come from new scenarios feature 007 added across its own \
+         US1/US2 stories (e.g. admin-message-dictionary-validation, schedule-enforcement, and \
+         several ResetSeqNumFlag/resend/reject-correctness scenarios) — a drop usually means a \
+         scenario or version was accidentally dropped rather than intentionally deferred \
+         (deferrals are tracked in docs/todo/001.md's TODO-01, not by shrinking this suite)"
     );
 }
 

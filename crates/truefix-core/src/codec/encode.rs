@@ -52,7 +52,14 @@ pub fn encode_with_order(msg: &Message, field_order: Option<&[u32]>) -> Vec<u8> 
     render_raw(BODY_LENGTH, middle.len().to_string().as_bytes(), &mut out);
     out.extend_from_slice(&middle);
 
-    let checksum: u32 = out.iter().map(|&b| u32::from(b)).sum::<u32>() & 0xFF;
+    // BUG-24/FR-032 (feature 007): a `u64` accumulator, not `u32` — `Iterator::sum::<u32>()` panics
+    // on overflow in debug builds (violating the crate's "no path panics" invariant) once the
+    // summed bytes exceed ~16.8M in a way whose sum surpasses `u32::MAX` (reachable: `encode()` has
+    // no `MAX_BODY_LEN`-style cap of its own, since that limit is enforced only on the *decode*
+    // path in `frame_length`). `u64` can't realistically overflow this sum (would need billions of
+    // bytes), and `& 0xFF` gives the identical mod-256 result either width, since 2^32 and 2^64 are
+    // both multiples of 256.
+    let checksum: u32 = (out.iter().map(|&b| u64::from(b)).sum::<u64>() & 0xFF) as u32;
     render_raw(CHECK_SUM, format!("{checksum:03}").as_bytes(), &mut out);
     out
 }

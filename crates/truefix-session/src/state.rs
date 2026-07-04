@@ -50,6 +50,11 @@ pub enum Event {
     /// (FR-006): emits a session Reject when enabled, otherwise produces no action (silent drop,
     /// sequence number not advanced).
     Garbled,
+    /// The transport connection was lost (TCP drop, not a graceful Logout) (BUG-33/FR-009). Honors
+    /// `ResetOnDisconnect`/`ResetOnLogout` exactly as any other path into `enter_disconnected()`
+    /// does, so an unexpected drop resets sequence numbers when configured to, the same as a
+    /// Logout-driven disconnect would.
+    Disconnected,
 }
 
 /// A point-in-time snapshot of a session, for monitoring (FR-L1).
@@ -99,6 +104,11 @@ pub struct Session {
     ticks_awaiting: u32,
     test_request_outstanding: bool,
     logon_sent: bool,
+    /// BUG-93/FR-029 (feature 007): set as soon as an inbound Logon is received (regardless of
+    /// whether it's later accepted or rejected), reset on each new connection — lets the transport
+    /// layer know a handshake was at least attempted even if it never reached full `LoggedOn`,
+    /// matching QFJ's `logonReceived`/QFGo's equivalent tracking.
+    logon_received: bool,
     resend_requested: bool,
     /// GAP-09/FR-011 (feature 005): the full known upper bound of an in-progress inbound gap,
     /// tracked only while `resend_request_chunk_size > 0`. `None` when no chunked resend is
@@ -121,6 +131,11 @@ pub struct Session {
     /// The `DefaultApplVerID` (tag 1137) negotiated from the most recent inbound Logon under FIXT
     /// 1.1 (T078/GAP-18c part 1); `None` before any Logon carrying tag 1137 has been received.
     negotiated_appl_ver_id: Option<String>,
+    /// BUG-28/FR-006 (feature 007): set when this (initiator) session sends its own Logon with
+    /// `ResetSeqNumFlag=Y`; cleared once the acceptor's response has been checked (echoed the flag,
+    /// or its own `MsgSeqNum == 1`) or the connection ends. While set, a response Logon that does
+    /// neither is a handshake failure.
+    reset_on_logon_pending: bool,
 }
 
 impl Session {
@@ -138,6 +153,7 @@ impl Session {
             ticks_awaiting: 0,
             test_request_outstanding: false,
             logon_sent: false,
+            logon_received: false,
             resend_requested: false,
             resend_target: None,
             resend_chunk_end: None,
@@ -146,11 +162,12 @@ impl Session {
             validator: None,
             fixt_validator: None,
             negotiated_appl_ver_id: None,
+            reset_on_logon_pending: false,
         }
     }
 
-    /// Enable inbound application-message validation against `dict` using `opts`. Admin messages
-    /// are not validated here. Invalid messages produce a Reject (session-level) or
+    /// Enable inbound message validation against `dict` using `opts` — admin messages included
+    /// (BUG-89/FR-011, feature 007). Invalid messages produce a Reject (session-level) or
     /// BusinessMessageReject (business-level) instead of being delivered.
     pub fn set_dictionary(&mut self, dict: DataDictionary, opts: ValidationOptions) {
         self.validator = Some((dict, opts));
@@ -207,6 +224,19 @@ impl Session {
         self.state == SessionState::LoggedOn
     }
 
+    /// Whether this session has sent its own Logon on the current connection (BUG-93/FR-029,
+    /// feature 007) — true for an initiator immediately upon connecting, or for an acceptor once
+    /// it sends its Logon response, regardless of whether the handshake ever fully completed.
+    pub fn logon_sent(&self) -> bool {
+        self.logon_sent
+    }
+
+    /// Whether this session has received an inbound Logon on the current connection (BUG-93/
+    /// FR-029, feature 007), regardless of whether it was later accepted or rejected.
+    pub fn logon_received(&self) -> bool {
+        self.logon_received
+    }
+
     /// The next outbound sequence number that will be used.
     pub fn next_out_seq(&self) -> u64 {
         self.next_out_seq
@@ -215,6 +245,51 @@ impl Session {
     /// The next inbound sequence number expected.
     pub fn next_in_seq(&self) -> u64 {
         self.next_in_seq
+    }
+
+    /// The number of out-of-order messages currently held in the inbound gap-fill queue, awaiting
+    /// either drain (once the gap closes) or discard (BUG-96/FR-027, feature 007: a gap-fill jump
+    /// past them). Mainly useful for tests confirming the queue doesn't leak superseded entries.
+    pub fn queued_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Read-only pre-check, safe to call *before* the mutating `Event::Received(msg)` dispatch:
+    /// would processing `msg` right now hit one of the session layer's immediate,
+    /// unconditional-teardown paths — stale `SendingTime` (`CheckLatency`), a mismatched
+    /// `BeginString`/CompID, or (for a non-Logon/non-SequenceReset message) a too-low
+    /// `MsgSeqNum` with no `PossDupFlag` (BUG-34/FR-010)?
+    ///
+    /// Used by the transport layer to decide whether `Application::from_admin`/`from_app` should
+    /// even be invoked for `msg` at all: the answer is "no" whenever this returns `true`, since
+    /// the session is about to reject/tear down regardless of what the callback does. Not
+    /// exhaustive — dictionary (`validate_app`) and in-order gap-fill checks are tightly coupled
+    /// to advancing `next_in_seq` and can only run inside `on_received` itself — but covers the
+    /// state-mutation-free checks that would otherwise let the callback observe a message the
+    /// session has already doomed.
+    pub fn would_reject_before_processing(&self, msg: &Message) -> bool {
+        if !self.latency_ok(msg) {
+            return true;
+        }
+        if self.identity_problem(msg).is_some() {
+            return true;
+        }
+        let mt = msg.msg_type();
+        if mt != Some("A") && mt != Some("4") {
+            if let Some(seq) = msg
+                .header
+                .get(MSG_SEQ_NUM)
+                .and_then(|f| f.as_int().ok())
+                .filter(|&s| s > 0)
+            {
+                let poss_dup =
+                    msg.header.get(POSS_DUP_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
+                if !poss_dup && (seq as u64) < self.next_in_seq {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Seed the sequence numbers from a persistent store (call before [`Event::Connected`]).
@@ -248,6 +323,38 @@ impl Session {
     /// replaying content that was never actually transmitted (FR-016).
     pub fn discard_sent(&mut self, seq: u64) {
         self.store.remove(&seq);
+    }
+
+    /// PossDup anti-replay falsification check (BUG-57/FR-024, feature 007): applies to *any*
+    /// `PossDupFlag=Y` message, not only a too-low (`Ordering::Less`) one — a replayed/falsified
+    /// message (`OrigSendingTime` later than `SendingTime`) is exactly as real a threat at the
+    /// expected sequence or higher, matching QFJ's `validatePossDup`, which runs unconditionally.
+    /// Deliberately narrower than [`Self::poss_dup_anti_replay_violation`] below: it omits the
+    /// missing-`OrigSendingTime`-on-a-too-low-message case (gated by
+    /// `requires_orig_sending_time_on_low_seq`, whose name and existing single call site already
+    /// scope it to the too-low case specifically) — only the unconditional falsification signal
+    /// applies universally.
+    fn poss_dup_falsification_check(&self, msg: &Message) -> Option<truefix_core::Reject> {
+        let orig = msg
+            .header
+            .get(ORIG_SENDING_TIME)
+            .and_then(|f| f.as_utc_timestamp().ok())?;
+        let sending_time = msg
+            .header
+            .get(SENDING_TIME)
+            .and_then(|f| f.as_utc_timestamp().ok())?;
+        if orig > sending_time {
+            Some(truefix_core::Reject {
+                reason: 5, // SessionRejectReason: Value is incorrect (out of range) for this tag
+                ref_tag: Some(ORIG_SENDING_TIME),
+                text: Some(
+                    "OrigSendingTime is later than SendingTime on a PossDup message".to_owned(),
+                ),
+                session_status: None,
+            })
+        } else {
+            None
+        }
     }
 
     /// PossDup anti-replay check (US3, feature 005, GAP-08/FR-008/FR-009): a stale-but-legitimate
@@ -360,6 +467,7 @@ impl Session {
             Event::Tick => self.on_tick(),
             Event::StartLogout => self.on_start_logout(),
             Event::Garbled => self.on_garbled(),
+            Event::Disconnected => self.enter_disconnected().into_iter().collect(),
         }
     }
 
@@ -371,7 +479,7 @@ impl Session {
             return Vec::new();
         }
         let seq = self.next_seq();
-        let rej = admin::reject_with_reason(&self.config, seq, 0, None, 0, "garbled message");
+        let rej = admin::reject_with_reason(&self.config, seq, 0, None, None, 0, "garbled message");
         vec![self.send_stored(rej)]
     }
 
@@ -521,6 +629,18 @@ impl Session {
         self.test_request_outstanding = false;
         self.resend_target = None;
         self.resend_chunk_end = None;
+        self.reset_on_logon_pending = false;
+        // BUG-93/FR-029 (feature 007): a fresh connection has neither sent nor received a Logon
+        // yet (`logon_sent` gets set again below/in `on_logon` as this connection actually
+        // progresses).
+        self.logon_sent = false;
+        self.logon_received = false;
+        // BUG-35/FR-017 (feature 007): a fresh connection has no outstanding ResendRequest and no
+        // out-of-order backlog of its own -- carrying `resend_requested=true` or a stale `queue`
+        // over from a prior connection would silently suppress a ResendRequest for a genuinely new
+        // gap on this new connection (since `send_redundant_resend_requests` defaults to `false`).
+        self.resend_requested = false;
+        self.queue.clear();
         self.state = SessionState::AwaitingLogon;
         match self.config.role {
             Role::Initiator => {
@@ -535,9 +655,29 @@ impl Session {
                     self.reset_sequences(true);
                     actions.push(Action::ResetStore);
                 }
+                // BUG-92/BUG-109/FR-025 (feature 007): send ResetSeqNumFlag=Y when ANY of
+                // ResetOnLogon/ResetOnLogout/ResetOnDisconnect is configured AND both sequence
+                // numbers are already 1 -- matching QFJ's `isResetNeeded()`/QFGo's
+                // `shouldSendReset()`, rather than only ever consulting `reset_on_logon`. The
+                // "both seqs == 1" gate matters for ResetOnLogout/ResetOnDisconnect specifically:
+                // unlike ResetOnLogon (which just forced an actual reset immediately above, so
+                // seqs are 1/1 by construction whenever it's set), those two don't reset anything
+                // *here* -- they reset at a prior disconnect/logout, so this only claims
+                // ResetSeqNumFlag=Y when that reset genuinely already happened (seqs still at 1),
+                // not merely because the config is set on an otherwise-unrelated non-1 sequence.
+                let should_send_reset = (self.config.reset_on_logon
+                    || self.config.reset_on_logout
+                    || self.config.reset_on_disconnect)
+                    && self.next_out_seq == 1
+                    && self.next_in_seq == 1;
+                // BUG-28/FR-006 (feature 007): remember that our own Logon carries
+                // ResetSeqNumFlag=Y so the response can be verified once it arrives (`on_logon`'s
+                // `Role::Initiator` arm).
+                self.reset_on_logon_pending = should_send_reset;
                 let next_exp = self.maybe_next_expected();
                 let seq = self.next_seq();
-                let msg = admin::logon(&self.config, seq, next_exp);
+                let msg =
+                    admin::logon_with_reset_flag(&self.config, seq, next_exp, should_send_reset);
                 self.logon_sent = true;
                 actions.push(self.send_stored(msg));
                 actions
@@ -582,6 +722,25 @@ impl Session {
 
         let mt = msg.msg_type().map(str::to_owned);
 
+        // BUG-42/FR-018 (feature 007): `validLogonState` -- while not yet logged on, only
+        // Logon/Logout/SequenceReset/Reject are legitimate (a counterparty may need to Logout or
+        // gap-fill/Reject before completing its own Logon); anything else arriving this early is a
+        // protocol violation and disconnects the session, matching QFJ's `validLogonState()`
+        // rather than processing it normally (which, for a too-high sequence, would otherwise
+        // queue it and send a ResendRequest -- itself a protocol violation, since no
+        // ResendRequests should be sent before logon).
+        if self.state != SessionState::LoggedOn
+            && !matches!(mt.as_deref(), Some("A" | "5" | "4" | "3"))
+        {
+            let seq = self.next_seq();
+            let lo = admin::logout(&self.config, seq, Some("Logon state is not valid"));
+            self.state = SessionState::Disconnected;
+            let mut actions = vec![self.send_stored(lo)];
+            actions.extend(self.reset_on_error());
+            actions.push(Action::Disconnect);
+            return actions;
+        }
+
         if mt.as_deref() == Some("A") {
             return self.on_logon(msg);
         }
@@ -598,11 +757,31 @@ impl Session {
             Some(s) => s as u64,
             None => {
                 let s = self.next_seq();
-                let rej = admin::reject(&self.config, s, 0, "missing or invalid MsgSeqNum");
+                let rej = admin::reject(
+                    &self.config,
+                    s,
+                    0,
+                    mt.as_deref(),
+                    "missing or invalid MsgSeqNum",
+                );
                 return vec![self.send_stored(rej)];
             }
         };
         let poss_dup = msg.header.get(POSS_DUP_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
+
+        // BUG-57/FR-024 (feature 007): the anti-replay falsification check applies to any
+        // PossDupFlag=Y message, not only a too-low one -- checked here, ahead of the
+        // Equal/Greater/Less dispatch below, so it fires uniformly regardless of which of those
+        // three this message's sequence happens to fall into. The `Ordering::Less` arm further
+        // down still separately calls the fuller `poss_dup_anti_replay_violation` (this check plus
+        // the too-low-specific missing-tag case) — by the time it does, this check has already
+        // handled the falsification signal, so that call only meaningfully covers the missing-tag
+        // case from here on.
+        if poss_dup {
+            if let Some(reject) = self.poss_dup_falsification_check(&msg) {
+                return self.reject_logon(&reject);
+            }
+        }
 
         match seq.cmp(&self.next_in_seq) {
             Ordering::Equal => {
@@ -634,6 +813,18 @@ impl Session {
                 actions
             }
             Ordering::Greater => {
+                let mut actions = Vec::new();
+                // BUG-29/FR-007 (feature 007): a too-high `ResendRequest` is answered immediately
+                // rather than deferred to `drain_queue` once our own gap toward the counterparty
+                // is filled -- otherwise two sessions each holding an outstanding `ResendRequest`
+                // toward the other deadlock, each waiting on the other to resolve its own gap
+                // first (QuickFIX/J's `verify` deliberately skips the too-high check for this one
+                // message type, QFJ-673). It still participates in the normal queue/gap-fill
+                // bookkeeping below, so it is also correctly reprocessed once our own gap
+                // resolves (matching every other too-high message).
+                if mt.as_deref() == Some("2") {
+                    actions.extend(self.on_resend_request(&msg));
+                }
                 self.queue.insert(seq, msg);
                 // GAP-09/FR-011 (feature 005): track this arrival as (at least) the full known
                 // extent of the gap, so a chunked resend can auto-continue past its first chunk.
@@ -641,12 +832,13 @@ impl Session {
                     self.resend_target = Some(self.resend_target.map_or(seq, |t| t.max(seq)));
                 }
                 if self.resend_requested && !self.config.send_redundant_resend_requests {
-                    Vec::new()
+                    // nothing further to add
                 } else {
                     self.resend_requested = true;
                     let begin = self.next_in_seq;
-                    vec![self.request_resend(begin)]
+                    actions.push(self.request_resend(begin));
                 }
+                actions
             }
             Ordering::Less => {
                 if poss_dup {
@@ -668,31 +860,55 @@ impl Session {
                     let s = self.next_seq();
                     let lo = admin::logout(&self.config, s, Some("MsgSeqNum too low"));
                     self.state = SessionState::Disconnected;
-                    vec![self.send_stored(lo), Action::Disconnect]
+                    let mut actions = vec![self.send_stored(lo)];
+                    // BUG-68/FR-039 (feature 007): `reset_on_error()`, matching the
+                    // latency-failure/identity-failure/validLogonState/dictionary-validation
+                    // disconnect paths above and below -- previously this was the one hard
+                    // sequence-violation disconnect path that skipped it, inconsistent when
+                    // `ResetOnError` is configured.
+                    actions.extend(self.reset_on_error());
+                    actions.push(Action::Disconnect);
+                    actions
                 }
             }
         }
     }
 
-    /// Validate an inbound application message; on failure, return a Reject/BusinessMessageReject
-    /// action. Admin messages and the no-dictionary case return `None`.
+    /// Validate an inbound message; on failure, return a Reject/BusinessMessageReject action.
+    /// The no-dictionary case returns `None`.
+    ///
+    /// BUG-89/FR-011 (feature 007): admin (session-level) messages are validated too, not
+    /// skipped — a dictionary-invalid Logon/Heartbeat/etc. used to sail through unchecked
+    /// regardless of whether a dictionary was configured. The resulting Reject/
+    /// BusinessMessageReject split is still driven by the dictionary layer's own `error.business`
+    /// flag (unchanged): in practice an admin-typed message's `MsgType` is always defined in the
+    /// dictionary (it's how [`is_admin_type`] itself recognizes it), so the failures actually
+    /// reachable here are field-membership/format/required ones, which `DataDictionary::validate`
+    /// already classifies as session-level (`error.business == false`) — routing through the
+    /// plain `Reject` path, matching QFJ/QFGo and this task's R1.13 decision, without needing a
+    /// forced override.
     fn validate_app(&mut self, msg: &Message) -> Option<Action> {
         let error = {
-            if is_admin_type(msg.msg_type()) {
-                return None;
-            }
             // T079/GAP-18c part 2: a real FIXT transport/application split, when configured,
-            // takes precedence — the application dictionary is chosen per-message by tag 1128
-            // (ApplVerID), falling back to the tag-1137 value negotiated from Logon (T078), falling
-            // back to whatever `FixtDictionaries` itself was built with as `DefaultApplVerID`. A
-            // message whose resolved ApplVerID has no registered application dictionary is treated
-            // like the no-dictionary case (skipped, not rejected) — the same conservative default
-            // this session already applies when no dictionary is configured at all.
+            // takes precedence for *application* messages — the application dictionary is chosen
+            // per-message by tag 1128 (ApplVerID), falling back to the tag-1137 value negotiated
+            // from Logon (T078), falling back to whatever `FixtDictionaries` itself was built with
+            // as `DefaultApplVerID`. A message whose resolved ApplVerID has no registered
+            // application dictionary is treated like the no-dictionary case (skipped, not
+            // rejected) — the same conservative default this session already applies when no
+            // dictionary is configured at all. Admin messages always validate against the FIXT
+            // *transport* dictionary instead (BUG-89) — they don't carry application semantics, so
+            // resolving them against a per-message application dict would spuriously reject every
+            // admin message as an undefined MsgType.
             if let Some((dicts, opts)) = self.fixt_validator.as_ref() {
-                let msg_appl_ver_id = msg.header.get(APPL_VER_ID).and_then(|f| f.as_str().ok());
-                let appl_ver_id = msg_appl_ver_id.or(self.negotiated_appl_ver_id.as_deref());
-                let dict = dicts.application_for(appl_ver_id)?;
-                dict.validate(msg, opts).err()
+                if is_admin_type(msg.msg_type()) {
+                    dicts.transport().validate(msg, opts).err()
+                } else {
+                    let msg_appl_ver_id = msg.header.get(APPL_VER_ID).and_then(|f| f.as_str().ok());
+                    let appl_ver_id = msg_appl_ver_id.or(self.negotiated_appl_ver_id.as_deref());
+                    let dict = dicts.application_for(appl_ver_id)?;
+                    dict.validate(msg, opts).err()
+                }
             } else {
                 let (dict, opts) = self.validator.as_ref()?;
                 dict.validate(msg, opts).err()
@@ -721,6 +937,7 @@ impl Session {
                 &self.config,
                 seq,
                 ref_seq,
+                ref_mt.as_deref(),
                 error.ref_tag,
                 error.reason.code(),
                 &error.text,
@@ -834,6 +1051,7 @@ impl Session {
                     &self.config,
                     seq,
                     ref_seq,
+                    msg.msg_type(),
                     Some(tag),
                     1, // SessionRejectReason: Required tag missing
                     "required tag missing",
@@ -855,7 +1073,17 @@ impl Session {
             .filter(|&s| s >= 0)
             .map_or(0, |s| s as u64);
         let last = self.next_out_seq.saturating_sub(1);
-        let end = if end_req == 0 || end_req > last {
+        // BUG-97/FR-041 (feature 007): `999999` is also a recognized "infinity" convention (QFJ's
+        // `manageGapFill`/`sendResendRequest`, QFGo's `sendResendRequest`) for FIX.4.2-and-earlier
+        // sessions -- previously only `end_req == 0` was treated as infinity, and while
+        // `end_req > last` already makes `999999` behave the same way in the overwhelmingly common
+        // case (`last` is almost always far below a million), a long-lived session that has
+        // actually sent 999,999+ messages would otherwise treat `999999` as a literal (now
+        // less-than-`last`) endpoint instead of the honored convention.
+        let is_legacy_infinity_convention = end_req == 999_999
+            && admin::fix_version(&self.config.begin_string)
+                .is_some_and(|(major, minor)| major < 4 || (major == 4 && minor <= 2));
+        let end = if end_req == 0 || end_req > last || is_legacy_infinity_convention {
             last
         } else {
             end_req
@@ -872,16 +1100,22 @@ impl Session {
         let mut seq = begin;
         while seq <= end {
             let stored = self.store.get(&seq).cloned();
-            let is_app = stored
-                .as_ref()
-                .is_some_and(|m| !is_admin_type(m.msg_type()));
+            // BUG-88/FR-016 (feature 007): `ForceResendWhenCorruptedStore` also changes
+            // resend-vs-gap-fill classification during a gap-fill resend (previously only
+            // consulted at store-open — `force_resend_when_corrupted_store()`'s existing
+            // `run_connection` call site) — an admin message is resent (with PossDup) instead of
+            // folded into a GapFill, matching QuickFIX/J's `resendMessages()` two-effect
+            // semantics.
+            let is_app = stored.as_ref().is_some_and(|m| {
+                !is_admin_type(m.msg_type()) || self.config.force_resend_when_corrupted_store
+            });
             if is_app {
                 if let Some(gs) = gap_start.take() {
                     let action = self.gap_fill(gs, seq);
                     actions.push(action);
                 }
                 if let Some(m) = stored {
-                    let resent = admin::prepare_resend(&m);
+                    let resent = admin::prepare_resend(&self.config, &m);
                     actions.push(self.send_resend(resent, seq));
                 }
             } else if gap_start.is_none() {
@@ -932,6 +1166,7 @@ impl Session {
                     &self.config,
                     seq,
                     ref_seq,
+                    msg.msg_type(),
                     Some(NEW_SEQ_NO),
                     1, // SessionRejectReason: Required tag missing
                     "NewSeqNo is missing",
@@ -945,6 +1180,7 @@ impl Session {
                         &self.config,
                         seq,
                         ref_seq,
+                        msg.msg_type(),
                         Some(NEW_SEQ_NO),
                         5, // SessionRejectReason: Value is incorrect (out of range) for this tag
                         "NewSeqNo is decreasing",
@@ -959,12 +1195,23 @@ impl Session {
         if let Some(ns) = new_seq {
             if ns >= self.next_in_seq {
                 self.next_in_seq = ns;
+                // BUG-96/FR-027 (feature 007): a gap-fill jump discards any queued out-of-order
+                // messages it skips over (matching QFJ's `dequeueMessagesUpTo(newSequence)`) --
+                // `drain_queue` below only ever removes an entry exactly matching the *current*
+                // `next_in_seq`, so a queued message whose sequence falls below this jump's target
+                // (but isn't part of the contiguous run `drain_queue` walks) would otherwise never
+                // match `next_in_seq` again and stay in the queue forever.
+                self.queue.retain(|&seq, _| seq >= ns);
             }
         }
         self.drain_queue()
     }
 
     fn on_logon(&mut self, msg: Message) -> Vec<Action> {
+        // BUG-93/FR-029 (feature 007): recorded unconditionally, before any of this function's
+        // acceptance/rejection checks -- QFJ's `logonReceived` tracks that a Logon was received at
+        // all, not only a validly-accepted one.
+        self.logon_received = true;
         // GAP-18a/FR-010 (feature 005): reject a duplicate Logon on an already-logged-on session
         // (Logout + disconnect) instead of silently no-op'ing it — the same severity as the
         // PossDup anti-replay violation above (resolved via `/speckit-clarify`). Checked first,
@@ -979,11 +1226,30 @@ impl Session {
             });
         }
 
+        // BUG-90/FR-028 (feature 007): reject a stray Logon arriving while not actually awaiting
+        // one (`AwaitingLogout` or `Disconnected` -- `LoggedOn` is already handled just above),
+        // via the same Logout+disconnect path, rather than silently falling through to the
+        // `_ => {}` catch-all below and (at best) doing nothing, matching QFJ's `nextLogon()`,
+        // which disconnects on an unsolicited/out-of-sequence Logon.
+        if self.state != SessionState::AwaitingLogon {
+            return self.reject_logon(&truefix_core::Reject {
+                reason: 0,
+                ref_tag: None,
+                text: Some("Logon received out of sequence".to_owned()),
+                session_status: None,
+            });
+        }
+
         // BUG-05/FR-001 (feature 006): reject a Logon whose own MsgSeqNum is below our expected
         // next-incoming sequence number and carries no PossDup justification, via the same
         // Logout+disconnect path used for the duplicate-Logon case above — before any reset/
         // state-transition side effects run, so a spurious too-low-seq Logon never partially
-        // mutates session state or gets a Logon reply of its own.
+        // mutates session state or gets a Logon reply of its own. Exempts a Logon carrying
+        // `ResetSeqNumFlag=Y` (checked here, ahead of this function's later, more elaborate
+        // reset-flag handling) — such a Logon legitimately carries `MsgSeqNum=1` regardless of
+        // whatever we currently expect, precisely because it's requesting a fresh reset; without
+        // this exemption, a genuine reconnect-with-reset would be wrongly rejected as a stale/
+        // too-low message instead of honored as the reset it is.
         let logon_seq_early = msg
             .header
             .get(MSG_SEQ_NUM)
@@ -991,7 +1257,14 @@ impl Session {
             .filter(|&s| s > 0)
             .map(|s| s as u64);
         let poss_dup = msg.header.get(POSS_DUP_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
-        if !poss_dup && logon_seq_early.is_some_and(|s| s.cmp(&self.next_in_seq) == Ordering::Less)
+        let requests_reset = msg
+            .body
+            .get(RESET_SEQ_NUM_FLAG)
+            .and_then(|f| f.as_str().ok())
+            == Some("Y");
+        if !poss_dup
+            && !requests_reset
+            && logon_seq_early.is_some_and(|s| s.cmp(&self.next_in_seq) == Ordering::Less)
         {
             return self.reject_logon(&truefix_core::Reject {
                 reason: 0,
@@ -999,6 +1272,97 @@ impl Session {
                 text: Some("MsgSeqNum too low".to_owned()),
                 session_status: None,
             });
+        }
+
+        // BUG-44/FR-019 (feature 007): reject a Logon missing MsgSeqNum(34) entirely, rather than
+        // silently accepting it — `disposition` would be `None` (matching neither `Some(Equal)`
+        // nor `Some(Greater)`), so `next_in_seq` would never advance, desyncing the session while
+        // still transitioning it to `LoggedOn` and sending a Logon response.
+        if logon_seq_early.is_none() {
+            return self.reject_logon(&truefix_core::Reject {
+                reason: 0,
+                ref_tag: None,
+                text: Some("Required tag missing: MsgSeqNum".to_owned()),
+                session_status: None,
+            });
+        }
+
+        // BUG-95/FR-019 (feature 007): reject a Logon carrying a negative HeartBtInt(108), matching
+        // QFJ's `next()` (`HeartBtInt must not be negative`) — the existing `.filter(|&h| h > 0)`
+        // adoption below silently ignores a negative value (leaving whatever heartbeat interval
+        // this session started with in place) instead of treating it as the protocol violation it
+        // is.
+        if let Some(hbi) = msg.body.get(HEART_BT_INT).and_then(|f| f.as_int().ok()) {
+            if hbi < 0 {
+                return self.reject_logon(&truefix_core::Reject {
+                    reason: 0,
+                    ref_tag: None,
+                    text: Some("HeartBtInt must not be negative".to_owned()),
+                    session_status: None,
+                });
+            }
+        }
+
+        // BUG-43/FR-019 (feature 007): reject a Logon whose NextExpectedMsgSeqNum(789) is higher
+        // than what we've actually sent — the counterparty expects messages we never sent, which
+        // can only mean the two sides have desynced; matching QFJ ("Tag 789 is higher than
+        // expected"), rather than silently ignoring it (the existing NextExpectedMsgSeqNum handling
+        // near the end of this function only ever handles the too-low case).
+        if let Some(next_expected) = msg
+            .body
+            .get(NEXT_EXPECTED_MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&n| n > 0)
+            .map(|n| n as u64)
+        {
+            if next_expected > self.next_out_seq {
+                return self.reject_logon(&truefix_core::Reject {
+                    reason: 0,
+                    ref_tag: None,
+                    text: Some("Tag 789 is higher than expected".to_owned()),
+                    session_status: None,
+                });
+            }
+        }
+
+        // BUG-86/FR-015 (feature 007): reject a Logon arriving outside a configured activity
+        // schedule (trading-hours window) — same Logout+disconnect path as the other Logon
+        // rejections above, before any reset/state-transition side effects run.
+        if let Some(schedule) = &self.config.schedule {
+            if !schedule.is_in_session(time::OffsetDateTime::now_utc()) {
+                return self.reject_logon(&truefix_core::Reject {
+                    reason: 0,
+                    ref_tag: None,
+                    text: Some(
+                        "Logon attempted outside of the configured session schedule".to_owned(),
+                    ),
+                    session_status: None,
+                });
+            }
+        }
+
+        // BUG-89/FR-011 (feature 007): a dictionary-invalid Logon (missing required field, bad
+        // enum/format, etc.) is rejected via the same dictionary-validation path any other admin
+        // message now uses (`validate_app`, no longer skipped for admin types) — before any of
+        // this function's reset/state-transition side effects run, so a malformed Logon never
+        // partially logs the session on.
+        if let Some(reject) = self.validate_app(&msg) {
+            let mut actions = vec![reject];
+            if logon_seq_early.is_some_and(|s| s == self.next_in_seq) {
+                self.next_in_seq = self.next_in_seq.saturating_add(1);
+            }
+            if self.config.disconnect_on_error {
+                let seq = self.next_seq();
+                let lo = admin::logout(
+                    &self.config,
+                    seq,
+                    Some("Logon failed dictionary validation"),
+                );
+                actions.push(self.send_stored(lo));
+                self.state = SessionState::Disconnected;
+                actions.push(Action::Disconnect);
+            }
+            return actions;
         }
 
         // T078/GAP-18c part 1 (feature 006, FIXT 1.1): auto-extract the inbound Logon's own
@@ -1017,13 +1381,16 @@ impl Session {
             self.negotiated_appl_ver_id = Some(appl_ver_id.to_owned());
         }
 
-        let mut store_reset = false;
-        if msg
+        // BUG-28/FR-005 (feature 007): captured once, reused both to decide our own reset
+        // (below) and — for the acceptor role — to echo on our Logon response later in this
+        // function, instead of that response independently consulting `config.reset_on_logon`.
+        let inbound_reset_flag = msg
             .body
             .get(RESET_SEQ_NUM_FLAG)
             .and_then(|f| f.as_str().ok())
-            == Some("Y")
-        {
+            == Some("Y");
+        let mut store_reset = false;
+        if inbound_reset_flag {
             let full = !self.logon_sent;
             self.reset_sequences(full);
             store_reset = full;
@@ -1051,16 +1418,42 @@ impl Session {
                     .and_then(|f| f.as_int().ok())
                     .filter(|&h| h > 0)
                 {
-                    self.config.heartbeat_interval = hbi as u32;
+                    // BUG-67/FR-038 (feature 007): clamp, not `as u32` — a peer-supplied value
+                    // beyond `u32::MAX` (`hbi` is `i64`) would otherwise silently truncate to an
+                    // arbitrary, unrelated small number instead of the sane "very long heartbeat
+                    // interval" the peer's oversized value actually implies.
+                    self.config.heartbeat_interval = u32::try_from(hbi).unwrap_or(u32::MAX);
                 }
                 self.state = SessionState::LoggedOn;
                 let next_exp = self.maybe_next_expected();
                 let seq = self.next_seq();
-                let resp = admin::logon(&self.config, seq, next_exp);
+                // BUG-28/FR-005 (feature 007): echo the inbound Logon's own `ResetSeqNumFlag`,
+                // not `config.reset_on_logon` — the response must reflect what was actually
+                // requested, not static session configuration.
+                let resp =
+                    admin::logon_with_reset_flag(&self.config, seq, next_exp, inbound_reset_flag);
                 self.logon_sent = true;
                 actions.push(self.send_stored(resp));
             }
             Role::Initiator if self.state == SessionState::AwaitingLogon => {
+                // BUG-28/FR-006 (feature 007): if this session sent `ResetSeqNumFlag=Y` on its
+                // own Logon (tracked via `self.reset_on_logon_pending`, set in `on_connected`),
+                // the acceptor's response MUST echo it back, or be inferable as an acknowledged
+                // reset via its own `MsgSeqNum == 1` — neither holding is a handshake failure,
+                // routed through the same Logout+disconnect path as other Logon rejections.
+                if self.reset_on_logon_pending && !inbound_reset_flag && logon_seq_early != Some(1)
+                {
+                    self.reset_on_logon_pending = false;
+                    return self.reject_logon(&truefix_core::Reject {
+                        reason: 0,
+                        ref_tag: None,
+                        text: Some(
+                            "Expected Logon response to have reset sequence numbers".to_owned(),
+                        ),
+                        session_status: None,
+                    });
+                }
+                self.reset_on_logon_pending = false;
                 self.state = SessionState::LoggedOn;
             }
             _ => {}
@@ -1174,9 +1567,31 @@ impl Session {
                 actions.push(Action::Disconnect);
                 return actions;
             }
+            SessionState::LoggedOn
+                if self
+                    .config
+                    .schedule
+                    .as_ref()
+                    .is_some_and(|s| !s.is_in_session(time::OffsetDateTime::now_utc())) =>
+            {
+                // BUG-87/FR-015 (feature 007): an already-`LoggedOn` session is disconnected once
+                // the current time crosses outside its configured schedule window, rather than
+                // being left connected indefinitely past the window's end.
+                let reset = self.enter_disconnected();
+                let mut actions: Vec<Action> = reset.into_iter().collect();
+                actions.push(Action::Disconnect);
+                return actions;
+            }
             SessionState::LoggedOn if !self.config.disable_heart_beat_check => {
-                if self.ticks_since_recv >= hb * self.config.heartbeat_timeout_multiplier.max(1) + 2
-                {
+                // BUG-36/FR-033 (feature 007): `f64` arithmetic throughout, not `u32` — besides
+                // `heartbeat_timeout_multiplier` itself now needing to carry fractional precision
+                // (see its doc), plain `u32` multiplication here could also overflow (panicking in
+                // debug builds, silently wrapping in release) for large `hb`/multiplier values.
+                // `f64` saturates to infinity instead of overflowing, so this comparison stays
+                // correct (and simply never times out) even for pathological configured values.
+                let timeout_ticks =
+                    f64::from(hb) * self.config.heartbeat_timeout_multiplier.max(1.0) + 2.0;
+                if (self.ticks_since_recv as f64) >= timeout_ticks {
                     let reset = self.enter_disconnected();
                     let mut actions: Vec<Action> = reset.into_iter().collect();
                     actions.push(Action::Disconnect);
@@ -1213,6 +1628,16 @@ impl Session {
                 let mut actions: Vec<Action> = reset.into_iter().collect();
                 actions.push(Action::Disconnect);
                 return actions;
+            }
+            // BUG-69/FR-040 (feature 007): still send heartbeats on the normal cadence while
+            // waiting for the counterparty's Logout to arrive (and before our own `logout_timeout`
+            // elapses, handled by the guarded arm above) — previously this fell through to the
+            // catch-all below and sent nothing, so a long `logout_timeout` risked the peer
+            // disconnecting us for heartbeat failure well before our own timeout ever fired.
+            SessionState::AwaitingLogout if self.ticks_since_send >= hb => {
+                let seq = self.next_seq();
+                let h = admin::heartbeat(&self.config, seq, None);
+                actions.push(self.send_stored(h));
             }
             _ => {}
         }

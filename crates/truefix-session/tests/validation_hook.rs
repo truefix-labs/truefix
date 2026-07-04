@@ -18,6 +18,10 @@ fn logon() -> Message {
     m.header.set(Field::string(49, "YOU"));
     m.header.set(Field::string(56, "ME"));
     m.header.set(Field::int(34, 1));
+    // EncryptMethod(98) is a dictionary-required Logon field (BUG-89/FR-011, feature 007: Logon
+    // is now dictionary-validated like any other admin message, so this fixture must be a
+    // genuinely valid Logon).
+    m.body.set(Field::int(98, 0));
     m.body.set(Field::int(108, 30));
     m.body.set(Field::string(141, "Y"));
     m
@@ -156,7 +160,9 @@ fn fixt_dictionaries_selects_the_app_dict_via_per_message_appl_ver_id() {
         .with_application("FIX.4.4", load_fix44().unwrap());
     s.set_fixt_dictionaries(dicts, ValidationOptions::default());
     s.handle(Event::Connected);
-    s.handle(Event::Received(logon()));
+    // FIXT.1.1's own dictionary requires DefaultApplVerID(1137) on Logon (BUG-89/FR-011,
+    // feature 007: Logon is now dictionary-validated against the transport dict too).
+    s.handle(Event::Received(logon_with_default_appl_ver_id("FIX.4.4")));
     assert_eq!(s.state(), SessionState::LoggedOn);
 
     let actions = s.handle(Event::Received(new_order_with_appl_ver_id(
@@ -196,12 +202,18 @@ fn fixt_dictionaries_falls_back_to_the_logon_negotiated_default_appl_ver_id() {
 #[test]
 fn fixt_dictionaries_with_no_resolvable_appl_ver_id_skips_validation_like_no_dictionary() {
     let mut s = Session::new(cfg());
-    // No `with_default_appl_ver_id`, no Logon-level 1137, no per-message 1128 -- nothing resolves.
+    // No `with_default_appl_ver_id`, no per-message 1128, and the Logon's own 1137 doesn't match
+    // any registered application dict -- nothing resolves. (FIXT.1.1's transport dictionary
+    // requires 1137 be *present* on Logon -- BUG-89/FR-011, feature 007: Logon now validates
+    // against the transport dict too -- so this can't omit it entirely the way it used to; using
+    // an unregistered value keeps the "nothing resolves" scenario intact.)
     let dicts = FixtDictionaries::new(load_fixt11().unwrap())
         .with_application("FIX.4.4", load_fix44().unwrap());
     s.set_fixt_dictionaries(dicts, ValidationOptions::default());
     s.handle(Event::Connected);
-    s.handle(Event::Received(logon()));
+    s.handle(Event::Received(logon_with_default_appl_ver_id("FIX.9.9")));
+    assert_eq!(s.state(), SessionState::LoggedOn);
+    assert_eq!(s.negotiated_appl_ver_id(), Some("FIX.9.9"));
 
     let actions = s.handle(Event::Received(new_order("Z", 2))); // bad Side, but unvalidated
     assert!(

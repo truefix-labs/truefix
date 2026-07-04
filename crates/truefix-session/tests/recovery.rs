@@ -480,8 +480,11 @@ fn invalid_message_drained_from_queue_after_a_gap_is_rejected_like_an_in_order_o
         truefix_dict::ValidationOptions::default(),
     );
     s.handle(Event::Connected);
-    let logon = with(with(msg("A", 1), 108, "30"), 141, "Y");
+    // EncryptMethod(98) is a dictionary-required Logon field (BUG-89/FR-011, feature 007: Logon is
+    // now dictionary-validated like any other admin message, and this test attaches a dictionary).
+    let logon = with(with(with(msg("A", 1), 108, "30"), 141, "Y"), 98, "0");
     s.handle(Event::Received(logon));
+    assert_eq!(s.state(), SessionState::LoggedOn);
     assert_eq!(s.next_in_seq(), 2);
 
     // seq 3: an invalid NewOrderSingle (bad Side enum "Z") arrives first -> queued (gap).
