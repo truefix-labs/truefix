@@ -526,6 +526,158 @@ See `docs/todo/003.md` for the audit's own citations and `specs/006-audit-remedi
   coverage` confirms the floor exactly matches; `cargo deny check` clean (covers the new `time-tz`
   dependency's full transitive license tree).
 
+## 007 — Second audit remediation
+
+Closes every confirmed defect from the 2026-07-03 second-pass audit (`docs/todo/004.md`), produced by
+a pure per-crate code review plus a systematic QuickFIX/J + QuickFIX/Go source comparison, itself
+carrying two internal self-verification passes — a per-item "Verification Pass" (which retracted 3
+originally-cited `BUG-23`–`BUG-85` items outright, corrected 3, retracted 1 more) and a four-agent
+"二次交叉验证" cross-check against the current working tree (which found 3 items — `BUG-37`/`BUG-98`/
+`BUG-101` — already fixed as a side effect of feature 006). Numbering continues `BUG-23` onward from
+`003.md`'s `BUG-05`–`BUG-22`. 13 must-fix-before-shipping items (US1), 16 narrower-blast-radius
+defects (US2), and 20 low-priority hardening/hygiene items (US3) — 51 FRs total (`FR-001`–`FR-050` +
+`FR-001a`). One pass, staged US1→US2→US3 (P1→P2→P3), all 119 tasks completed with TDD (failing test
+first) + bisection-verified fixes throughout. See `docs/todo/004.md` for the audit's own citations and
+`specs/007-second-audit-remediation/tasks.md` (T001-T119) for full per-task disclosure.
+
+- **Store durability and crash-safety (US1, FR-001/001a/002-004)**: sender/target sequence numbers now
+  persist in two separate files (`senderseqnums`/`targetseqnums`, matching QuickFIX/J's own layout)
+  instead of one combined file whose partial write could silently desync both counters; a sequence file
+  that fails to parse as valid recorded state now surfaces as a typed, catchable error instead of
+  silently defaulting to `(1, 1)`; an existing single-file deployment auto-migrates transparently to
+  the two-file layout on first open after upgrading (disclosed, additive on-disk format change);
+  `SqlStore::ensure_schema` now applies its `creation_time` column migration before any row references
+  it; `MssqlStore::save_and_advance_sender` now rolls back on a failed final commit instead of leaving
+  the transaction open.
+- **Protocol-breaking handshake and deadlock fixes (US1, FR-005-009)**: the `ResetSeqNumFlag` handshake
+  now round-trips correctly on both acceptor (echoes `Y` iff the inbound Logon requested it) and
+  initiator (verifies the echo, or infers a reset from `MsgSeqNum=1`) sides — previously a reconnecting
+  counterparty's legitimate `Logon(MsgSeqNum=1, ResetSeqNumFlag=Y)` could be intercepted by the
+  too-low-seq check before the reset was ever honored; a `ResendRequest`-vs-`ResendRequest` deadlock
+  (both sides simultaneously waiting on their own outstanding request) is now answered immediately
+  rather than queued; a second inbound connection presenting an already-active session identity is now
+  refused; an unexpected TCP drop (not a graceful Logout) now honors `ResetOnDisconnect` identically to
+  a Logout-driven disconnect.
+- **Resource-leak and lifecycle fixes (US1, FR-012/013)**: a scheduled or reconnecting initiator whose
+  active connection task drops now reconnects on its next eligible attempt instead of treating the slot
+  as permanently occupied; `Engine::shutdown()` (and a new `impl Drop for Engine`, disclosed additive
+  public-API surface growth) now stops every spawned session task including plain (non-failover)
+  initiators, closing a leak where such tasks previously had no way to be reached once started.
+  Disclosed additive public API: `SessionHandle::abort`/`is_finished` (sync, non-consuming), `impl Drop
+  for Engine`, and a new `Event::Disconnected` variant.
+- **Malformed-input and enforcement gaps (US1, FR-014-016)**: a message declaring `BodyLength=0` is now
+  rejected as malformed rather than accepted; an acceptor with a configured trading-hours schedule now
+  rejects a Logon outside that window and tears down an already-logged-on session that crosses out of
+  it, matching the initiator-side schedule enforcement that already existed; admin-typed messages (a
+  malformed Logon, etc.) are now dictionary-validated the same way application messages already were.
+- **Callback-ordering restructure (US1, FR-010/011)**: a message is no longer delivered to the
+  application's `from_admin`/`from_app` callback until after the session layer's own
+  sequence/identity/latency/PossDup/dictionary checks have already passed — an application can no
+  longer observe a message the session layer is about to reject.
+- **Narrower-blast-radius defects (US2, FR-017-030)**: a stale `resend_requested`/queue-suppression
+  state no longer survives a reconnect and masking a genuine new gap; a non-Logon message arriving
+  before the session completes its Logon exchange (`validLogonState`) is now rejected rather than
+  processed, including no longer drawing a pre-logon `ResendRequest`; an inbound Logon with an
+  impossible `NextExpectedMsgSeqNum`, a missing `MsgSeqNum`, or a negative `HeartBtInt` is now rejected
+  with a clear reason; a length-prefixed data field (tag 95/96 and friends) not followed by its
+  matching data tag, or with a non-numeric length, now fails decoding cleanly instead of silently
+  misparsing what follows; the plain reconnecting initiator path now applies the same socket options
+  (`TcpNoDelay`, `KeepAlive`, buffer sizes) every other connection path already applies; an acceptor
+  group sharing one listen port now resolves each session's own log/dictionary-validator/socket-options/
+  TLS configuration consistently rather than pulling from whichever member happened to be first;
+  outbound `Reject` now includes `RefMsgType(372)` on `FIX.4.2`+ sessions and omits an out-of-range
+  `SessionRejectReason(373)` on `FIX.4.0`/`4.1`; the PossDup anti-replay check now also applies when an
+  inbound sequence number equals (not just is below) the expected next-incoming number; any of
+  `ResetOnLogon`/`ResetOnLogout`/`ResetOnDisconnect` (not only `ResetOnLogon`) now triggers
+  `ResetSeqNumFlag=Y` on a first-ever connection; a scheduled initiator's retry now backs off across a
+  small number of attempts instead of tight-looping sub-second reconnects; a processed gap-fill
+  `SequenceReset` now discards now-superseded queued messages instead of retaining them indefinitely; a
+  stray Logon in `AwaitingLogout`/`Disconnected` state is now rejected; a TCP drop mid-handshake (before
+  either side reaches `LoggedOn`) now still fires the application's logout callback; an MSSQL
+  store/log URL's credentials containing `@` now split correctly; `FileStore`/`CachedFileStore` opening
+  against a long-running session's history no longer reads every stored message body into memory just
+  to rebuild its offset index or warm its cache.
+- **Low-priority hardening and hygiene (US3, FR-031-050)**: frame-length and checksum arithmetic no
+  longer silently wraps on inputs exceeding `usize`/`u32` bounds (defense-in-depth atop the existing
+  `MAX_BODY_LEN` bound); `HeartBtIntTimeoutMultiplier` now preserves fractional precision instead of
+  truncating to an integer; repeating-group dictionary validation now recurses into required-field and
+  field-type/enum checks inside each group entry, not only at the message's top level; `CHAR` fields on
+  `FIX.4.0`/`4.1` now accept multi-character values (matching those versions' plain-text treatment);
+  `.cfg` `TimeStampPrecision` parsing is now case-insensitive and `SocketUseSSL`/other Y/N switches now
+  reject an unrecognized value instead of silently coercing to a default; a resent message's refreshed
+  `SendingTime` now uses the session's configured timestamp precision instead of a hardcoded
+  millisecond precision; an oversized peer `HeartBtInt` is now clamped instead of silently truncated;
+  `ResetOnError` is now honored on the low-sequence-without-PossDup rejection path, matching the
+  identity/latency paths; heartbeats continue during `AwaitingLogout` instead of stopping the moment
+  logout begins; a `ResendRequest`'s `EndSeqNo=999999` on `FIX.4.2`-or-earlier sessions is now treated
+  as the version-range's documented "resend to highest sent" infinity convention; the multi-endpoint
+  reconnecting initiator now prefers its primary endpoint again after a successful backup-endpoint
+  reconnect later drops; `ReconnectHandle::stop()` now tears down a currently-active connection instead
+  of only suppressing future attempts; an acceptor now refuses a connection whose first message isn't a
+  Logon; the transport's internal admin-message channel now applies bounded capacity/backpressure
+  instead of growing unbounded; a timestamp's fractional-seconds digit count other than 0/3/6/9 is now
+  rejected, and a leap second (`:60`) now maps to 59s + max sub-second fraction instead of being
+  rejected outright; frame detection now confirms the checksum-position bytes actually look like a
+  checksum field, and that the buffer's leading bytes form a recognizable `BeginString`, before
+  accepting a frame boundary; a decoded message with no `MsgType` field is now rejected; the dictionary
+  codegen path (`--features dict-tooling`) now handles a field type outside its explicit type table
+  (`TIME`/`PRICEOFFSET`), a Rust-keyword-colliding enum-value label, and the `open` enum modifier
+  consistently with the runtime (non-codegen) dictionary path.
+- **AT harness growth**: the server-suite scenario-run regression floor grew from 405 (006's closing
+  state) to 424 (`crates/truefix-at/tests/coverage.rs`'s `server_suite_scenario_run_count_does_not_regress`)
+  — the +19 runs come from new scenarios across US1/US2 (admin-message-dictionary-validation,
+  schedule-enforcement, and several `ResetSeqNumFlag`/resend/reject-correctness scenarios). A
+  cross-cutting fix (`truefix_at::runner::wire_begin_string`) was needed alongside the new
+  `BeginString`-format check (FR-048) because the AT harness's `"FIX.Latest"` testing sentinel is not a
+  real wire `BeginString` value — it now translates to `"FIX.5.0SP2"` on the wire while dictionary
+  selection logic is untouched.
+- **Gate status**: `cargo fmt --check` clean; `cargo clippy --workspace --all-targets --all-features --
+  -D warnings` clean (0 warnings); `cargo test --workspace --all-features` green (174 test-result
+  blocks, 0 failures, up from 118/578 at 006's close — 716 tests passing); `cargo test -p truefix-at
+  --test conformance` and `--test coverage` both green, confirming 424/424 scenario runs; `cargo deny
+  check` clean (`advisories ok, bans ok, licenses ok, sources ok`) — no new external dependency was
+  introduced anywhere in this feature.
+
+## Not addressed by 007 — disclosed, not silently dropped
+
+Per Constitution Principle VII (inventory-based completeness) and this feature's own
+`spec.md` Assumptions section, the following items `docs/todo/004.md` raised are **not** closed by this
+feature, called out explicitly rather than left to be discovered by a future reader assuming "007
+closed everything the second-pass audit found":
+
+- **`BUG-37`, `BUG-98`, `BUG-101`** — confirmed already fixed as a side effect of feature 006 (verified
+  directly against current source before `spec.md` was written); no action needed.
+- **The "Exchange field case-sensitivity" item** from `004.md`'s "Partially covered" table — fully
+  retracted by the document's own second verification pass (neither QuickFIX/J nor QuickFIX/Go enforce
+  case on that field; the original claim mischaracterized both references).
+- **`BUG-108`** (heartbeat-timeout-multiplier default value differs from QuickFIX/J's `1.4` and
+  QuickFIX/Go's `1.2`) — `004.md`'s own conclusion is this is an intentional difference (TrueFix's
+  default is more lenient, not incorrect), not a defect. (The overflow/lost-precision defect in the
+  *same area*, `BUG-36`, was still in scope and is closed — see US3 above.)
+- **`BUG-104`** (no session enabled/disabled concept), **`BUG-110`** (`ClosedResendInterval` documented
+  no-op), **`BUG-111`** (a new `Session` object per connection rather than one persisting across
+  reconnects) — `004.md` itself classifies each as an intentional design choice or a documented,
+  accepted no-op, not a correctness defect; `BUG-111` is explicitly the architectural root cause of
+  several in-scope items (`BUG-32`/`BUG-42`/`BUG-93`, all closed above) rather than an independently
+  actionable item itself.
+- **`BUG-106`** — a literal duplicate of `BUG-83` (already covered under US2's `OrigSendingTime`
+  scenario above); not separately tracked.
+- **`BUG-65`** (`parse_utc_offset` overflow requiring a `.cfg` offset field value of `hours > ~596523`,
+  far beyond any valid UTC offset) — a confirmed-correct code-level observation `004.md` itself assesses
+  as having negligible practical risk; deferred, consistent with this project's practice of not
+  hardening against inputs with no realistic trigger.
+- **`BUG-73`** (codegen enum-label sanitization for a hypothetical custom dictionary using a
+  Rust-keyword-named enum value, never observed in any bundled dictionary) — `spec.md`'s Assumptions
+  section lists this as excluded/negligible-risk alongside `BUG-65`, but it was in fact bundled into and
+  closed by US3's `T113`/`T114` (`FR-050`) as low-marginal-cost hardening alongside the in-scope
+  `BUG-72`/`BUG-74` codegen fixes it shares a code path with. Flagged here as a disclosed
+  spec-vs-implementation discrepancy in the more-thorough direction (closed despite being listed as
+  deferred), not a gap.
+- AT-harness scenario authoring for `1d_InvalidLogonNoDefaultApplVerID` remains unwritten (a 006
+  follow-up item, unrelated to 007's own scope) and the harness-limited scenarios needing a
+  multi-connection `Step` primitive remain blocked, as disclosed under 006 above — 007 did not revisit
+  either.
+
 ## Not addressed by 006 — disclosed, not silently dropped
 
 Per Constitution Principle VII (inventory-based completeness), the following items `docs/todo/003.md`
@@ -578,3 +730,10 @@ a future reader assuming "006 closed everything the audit found":
   above for why each is deferred, not overlooked).
 - AT scenario authoring for `1d_InvalidLogonNoDefaultApplVerID` (unblocked by 006's US8 FIXT work,
   not yet written) and the harness-limited scenarios needing a multi-connection `Step` primitive.
+- The remaining excluded/deferred items from `docs/todo/004.md` not closed by 007 (see "Not addressed
+  by 007" above): `BUG-65` (unrealistic-trigger overflow), the design-choice items `BUG-104`/`108`/
+  `110`/`111`, and the duplicate `BUG-106`.
+- `GAP-28`/`GAP-32`'s dictionary version-metadata inertness (flagged again during 007's own `T091`/
+  `T092`, since `.fixdict` files still only declare a plain `version` line, never the separate
+  `version-meta` directive the check reads) remains unresolved — still the one item from `003.md` that
+  fell through specification, now reconfirmed live in 007 too.

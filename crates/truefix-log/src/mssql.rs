@@ -33,8 +33,10 @@ fn parse_url(url: &str) -> Result<Config, LogError> {
                 "expected an mssql:// or sqlserver:// URL, got {url:?}"
             ))
         })?;
+    // BUG-70/FR-030 (feature 007): split at the *last* '@', not the first -- see the identical
+    // fix in `truefix-store/src/mssql.rs`'s `parse_url` for the full rationale.
     let (userinfo, hostpart) = rest
-        .split_once('@')
+        .rsplit_once('@')
         .ok_or_else(|| io_err("mssql URL must be user:password@host[:port]/database"))?;
     let (user, password) = userinfo
         .split_once(':')

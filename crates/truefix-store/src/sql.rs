@@ -177,6 +177,11 @@ impl SqlStore {
                 .execute(pool)
                 .await
                 .map_err(backend)?;
+                // BUG-26 (feature 007): the `creation_time`-column migration MUST run before any
+                // statement referencing it -- a table created before this column existed (a
+                // pre-005 deployment) leaves `CREATE TABLE IF NOT EXISTS` a no-op, so the INSERT
+                // below would otherwise reference a column that doesn't exist yet.
+                self.add_creation_time_column_if_missing().await.ok();
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "INSERT OR IGNORE INTO {sessions} (session_id, sender, target, creation_time) \
                      VALUES (?, 1, 1, ?)"
@@ -204,6 +209,8 @@ impl SqlStore {
                 .execute(pool)
                 .await
                 .map_err(backend)?;
+                // BUG-26 (feature 007): see the Sqlite branch's comment above -- same ordering fix.
+                self.add_creation_time_column_if_missing().await.ok();
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "INSERT INTO {sessions} (session_id, sender, target, creation_time) \
                      VALUES ($1, 1, 1, $2) ON CONFLICT (session_id) DO NOTHING"
@@ -231,6 +238,8 @@ impl SqlStore {
                 .execute(pool)
                 .await
                 .map_err(backend)?;
+                // BUG-26 (feature 007): see the Sqlite branch's comment above -- same ordering fix.
+                self.add_creation_time_column_if_missing().await.ok();
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "INSERT IGNORE INTO {sessions} (session_id, sender, target, creation_time) \
                      VALUES (?, 1, 1, ?)"
@@ -242,9 +251,6 @@ impl SqlStore {
                 .map_err(backend)?;
             }
         }
-        // Existing tables created before this column existed won't have it; best-effort add it
-        // (ignored if it already exists) so upgrades don't require a manual migration.
-        let _ = self.add_creation_time_column_if_missing().await;
         Ok(())
     }
 

@@ -23,6 +23,14 @@ pub fn frame_length(buf: &[u8]) -> Result<Option<usize>, DecodeError> {
     if buf.get(0..2) != Some(b"8=") {
         return Err(DecodeError::MissingBeginString);
     }
+    // BUG-79/FR-048 (feature 007): beyond the leading `8=`, the BeginString *value* itself
+    // (between `8=` and the first SOH) must match the `FIX.\d.\d`/`FIXT.\d.\d` shape QFJ
+    // requires — previously any bytes at all following `8=` were accepted as a plausible frame
+    // start, so non-FIX data (or a garbled `BeginString`) would still be framed.
+    let begin_string_value = buf.get(2..soh1).unwrap_or(&[]);
+    if !looks_like_fix_begin_string(begin_string_value) {
+        return Err(DecodeError::MissingBeginString);
+    }
 
     let after8 = buf.get(soh1 + 1..).unwrap_or(&[]);
     let Some(soh2_rel) = find(after8, SOH) else {
@@ -37,6 +45,12 @@ pub fn frame_length(buf: &[u8]) -> Result<Option<usize>, DecodeError> {
         .ok()
         .and_then(|s| s.parse().ok())
         .ok_or(DecodeError::InvalidBodyLength)?;
+    // BUG-100/FR-014 (feature 007): a declared BodyLength of 0 is malformed -- every real FIX
+    // message has a non-empty body (at minimum MsgType), matching QuickFIX/J (QFJ-903) and
+    // QuickFIX/Go, which both reject it rather than framing an empty-body message.
+    if body_len == 0 {
+        return Err(DecodeError::ZeroBodyLength);
+    }
     if body_len > MAX_BODY_LEN {
         return Err(DecodeError::BodyLengthTooLarge {
             declared: body_len,
@@ -44,9 +58,37 @@ pub fn frame_length(buf: &[u8]) -> Result<Option<usize>, DecodeError> {
         });
     }
 
-    let body_start = soh1 + 1 + soh2_rel + 1;
-    let total = body_start + body_len + 7;
+    // BUG-23/FR-032 (feature 007): `checked_add` throughout, not bare `+` — `body_len` is already
+    // capped by `MAX_BODY_LEN` above, and `soh1`/`soh2_rel` are bounded by `buf.len()`, so this
+    // can't overflow in any reachable scenario today; but a bare `+` would silently wrap (in
+    // release builds) if that ever stopped being true, drained the wrong number of bytes, and
+    // desynchronized the stream for a remote, unauthenticated peer — defense in depth, not just a
+    // theoretical concern, per the original audit finding.
+    let overflow = || DecodeError::BodyLengthTooLarge {
+        declared: body_len,
+        max: MAX_BODY_LEN,
+    };
+    let body_start = soh1
+        .checked_add(1)
+        .and_then(|v| v.checked_add(soh2_rel))
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(overflow)?;
+    let total = body_start
+        .checked_add(body_len)
+        .and_then(|v| v.checked_add(7))
+        .ok_or_else(overflow)?;
     if buf.len() >= total {
+        // BUG-46/FR-047 (feature 007): confirm the bytes at the computed checksum position
+        // actually look like `10=` before trusting `total` — a wrong `BodyLength` (still numeric,
+        // still within `MAX_BODY_LEN`, but not matching the message's real length) would otherwise
+        // make `total` point at the wrong offset entirely; the caller would drain the wrong number
+        // of bytes and desynchronize the stream for good, rather than failing this one frame and
+        // resynchronizing (the existing malformed-frame recovery this `Err` return already
+        // triggers one layer up, in `truefix-transport`'s `classify_buffered`) — matching QFJ's
+        // `FIXMessageDecoder`, which verifies `10=???<SOH>` at the expected position.
+        if buf.get(total - 7..total - 4) != Some(b"10=") {
+            return Err(DecodeError::InvalidBodyLength);
+        }
         Ok(Some(total))
     } else {
         Ok(None)
@@ -55,4 +97,19 @@ pub fn frame_length(buf: &[u8]) -> Result<Option<usize>, DecodeError> {
 
 fn find(haystack: &[u8], needle: u8) -> Option<usize> {
     haystack.iter().position(|&b| b == needle)
+}
+
+/// Whether `value` (the BeginString field's value, e.g. `b"FIX.4.4"`) matches the
+/// `FIX.<digit>.<digit>` / `FIXT.<digit>.<digit>` shape (BUG-79/FR-048, feature 007). Only the
+/// first 3 characters after the `FIX.`/`FIXT.` prefix are checked (matching QFJ's own pattern);
+/// any trailing suffix (e.g. `SP2`) is accepted as-is.
+fn looks_like_fix_begin_string(value: &[u8]) -> bool {
+    let Ok(s) = core::str::from_utf8(value) else {
+        return false;
+    };
+    let Some(rest) = s.strip_prefix("FIXT.").or_else(|| s.strip_prefix("FIX.")) else {
+        return false;
+    };
+    let bytes = rest.as_bytes();
+    matches!(bytes.get(0..3), Some([d1, b'.', d2]) if d1.is_ascii_digit() && d2.is_ascii_digit())
 }

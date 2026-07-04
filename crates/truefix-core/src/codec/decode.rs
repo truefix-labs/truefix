@@ -175,6 +175,16 @@ fn tokenize_validated(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
     }
     let declared_bl = parse_usize(&second.1).ok_or(DecodeError::InvalidBodyLength)?;
 
+    // BUG-80/FR-049 (feature 007): MsgType (tag 35) must be present somewhere in the message --
+    // previously unchecked entirely, so a message missing it (e.g. a near-empty frame containing
+    // only BeginString/BodyLength/CheckSum) was accepted. Checked by presence, not position: a
+    // MsgType present but out of its normal third-field position is a separate, already-handled
+    // concern (`fields_out_of_order`/`ValidateFieldsOutOfOrder`, FR-006) -- not a basis for
+    // rejecting outright here.
+    if !fields.iter().any(|f| f.0 == MSG_TYPE) {
+        return Err(DecodeError::MissingMsgType);
+    }
+
     let last = fields.last().ok_or(DecodeError::MissingChecksum)?;
     if last.0 != CHECK_SUM {
         return Err(DecodeError::MissingChecksum);
@@ -195,7 +205,11 @@ fn tokenize_validated(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
     }
 
     let pre = input.get(..cs_offset).ok_or(DecodeError::MissingChecksum)?;
-    let computed: u32 = pre.iter().map(|&b| u32::from(b)).sum::<u32>() & 0xFF;
+    // BUG-24/FR-032 (feature 007): same `u64`-accumulator fix as `encode.rs`'s mirror-image
+    // checksum sum — see its comment for the overflow/panic rationale. `frame_length`'s
+    // `MAX_BODY_LEN` cap makes this unreachable via the normal transport path, but `Message::decode`
+    // is also a public API callable directly with arbitrary bytes, bypassing that cap entirely.
+    let computed: u32 = (pre.iter().map(|&b| u64::from(b)).sum::<u64>() & 0xFF) as u32;
     if computed != declared_cs {
         return Err(DecodeError::ChecksumMismatch {
             declared: declared_cs,
@@ -210,9 +224,14 @@ fn tokenize_validated(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
 fn tokenize(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
     let mut tokens = Vec::new();
     let mut pos = 0usize;
-    // When the previous field was a length field, this holds the exact byte length of the
-    // next (data) field's value.
-    let mut pending_data_len: Option<usize> = None;
+    // When the previous field was a length field (e.g. RawDataLength/95), this holds its declared
+    // byte length together with the one tag (e.g. RawData/96) it's actually allowed to apply to
+    // (BUG-38/FR-020, feature 007) — a length only ever governs its own documented data-tag
+    // partner, never whatever tag happens to appear next. Applying it unconditionally to any
+    // following tag let a phantom length silently swallow an embedded SOH byte and an entire
+    // subsequent field into the wrong tag's "value", with the swallowed tag vanishing from the
+    // decoded message and no error raised at all.
+    let mut pending_data: Option<(u32, usize)> = None;
 
     while pos < input.len() {
         let start = pos;
@@ -228,7 +247,21 @@ fn tokenize(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
         let tag = parse_u32(tag_bytes).ok_or(DecodeError::InvalidTag { offset: start })?;
         let val_start = pos + eq_rel + 1;
 
-        let (value, next) = if let Some(len) = pending_data_len.take() {
+        let data_len = match pending_data.take() {
+            Some((expected_tag, len)) if expected_tag == tag => Some(len),
+            Some(_) => {
+                // BUG-38/FR-020: the length field's documented partner never showed up -- the tag
+                // that actually followed is something else entirely, a malformed/adversarial
+                // message.
+                return Err(DecodeError::GarbledField {
+                    offset: start,
+                    reason: "data field does not match its declared length field's partner tag",
+                });
+            }
+            None => None,
+        };
+
+        let (value, next) = if let Some(len) = data_len {
             let val_end = val_start
                 .checked_add(len)
                 .ok_or(DecodeError::GarbledField {
@@ -259,10 +292,15 @@ fn tokenize(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
             (v.to_vec(), val_start + soh_rel + 1)
         };
 
-        if pending_data_len.is_none() && data_field_for_length(tag).is_some() {
-            if let Some(len) = parse_usize(&value) {
-                pending_data_len = Some(len);
-            }
+        if let Some(expected_tag) = data_field_for_length(tag) {
+            // BUG-49/FR-020 (feature 007): a non-numeric declared length is itself malformed --
+            // silently leaving `pending_data` unset (as before) let the following data field be
+            // misparsed as an ordinary SOH-delimited string field with no error at all.
+            let len = parse_usize(&value).ok_or(DecodeError::GarbledField {
+                offset: start,
+                reason: "data-length field value is not a valid non-negative integer",
+            })?;
+            pending_data = Some((expected_tag, len));
         }
 
         tokens.push((tag, value, start));

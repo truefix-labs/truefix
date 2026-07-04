@@ -81,6 +81,14 @@ pub enum DecodeError {
     /// BodyLength (tag 9) is missing or not a valid number.
     #[error("missing or invalid BodyLength (tag 9)")]
     InvalidBodyLength,
+    /// BodyLength (tag 9) is declared as exactly 0 (BUG-100/FR-014, feature 007) — every real FIX
+    /// message has a non-empty body (at minimum MsgType), matching QuickFIX/J (QFJ-903) and
+    /// QuickFIX/Go, which both reject this rather than framing an empty-body message. Distinct
+    /// from [`Self::InvalidBodyLength`] (missing/non-numeric) so the transport layer can treat it
+    /// like [`Self::BodyLengthTooLarge`] — closing the connection outright — rather than the
+    /// generic malformed-frame skip-and-resync recovery `InvalidBodyLength` gets.
+    #[error("declared BodyLength is 0")]
+    ZeroBodyLength,
     /// BodyLength (tag 9) declares a frame larger than the configured/sane maximum (BUG-13/
     /// FR-024, feature 006) — the connection must be closed instead of buffering unboundedly
     /// while waiting for that much data to arrive (a memory-exhaustion DoS vector, reachable
@@ -100,6 +108,11 @@ pub enum DecodeError {
         /// Actual measured body length.
         actual: usize,
     },
+    /// The third field is not MsgType (tag 35) — BUG-80/FR-049 (feature 007): every real FIX
+    /// message has a MsgType immediately after BeginString/BodyLength (matching QuickFIX/J and
+    /// QuickFIX/Go, which both require it); a message missing it entirely was previously accepted.
+    #[error("message does not carry MsgType (tag 35) as its third field")]
+    MissingMsgType,
     /// CheckSum (tag 10) is missing or not a valid number.
     #[error("missing or invalid CheckSum (tag 10)")]
     MissingChecksum,

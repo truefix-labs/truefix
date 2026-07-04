@@ -89,6 +89,41 @@ async fn a_connection_declaring_an_oversized_body_length_is_closed() {
     assert!(!flag.load(Ordering::SeqCst), "must never reach a logon");
 }
 
+/// T039 (US1, feature 007): BUG-100/FR-014 — a connection sending a declared `BodyLength=0` is
+/// closed rather than processed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_declaring_a_zero_body_length_is_closed() {
+    let flag = Arc::new(AtomicBool::new(false));
+    let acceptor = Acceptor::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        acc_cfg(),
+        Arc::new(FlagApp { on: flag.clone() }),
+    )
+    .await
+    .unwrap();
+    let addr = acceptor.local_addr().unwrap();
+    acceptor.serve();
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"8=FIX.4.4\x019=0\x0110=000\x01")
+        .await
+        .unwrap();
+
+    let mut buf = [0u8; 16];
+    let result = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await;
+    match result {
+        Ok(Ok(0)) => {} // connection closed (EOF) -- expected
+        Ok(Ok(n)) => panic!("expected the connection to close, got {n} more bytes"),
+        Ok(Err(_)) => {} // connection reset -- also an acceptable "closed" signal
+        Err(_) => panic!(
+            "connection was not closed within 5s -- a declared BodyLength=0 must not be silently \
+             tolerated or left pending"
+        ),
+    }
+    assert!(!flag.load(Ordering::SeqCst), "must never reach a logon");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_legitimate_message_following_a_malformed_prefix_is_preserved() {
     let flag = Arc::new(AtomicBool::new(false));

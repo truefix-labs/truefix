@@ -1,7 +1,10 @@
 //! File-backed message stores.
 //!
 //! Layout in the store directory:
-//! - `seqnums` — text: sender sequence on line 1, target sequence on line 2.
+//! - `senderseqnums`/`targetseqnums` — one text value each (BUG-30/BUG-99, feature 007), each
+//!   written atomically (write-temp-then-rename). A legacy combined `seqnums` file (one sender
+//!   line, one target line — the pre-007 layout) is auto-migrated into this pair on first open if
+//!   found and left in place afterward (FR-001a).
 //! - `body` — append log of records: `seq(8 LE) | len(4 LE) | bytes`.
 //!
 //! On open, the body log's offset index is replayed into memory (not the message bytes
@@ -160,11 +163,6 @@ impl BodyLog {
         Ok(out)
     }
 
-    /// All indexed `(seq, message)` pairs in ascending order (used to warm a cache on open).
-    fn all(&self) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
-        self.range(0, u64::MAX)
-    }
-
     fn reset(&self) -> Result<(), StoreError> {
         // BUG-15/FR-016 (feature 006): sync when `FileStoreSync=Y`, matching `append()`'s
         // existing discipline — previously this never synced regardless of the option, so a
@@ -188,17 +186,44 @@ impl BodyLog {
 
 /// The sequence-number half of a file-backed store: `sender`/`target` next-seq counters,
 /// persisted to a small text file.
+/// Sender/target sequence-number persistence (BUG-30/BUG-31/BUG-99, FR-001/FR-001a, feature 007):
+/// two independent files (`senderseqnums`/`targetseqnums`, matching QuickFIX/J's layout), each
+/// written atomically (write-to-temp-then-rename, never truncate-in-place) so a crash mid-write
+/// always leaves either the prior or the new value recoverable, never neither. A present-but-
+/// unparseable file is a typed `StoreError`, distinct from a legitimately-absent one (which
+/// defaults to sequence 1). `reset()` deletes and recreates both files wholesale, matching
+/// QuickFIX/J's `closeAndDeleteFiles()`-then-reinitialize semantics.
 struct SeqFile {
-    path: PathBuf,
+    sender_path: PathBuf,
+    target_path: PathBuf,
     state: Mutex<(u64, u64)>,
     sync: bool,
 }
 
 impl SeqFile {
-    fn open(path: PathBuf, sync: bool) -> Result<Self, StoreError> {
-        let (sender, target) = load_seqnums(&path)?;
+    /// `dir` is the store directory. Auto-migrates from a legacy combined `seqnums` file (one
+    /// sender/target pair) if present and either new-format file is still missing — migration is
+    /// itself per-file idempotent/crash-safe: each of `senderseqnums`/`targetseqnums` is only
+    /// written from the legacy source if it doesn't already exist, so an interrupted migration
+    /// simply resumes correctly on the next open. The legacy file is never deleted.
+    fn open(dir: &Path, sync: bool) -> Result<Self, StoreError> {
+        let sender_path = dir.join("senderseqnums");
+        let target_path = dir.join("targetseqnums");
+        let legacy_path = dir.join("seqnums");
+        if legacy_path.exists() && (!sender_path.exists() || !target_path.exists()) {
+            let (legacy_sender, legacy_target) = load_legacy_seqnums(&legacy_path)?;
+            if !sender_path.exists() {
+                write_seq_value(&sender_path, legacy_sender, sync)?;
+            }
+            if !target_path.exists() {
+                write_seq_value(&target_path, legacy_target, sync)?;
+            }
+        }
+        let sender = load_seq_value(&sender_path)?;
+        let target = load_seq_value(&target_path)?;
         Ok(Self {
-            path,
+            sender_path,
+            target_path,
             state: Mutex::new((sender, target)),
             sync,
         })
@@ -212,42 +237,87 @@ impl SeqFile {
         Ok(*self.lock()?)
     }
 
-    fn write(&self, sender: u64, target: u64) -> Result<(), StoreError> {
-        let mut f = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.path)
-            .map_err(io_err)?;
-        write!(f, "{sender}\n{target}\n").map_err(io_err)?;
-        if self.sync {
-            f.sync_data().map_err(io_err)?;
-        }
-        Ok(())
-    }
-
     fn set_sender(&self, seq: u64) -> Result<(), StoreError> {
-        let target = {
-            let mut s = self.lock()?;
-            s.0 = seq;
-            s.1
-        };
-        self.write(seq, target)
+        self.lock()?.0 = seq;
+        write_seq_value(&self.sender_path, seq, self.sync)
     }
 
     fn set_target(&self, seq: u64) -> Result<(), StoreError> {
-        let sender = {
-            let mut s = self.lock()?;
-            s.1 = seq;
-            s.0
-        };
-        self.write(sender, seq)
+        self.lock()?.1 = seq;
+        write_seq_value(&self.target_path, seq, self.sync)
     }
 
     fn reset(&self) -> Result<(), StoreError> {
         *self.lock()? = (1, 1);
-        self.write(1, 1)
+        let _ = fs::remove_file(&self.sender_path);
+        let _ = fs::remove_file(&self.target_path);
+        write_seq_value(&self.sender_path, 1, self.sync)?;
+        write_seq_value(&self.target_path, 1, self.sync)?;
+        Ok(())
     }
+}
+
+/// Atomically write a single sequence value to `path`: write to a sibling `.tmp` file, fsync it
+/// (if `sync`), then rename over `path` — the rename is the only step that can be observed
+/// mid-flight, and a rename is atomic on the same filesystem, so a crash never leaves `path`
+/// truncated/empty (BUG-30).
+fn write_seq_value(path: &Path, value: u64, sync: bool) -> Result<(), StoreError> {
+    let tmp_path = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("seq")
+    ));
+    {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .map_err(io_err)?;
+        writeln!(f, "{value}").map_err(io_err)?;
+        if sync {
+            f.sync_data().map_err(io_err)?;
+        }
+    }
+    fs::rename(&tmp_path, path).map_err(io_err)?;
+    Ok(())
+}
+
+/// Read a single sequence-number file: absent means a fresh store (sequence 1, not an error);
+/// present-but-unparseable is a typed error (BUG-31) — the two cases were previously
+/// indistinguishable (`unwrap_or(1)` collapsed both to 1).
+fn load_seq_value(path: &Path) -> Result<u64, StoreError> {
+    match fs::read_to_string(path) {
+        Ok(s) => s
+            .trim()
+            .parse()
+            .map_err(|_| StoreError::Backend(format!("corrupted sequence file {path:?}: {s:?}"))),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(1),
+        Err(e) => Err(io_err(e)),
+    }
+}
+
+/// Parse the legacy combined `seqnums` file (sender on line 1, target on line 2) for migration
+/// (FR-001a). Unlike the pre-007 `load_seqnums` this replaced, a present-but-unparseable legacy
+/// file is a typed error rather than silently defaulting — the same BUG-31 fix applies to the
+/// migration path.
+fn load_legacy_seqnums(path: &Path) -> Result<(u64, u64), StoreError> {
+    let corrupt =
+        |s: &str| StoreError::Backend(format!("corrupted legacy seqnums file {path:?}: {s:?}"));
+    let s = fs::read_to_string(path).map_err(io_err)?;
+    let mut lines = s.lines();
+    let sender: u64 = lines
+        .next()
+        .ok_or_else(|| corrupt(&s))?
+        .trim()
+        .parse()
+        .map_err(|_| corrupt(&s))?;
+    let target: u64 = lines
+        .next()
+        .ok_or_else(|| corrupt(&s))?
+        .trim()
+        .parse()
+        .map_err(|_| corrupt(&s))?;
+    Ok((sender, target))
 }
 
 /// A durable, file-backed message store with no in-memory message-body cache (bodies are read
@@ -269,7 +339,7 @@ impl FileStore {
     /// Open (creating if needed) a file store in `dir` with explicit options (FR-025).
     pub fn open_with_options(dir: &Path, options: FileStoreOptions) -> Result<Self, StoreError> {
         fs::create_dir_all(dir).map_err(io_err)?;
-        let seq = SeqFile::open(dir.join("seqnums"), options.sync)?;
+        let seq = SeqFile::open(dir, options.sync)?;
         let (body, corrupted) = BodyLog::open(dir.join("body"), options.sync)?;
         let creation_time_path = dir.join("session");
         let creation_time = creation_time_file(&creation_time_path)?;
@@ -404,11 +474,25 @@ impl CachedFileStore {
     /// `max_cached_msgs`).
     pub fn open_with_options(dir: &Path, options: FileStoreOptions) -> Result<Self, StoreError> {
         fs::create_dir_all(dir).map_err(io_err)?;
-        let seq = SeqFile::open(dir.join("seqnums"), options.sync)?;
+        let seq = SeqFile::open(dir, options.sync)?;
         let (body, corrupted) = BodyLog::open(dir.join("body"), options.sync)?;
         let mut cache = CacheState::new(options.max_cached_msgs);
-        for (seq_no, bytes) in body.all()? {
-            cache.insert(seq_no, bytes);
+        // BUG-81/FR-031 (feature 007): warm the cache by reading only the (at most)
+        // `max_cached_msgs` most-recent bodies, not every body ever stored -- previously
+        // `body.all()` read every message body into memory up front, then relied on `cache.insert`
+        // evicting the extras one by one, so peak memory during open was the *entire* message
+        // history rather than the bound this cache is supposed to enforce. `seqs_in_range` is
+        // index-only (no body reads), so slicing to the tail before reading anything is free.
+        let all_seqs = body.seqs_in_range(0, u64::MAX)?;
+        let warm_from = if options.max_cached_msgs > 0 {
+            all_seqs.len().saturating_sub(options.max_cached_msgs)
+        } else {
+            0 // unbounded cache: warm the whole history, matching the original semantics
+        };
+        for seq_no in all_seqs.get(warm_from..).unwrap_or_default() {
+            if let Some(bytes) = body.read(*seq_no)? {
+                cache.insert(*seq_no, bytes);
+            }
         }
         let creation_time_path = dir.join("session");
         let creation_time = creation_time_file(&creation_time_path)?;
@@ -509,66 +593,47 @@ impl MessageStore for CachedFileStore {
     }
 }
 
-fn load_seqnums(path: &Path) -> Result<(u64, u64), StoreError> {
-    match fs::read_to_string(path) {
-        Ok(s) => {
-            let mut lines = s.lines();
-            let sender = lines
-                .next()
-                .and_then(|l| l.trim().parse().ok())
-                .unwrap_or(1);
-            let target = lines
-                .next()
-                .and_then(|l| l.trim().parse().ok())
-                .unwrap_or(1);
-            Ok((sender, target))
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok((1, 1)),
-        Err(e) => Err(io_err(e)),
-    }
-}
-
+/// Replays record headers (not bodies) into an offset index, seeking past each record's body
+/// bytes without ever reading them into memory (BUG-45/FR-031, feature 007) -- previously
+/// `fs::read(path)` read the *entire* body-log file (every message ever stored) into one `Vec`
+/// just to walk its 12-byte record headers, allocating memory proportional to the whole message
+/// history rather than to the (tiny, fixed-size-per-record) index being rebuilt. Returns the
+/// index and whether a corrupt trailing record was found.
 fn load_index(path: &Path) -> Result<(BodyIndex, bool), StoreError> {
-    match fs::read(path) {
-        Ok(data) => Ok(parse_records(&data)),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok((BTreeMap::new(), false)),
-        Err(e) => Err(io_err(e)),
-    }
-}
-
-/// Replay record headers (not bodies) into an offset index; returns the index and whether a
-/// corrupt trailing record was found.
-fn parse_records(data: &[u8]) -> (BodyIndex, bool) {
+    let mut f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok((BTreeMap::new(), false)),
+        Err(e) => return Err(io_err(e)),
+    };
+    let file_len = f.metadata().map_err(io_err)?.len();
     let mut index = BTreeMap::new();
-    let mut pos = 0usize;
+    let mut pos: u64 = 0;
     loop {
-        let record_start = pos;
-        let Some(seq) = read_u64(data, pos) else {
-            return (index, pos != data.len());
-        };
-        let Some(len) = read_u32(data, pos + 8) else {
-            return (index, true);
-        };
-        let start = pos + 12;
-        let Some(end) = start.checked_add(len as usize) else {
-            return (index, true);
-        };
-        if data.get(start..end).is_none() {
-            return (index, true);
+        if pos == file_len {
+            return Ok((index, false));
         }
-        index.insert(seq, (record_start as u64, len));
-        pos = end;
+        if file_len - pos < 12 {
+            return Ok((index, true)); // trailing bytes too short for a full header
+        }
+        // Read the two header fields into their own exactly-sized buffers, rather than one
+        // 12-byte buffer sliced afterward — this crate forbids `unwrap`/`expect`/indexing
+        // (Constitution Principle I), and a fixed-size array read via `read_exact` needs no
+        // fallible slice-to-array conversion at all.
+        let mut seq_bytes = [0u8; 8];
+        let mut len_bytes = [0u8; 4];
+        f.read_exact(&mut seq_bytes).map_err(io_err)?;
+        f.read_exact(&mut len_bytes).map_err(io_err)?;
+        let seq = u64::from_le_bytes(seq_bytes);
+        let len = u32::from_le_bytes(len_bytes);
+        let body_start = pos + 12;
+        let Some(body_end) = body_start.checked_add(u64::from(len)) else {
+            return Ok((index, true));
+        };
+        if body_end > file_len {
+            return Ok((index, true)); // declared body length runs past actual EOF
+        }
+        index.insert(seq, (pos, len));
+        f.seek(SeekFrom::Start(body_end)).map_err(io_err)?;
+        pos = body_end;
     }
-}
-
-fn read_u64(data: &[u8], pos: usize) -> Option<u64> {
-    let end = pos.checked_add(8)?;
-    let bytes: [u8; 8] = data.get(pos..end)?.try_into().ok()?;
-    Some(u64::from_le_bytes(bytes))
-}
-
-fn read_u32(data: &[u8], pos: usize) -> Option<u32> {
-    let end = pos.checked_add(4)?;
-    let bytes: [u8; 4] = data.get(pos..end)?.try_into().ok()?;
-    Some(u32::from_le_bytes(bytes))
 }

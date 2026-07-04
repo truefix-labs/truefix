@@ -4,11 +4,6 @@ use time::OffsetDateTime;
 
 use crate::config::TimeStampPrecision;
 
-/// Format the current UTC time as a FIX UTCTimestamp at millisecond precision. Never panics.
-pub(crate) fn now_utc_timestamp() -> String {
-    format_utc_timestamp(OffsetDateTime::now_utc(), TimeStampPrecision::Milliseconds)
-}
-
 /// Format the current UTC time at the given precision (FR-009).
 pub(crate) fn now_utc_timestamp_prec(precision: TimeStampPrecision) -> String {
     format_utc_timestamp(OffsetDateTime::now_utc(), precision)
@@ -40,7 +35,7 @@ mod tests {
 
     #[test]
     fn format_has_expected_shape() {
-        let s = now_utc_timestamp();
+        let s = now_utc_timestamp_prec(TimeStampPrecision::Milliseconds);
         // YYYYMMDD-HH:MM:SS.mmm => 21 chars
         assert_eq!(s.len(), 21, "{s}");
         assert_eq!(s.as_bytes().get(8), Some(&b'-'));

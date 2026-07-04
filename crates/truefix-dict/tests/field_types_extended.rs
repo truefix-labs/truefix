@@ -10,81 +10,81 @@ fn field(value: &str) -> Field {
 
 #[test]
 fn price_offset_accepts_decimals_and_rejects_non_numeric() {
-    assert!(FieldType::PriceOffset.value_ok(&field("-0.05")));
-    assert!(FieldType::PriceOffset.value_ok(&field("1.5")));
-    assert!(!FieldType::PriceOffset.value_ok(&field("abc")));
+    assert!(FieldType::PriceOffset.value_ok(&field("-0.05"), false));
+    assert!(FieldType::PriceOffset.value_ok(&field("1.5"), false));
+    assert!(!FieldType::PriceOffset.value_ok(&field("abc"), false));
 }
 
 #[test]
 fn local_mkt_date_and_utc_date_are_format_accepted() {
     // LocalMktDate is accepted as-is at this layer (no format check); UtcDate IS now format-
     // checked (BUG-12/FR-030, feature 006) -- this asserts the positive case still passes.
-    assert!(FieldType::LocalMktDate.value_ok(&field("20240101")));
-    assert!(FieldType::UtcDate.value_ok(&field("20240101")));
+    assert!(FieldType::LocalMktDate.value_ok(&field("20240101"), false));
+    assert!(FieldType::UtcDate.value_ok(&field("20240101"), false));
 }
 
 // --- T065 (US7, feature 006): UtcTimeOnly/UtcDate format validation (BUG-12/FR-030) ---
 
 #[test]
 fn utc_time_only_rejects_a_garbled_value() {
-    assert!(FieldType::UtcTimeOnly.value_ok(&field("12:00:00")));
-    assert!(!FieldType::UtcTimeOnly.value_ok(&field("not-a-time")));
+    assert!(FieldType::UtcTimeOnly.value_ok(&field("12:00:00"), false));
+    assert!(!FieldType::UtcTimeOnly.value_ok(&field("not-a-time"), false));
 }
 
 #[test]
 fn utc_date_rejects_a_garbled_value() {
-    assert!(FieldType::UtcDate.value_ok(&field("20240101")));
-    assert!(!FieldType::UtcDate.value_ok(&field("not-a-date")));
+    assert!(FieldType::UtcDate.value_ok(&field("20240101"), false));
+    assert!(!FieldType::UtcDate.value_ok(&field("not-a-date"), false));
 }
 
 #[test]
 fn day_of_month_accepts_integers_and_rejects_non_numeric() {
-    assert!(FieldType::DayOfMonth.value_ok(&field("15")));
-    assert!(!FieldType::DayOfMonth.value_ok(&field("thirty")));
+    assert!(FieldType::DayOfMonth.value_ok(&field("15"), false));
+    assert!(!FieldType::DayOfMonth.value_ok(&field("thirty"), false));
 }
 
 #[test]
 fn time_accepts_utc_timestamp_shaped_values() {
-    assert!(FieldType::Time.value_ok(&field("20240101-12:00:00")));
-    assert!(!FieldType::Time.value_ok(&field("not-a-time")));
+    assert!(FieldType::Time.value_ok(&field("20240101-12:00:00"), false));
+    assert!(!FieldType::Time.value_ok(&field("not-a-time"), false));
 }
 
 #[test]
 fn currency_accepts_three_uppercase_letters_only() {
-    assert!(FieldType::Currency.value_ok(&field("USD")));
-    assert!(!FieldType::Currency.value_ok(&field("usd"))); // lowercase rejected
-    assert!(!FieldType::Currency.value_ok(&field("US"))); // too short
-    assert!(!FieldType::Currency.value_ok(&field("USDX"))); // too long
+    assert!(FieldType::Currency.value_ok(&field("USD"), false));
+    assert!(!FieldType::Currency.value_ok(&field("usd"), false)); // lowercase rejected
+    assert!(!FieldType::Currency.value_ok(&field("US"), false)); // too short
+    assert!(!FieldType::Currency.value_ok(&field("USDX"), false)); // too long
 }
 
 #[test]
 fn country_accepts_two_uppercase_letters_only() {
-    assert!(FieldType::Country.value_ok(&field("US")));
-    assert!(!FieldType::Country.value_ok(&field("USA")));
-    assert!(!FieldType::Country.value_ok(&field("us")));
+    assert!(FieldType::Country.value_ok(&field("US"), false));
+    assert!(!FieldType::Country.value_ok(&field("USA"), false));
+    assert!(!FieldType::Country.value_ok(&field("us"), false));
 }
 
 #[test]
 fn exchange_accepts_up_to_four_alphanumeric_characters() {
-    assert!(FieldType::Exchange.value_ok(&field("N")));
-    assert!(FieldType::Exchange.value_ok(&field("XNYS")));
-    assert!(!FieldType::Exchange.value_ok(&field("TOOLONG")));
-    assert!(!FieldType::Exchange.value_ok(&field("")));
+    assert!(FieldType::Exchange.value_ok(&field("N"), false));
+    assert!(FieldType::Exchange.value_ok(&field("XNYS"), false));
+    assert!(!FieldType::Exchange.value_ok(&field("TOOLONG"), false));
+    assert!(!FieldType::Exchange.value_ok(&field(""), false));
 }
 
 #[test]
 fn multiple_char_value_accepts_space_separated_single_characters() {
-    assert!(FieldType::MultipleCharValue.value_ok(&field("A B C")));
-    assert!(FieldType::MultipleCharValue.value_ok(&field("A")));
-    assert!(!FieldType::MultipleCharValue.value_ok(&field("AB C")));
+    assert!(FieldType::MultipleCharValue.value_ok(&field("A B C"), false));
+    assert!(FieldType::MultipleCharValue.value_ok(&field("A"), false));
+    assert!(!FieldType::MultipleCharValue.value_ok(&field("AB C"), false));
 }
 
 #[test]
 fn multiple_value_string_and_multiple_string_value_are_accepted_at_the_type_layer() {
     // Per-token enum-membership checking is FieldDef::allows's job (see open_enum_and_multi_value
     // below), not FieldType::value_ok's — this layer only checks the *format*, which is free-form.
-    assert!(FieldType::MultipleValueString.value_ok(&field("A B C")));
-    assert!(FieldType::MultipleStringValue.value_ok(&field("A B C")));
+    assert!(FieldType::MultipleValueString.value_ok(&field("A B C"), false));
+    assert!(FieldType::MultipleStringValue.value_ok(&field("A B C"), false));
 }
 
 #[test]

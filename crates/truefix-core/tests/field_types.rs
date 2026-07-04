@@ -33,18 +33,22 @@ fn bad_conversions_error_never_panic() {
 }
 
 #[test]
-fn utc_timestamp_nanosecond_and_picosecond_truncation() {
+fn utc_timestamp_accepts_only_0_3_6_9_fractional_digits() {
     let with_ms = Field::string(52, "20120331-10:15:30.444")
         .as_utc_timestamp()
         .unwrap();
     assert_eq!(with_ms.year(), 2012);
     assert_eq!(with_ms.nanosecond(), 444_000_000);
 
-    // Picosecond input accepted, stored truncated to nanosecond (FR-B7).
-    let with_ps = Field::string(52, "20120331-10:15:30.123456789012")
+    let with_us = Field::string(52, "20120331-10:15:30.444555")
         .as_utc_timestamp()
         .unwrap();
-    assert_eq!(with_ps.nanosecond(), 123_456_789);
+    assert_eq!(with_us.nanosecond(), 444_555_000);
+
+    let with_ns = Field::string(52, "20120331-10:15:30.123456789")
+        .as_utc_timestamp()
+        .unwrap();
+    assert_eq!(with_ns.nanosecond(), 123_456_789);
 
     let no_frac = Field::string(52, "20120331-10:15:30")
         .as_utc_timestamp()
@@ -61,6 +65,26 @@ fn invalid_timestamp_errors() {
     assert!(Field::string(52, "20120331-25:00:00") // hour 25
         .as_utc_timestamp()
         .is_err());
+    // BUG-48/FR-046 (feature 007): only 0/3/6/9 fractional digits are accepted, matching QFJ --
+    // a single digit and picosecond (12-digit) precision must both now be rejected, not silently
+    // accepted (the latter was previously truncated to nanoseconds instead).
+    assert!(Field::string(52, "20120331-10:15:30.1")
+        .as_utc_timestamp()
+        .is_err());
+    assert!(Field::string(52, "20120331-10:15:30.123456789012")
+        .as_utc_timestamp()
+        .is_err());
+}
+
+#[test]
+fn utc_timestamp_leap_second_maps_to_59_plus_max_fraction() {
+    // BUG-78/FR-046 (feature 007): QFJ explicitly maps sec=60 to s=59, ns=999_999_999, rather
+    // than rejecting it outright (`time::Time::from_hms_nano`'s own default behavior).
+    let t = Field::string(52, "20120331-10:15:60")
+        .as_utc_timestamp()
+        .unwrap();
+    assert_eq!(t.second(), 59);
+    assert_eq!(t.nanosecond(), 999_999_999);
 }
 
 // --- T039/T040 (US7) — Data/UtcDateOnly/UtcTimeOnly round-trips (FR-011) ---
@@ -123,14 +147,14 @@ fn utc_time_only_round_trips_the_fix_wire_format_at_millisecond_precision() {
 }
 
 #[test]
-fn utc_time_only_accepts_no_fraction_and_truncates_picoseconds() {
+fn utc_time_only_accepts_no_fraction_and_0_3_6_9_digit_fractions() {
     let no_frac = Field::string(273, "10:15:30").as_utc_time_only().unwrap();
     assert_eq!(no_frac.millisecond(), 0);
 
-    let with_ps = Field::string(273, "10:15:30.123456789012")
+    let with_ns = Field::string(273, "10:15:30.123456789")
         .as_utc_time_only()
         .unwrap();
-    assert_eq!(with_ps.nanosecond(), 123_456_789);
+    assert_eq!(with_ns.nanosecond(), 123_456_789);
 }
 
 #[test]
@@ -140,4 +164,17 @@ fn utc_time_only_invalid_values_error_never_panic() {
         .as_utc_time_only()
         .is_err());
     assert!(Field::string(273, "").as_utc_time_only().is_err());
+    // BUG-48/FR-046 (feature 007): picosecond (12-digit) precision, previously silently
+    // truncated to nanoseconds, must now be rejected -- not representable by any
+    // `TimeStampPrecision` TrueFix actually supports.
+    assert!(Field::string(273, "10:15:30.123456789012")
+        .as_utc_time_only()
+        .is_err());
+}
+
+#[test]
+fn utc_time_only_leap_second_maps_to_59_plus_max_fraction() {
+    let t = Field::string(273, "10:15:60").as_utc_time_only().unwrap();
+    assert_eq!(t.second(), 59);
+    assert_eq!(t.nanosecond(), 999_999_999);
 }

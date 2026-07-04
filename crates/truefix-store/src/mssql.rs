@@ -75,8 +75,13 @@ fn parse_url(url: &str) -> Result<Config, StoreError> {
         return parse_semicolon_form(rest);
     }
 
+    // BUG-70/FR-030 (feature 007): split at the *last* '@', not the first -- a password
+    // containing its own '@' character (e.g. `user:p@ssword@host/db`) would otherwise be
+    // truncated, with the remainder wrongly folded into the host. The host portion of a valid URL
+    // never itself contains '@', so the last occurrence unambiguously separates credentials from
+    // host even when the password does.
     let (userinfo, hostpart) = rest
-        .split_once('@')
+        .rsplit_once('@')
         .ok_or_else(|| backend("mssql URL must be user:password@host[:port]/database"))?;
     let (user, password) = userinfo
         .split_once(':')
@@ -498,11 +503,25 @@ impl MessageStore for MssqlStore {
         .await;
         match result {
             Ok(()) => {
-                client
+                // BUG-41 (feature 007): a failed COMMIT previously returned its error directly,
+                // leaving the transaction open on this mutex-held connection -- every subsequent
+                // operation on it would then be stuck behind an uncommitted, unrolled-back
+                // transaction. Mirror the statement-failure branch below: attempt a rollback
+                // before propagating the error. The commit error is converted to an owned
+                // `String` immediately (rather than kept as the borrowing `QueryStream` result)
+                // so the following `ROLLBACK` call can borrow `client` again.
+                let commit_err = client
                     .simple_query("COMMIT TRANSACTION")
                     .await
-                    .map_err(backend)?;
-                Ok(())
+                    .err()
+                    .map(|e| e.to_string());
+                match commit_err {
+                    None => Ok(()),
+                    Some(msg) => {
+                        let _ = client.simple_query("ROLLBACK TRANSACTION").await;
+                        Err(StoreError::Backend(msg))
+                    }
+                }
             }
             Err(e) => {
                 let _ = client.simple_query("ROLLBACK TRANSACTION").await;

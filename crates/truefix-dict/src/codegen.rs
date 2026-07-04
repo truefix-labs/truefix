@@ -187,7 +187,19 @@ fn parse_dict(text: &str) -> Result<Dict, CodegenError> {
                 };
                 let Some(name) = tokens.next() else { continue };
                 let Some(ty) = tokens.next() else { continue };
-                let values = tokens
+                // BUG-74/FR-050 (feature 007): strip a leading `open` modifier the same way
+                // `parser.rs`'s runtime track already does — previously codegen ingested it as a
+                // literal (unlabeled) enum value instead, a dual-track divergence (Constitution
+                // Principle IV). Codegen doesn't need `open_enum` itself (it doesn't emit
+                // enum-membership-checking code — that's a `validate.rs`/runtime concern), so this
+                // is purely about not corrupting the emitted value list with a stray `"open"`
+                // variant.
+                let mut remaining: Vec<&str> = tokens.collect();
+                if remaining.first() == Some(&"open") {
+                    remaining.remove(0);
+                }
+                let values = remaining
+                    .into_iter()
                     .map(|tok| match tok.split_once('=') {
                         Some((v, l)) => (v.to_owned(), Some(l.to_owned())),
                         None => (tok.to_owned(), None),
@@ -372,7 +384,11 @@ fn type_mapping(ty: &str) -> TypeMapping {
             getter: "as_int",
             borrowed_str: false,
         },
-        "FLOAT" | "PRICE" | "QTY" | "AMT" | "PERCENTAGE" => TypeMapping {
+        // BUG-72/FR-050 (feature 007): PRICEOFFSET shares Price/Qty/Amt/Percentage's decimal wire
+        // format (already true on the runtime track, `model.rs`'s `FieldType::value_ok`) — codegen
+        // previously fell through to the generic `&str` catch-all below, giving it a stringly
+        // accessor instead of a typed decimal one.
+        "FLOAT" | "PRICE" | "QTY" | "AMT" | "PERCENTAGE" | "PRICEOFFSET" => TypeMapping {
             rust_ty: "rust_decimal::Decimal",
             getter: "as_decimal",
             borrowed_str: false,
@@ -387,7 +403,10 @@ fn type_mapping(ty: &str) -> TypeMapping {
             getter: "as_bool",
             borrowed_str: false,
         },
-        "UTCTIMESTAMP" => TypeMapping {
+        // BUG-72/FR-050 (feature 007): TIME shares UTCTIMESTAMP's wire format and accessor
+        // (`model.rs`'s `FieldType::value_ok` groups `UtcTimestamp | Time` identically) —
+        // previously fell through to `&str`.
+        "UTCTIMESTAMP" | "TIME" => TypeMapping {
             rust_ty: "time::OffsetDateTime",
             getter: "as_utc_timestamp",
             borrowed_str: false,
@@ -402,14 +421,36 @@ fn type_mapping(ty: &str) -> TypeMapping {
     }
 }
 
+/// Rust keywords (2018+ strict and reserved) a sanitized enum-variant label must not collide with
+/// (BUG-73/FR-050, feature 007) — checked case-insensitively, since an enum variant is
+/// conventionally PascalCase (`Type`, `Self`) even though most actual Rust keywords are lowercase;
+/// being case-insensitive here is a deliberately cautious superset, not just the exact keywords a
+/// literal Rust parser would reject.
+const RUST_KEYWORDS: &[&str] = &[
+    "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
+    "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
+    "self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
+    "while", "async", "await", "dyn", "abstract", "become", "box", "do", "final", "macro",
+    "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
+];
+
 /// Sanitize a QuickFIX enum-value label into a valid Rust identifier (US9, feature 005, FR-031):
 /// real QFJ-schema labels are always `[A-Za-z0-9_]+` (confirmed empirically against every bundled
 /// XML source — no punctuation), but some start with a digit (e.g. `"3A3"`, `"42"`, `"106H106J"`),
 /// which no Rust identifier may do. Prefixing with `V` when that happens is the minimal fix — the
 /// hand-picked labels this codegen shipped with before US9's real-QFJ-data expansion never hit
 /// this case, since they were all conventional words like `"Buy"`/`"Sell"`.
+///
+/// BUG-73/FR-050 (feature 007): a label exactly matching a Rust keyword (`"Type"`, `"Self"`,
+/// `"Match"`, etc.) previously produced uncompilable generated code — no real bundled QFJ schema
+/// label actually hits this (they're all `SCREAMING_SNAKE_CASE`, e.g. `PER_UNIT`), but a custom
+/// dictionary source could. Reuses the same `V`-prefix strategy as the leading-digit case above.
 fn sanitize_variant(label: &str) -> String {
-    if label.starts_with(|c: char| c.is_ascii_digit()) {
+    let needs_prefix = label.starts_with(|c: char| c.is_ascii_digit())
+        || RUST_KEYWORDS
+            .iter()
+            .any(|kw| kw.eq_ignore_ascii_case(label));
+    if needs_prefix {
         format!("V{label}")
     } else {
         label.to_owned()

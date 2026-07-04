@@ -68,7 +68,9 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
     // `bool` is the `ordered` modifier (US9, feature 005, FR-027).
     let mut messages_raw: BTreeMap<String, (String, Vec<RawMember>, Vec<RawMember>, bool)> =
         BTreeMap::new();
-    let mut groups_raw: BTreeMap<u32, (u32, Vec<RawMember>)> = BTreeMap::new();
+    // BUG-54/FR-034 (feature 007): the third element is the group's own `req:` list (empty when
+    // the source line doesn't declare one — see `GroupDef::required`'s doc).
+    let mut groups_raw: BTreeMap<u32, (u32, Vec<RawMember>, Vec<RawMember>)> = BTreeMap::new();
     let mut components_raw: BTreeMap<String, Vec<RawMember>> = BTreeMap::new();
 
     for (idx, raw) in input.lines().enumerate() {
@@ -217,7 +219,17 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                     reason: "group requires a member list",
                 })?;
                 let members = parse_member_list(members_token, line_no)?;
-                groups_raw.insert(count_tag, (delimiter, members));
+                // BUG-54/FR-034 (feature 007): optional trailing `req:`/`opt:` tokens, mirroring
+                // `message`'s own syntax — absent when the source hasn't been regenerated with
+                // this data yet, in which case `required` stays empty (no enforcement, same as
+                // today's behavior) rather than guessing.
+                let mut required = Vec::new();
+                for token in tokens {
+                    if let Some(list) = token.strip_prefix("req:") {
+                        required = parse_member_list(list, line_no)?;
+                    }
+                }
+                groups_raw.insert(count_tag, (delimiter, members, required));
             }
             "component" => {
                 let name = tokens.next().ok_or(ParseError::Malformed {
@@ -250,21 +262,28 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
     // Expand every group's member list first (component-resolved, but not yet carrying `child`
     // dictionaries) so `build_child` (US9, feature 005, FR-024) can look up a nested group's own
     // members by count_tag regardless of definition order.
-    let mut groups_expanded: BTreeMap<u32, (u32, Vec<u32>)> = BTreeMap::new();
-    for (count_tag, (delimiter, raw_members)) in groups_raw {
+    let mut groups_expanded: BTreeMap<u32, (u32, Vec<u32>, Vec<u32>)> = BTreeMap::new();
+    for (count_tag, (delimiter, raw_members, raw_required)) in groups_raw {
         let members = expand_members(&raw_members, &components)?;
-        groups_expanded.insert(count_tag, (delimiter, members));
+        let required = expand_members(&raw_required, &components)?;
+        groups_expanded.insert(count_tag, (delimiter, members, required));
     }
+    // `build_child` only needs (delimiter, members) — project down for its narrower signature.
+    let groups_expanded_for_child: BTreeMap<u32, (u32, Vec<u32>)> = groups_expanded
+        .iter()
+        .map(|(&t, (d, m, _))| (t, (*d, m.clone())))
+        .collect();
 
     let mut groups: BTreeMap<u32, GroupDef> = BTreeMap::new();
-    for (&count_tag, (delimiter, members)) in &groups_expanded {
-        let child = build_child(members, &fields, &groups_expanded, 0);
+    for (&count_tag, (delimiter, members, required)) in &groups_expanded {
+        let child = build_child(members, &fields, &groups_expanded_for_child, 0);
         groups.insert(
             count_tag,
             GroupDef {
                 count_tag,
                 delimiter: *delimiter,
                 members: members.clone(),
+                required: required.clone(),
                 child,
             },
         );
@@ -411,6 +430,11 @@ fn build_child(
                     count_tag: t,
                     delimiter: *delimiter,
                     members: nested_members.clone(),
+                    // Not consulted: `child`-scoped `GroupDef`s are only used for field
+                    // type/enum lookups (`check_group_field_value`); required-field checking
+                    // always recurses through the outer, flat `self.groups` map instead (see
+                    // `validate_group`'s doc).
+                    required: Vec::new(),
                     child: nested_child,
                 },
             );

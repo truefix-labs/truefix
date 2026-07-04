@@ -270,6 +270,18 @@ fn duplicate_logon_rejected(v: &str) -> Scenario {
     )
 }
 
+/// BUG-59/FR-023 (feature 007): FIX.4.0/4.1 never carry `SessionRejectReason(373)` at all (QFJ
+/// omits the field entirely below FIX.4.2) — every scenario asserting a specific 373 value needs
+/// to instead assert its *absence* for these two versions.
+fn expect_session_reject_reason(v: &str, msg_type: &str, code: &str) -> ExpectMsg {
+    let e = ExpectMsg::of(msg_type);
+    if v == "FIX.4.0" || v == "FIX.4.1" {
+        e.without_field(373)
+    } else {
+        e.field(373, code)
+    }
+}
+
 /// BUG-06 (006/US1) — a plain-mode SequenceReset missing NewSeqNo(36) entirely is rejected as a
 /// required-tag-missing violation, not silently skipped while still draining the queue.
 fn sequence_reset_reset_missing_new_seq_no_rejected(v: &str) -> Scenario {
@@ -281,7 +293,7 @@ fn sequence_reset_reset_missing_new_seq_no_rejected(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
-            Step::Expect(ExpectMsg::of("3").field(373, "1")), // RequiredTagMissing
+            Step::Expect(expect_session_reject_reason(v, "3", "1")), // RequiredTagMissing
         ],
     )
 }
@@ -299,8 +311,7 @@ fn resend_request_missing_begin_seq_no_rejected(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(rr),
             Step::Expect(
-                ExpectMsg::of("3")
-                    .field(373, "1") // RequiredTagMissing
+                expect_session_reject_reason(v, "3", "1") // RequiredTagMissing
                     .field(371, "7"), // RefTagID = BeginSeqNo
             ),
         ],
@@ -320,8 +331,7 @@ fn resend_request_missing_end_seq_no_rejected(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(rr),
             Step::Expect(
-                ExpectMsg::of("3")
-                    .field(373, "1") // RequiredTagMissing
+                expect_session_reject_reason(v, "3", "1") // RequiredTagMissing
                     .field(371, "16"), // RefTagID = EndSeqNo
             ),
         ],
@@ -405,10 +415,47 @@ fn logon_response_carries_reset_flag(v: &str) -> Scenario {
     )
 }
 
+/// T015 (US1, feature 007): BUG-28/FR-005 — the acceptor's Logon response must echo the INBOUND
+/// Logon's own `ResetSeqNumFlag`, not `config.reset_on_logon` (which defaults to `true` for every
+/// AT-suite acceptor session, per `runner.rs`'s `start_acceptor`). Previously the response always
+/// echoed `Y` regardless of what the inbound Logon carried — this scenario sends a Logon WITHOUT
+/// the flag and confirms the response correctly omits it too.
+fn logon_response_does_not_echo_reset_flag_when_inbound_lacks_it(v: &str) -> Scenario {
+    scenario(
+        "BUG28_LogonResponseDoesNotEchoAbsentResetFlag",
+        v,
+        vec![
+            Step::Send(logon(v, 1, false)), // no ResetSeqNumFlag on the inbound Logon
+            Step::Expect(ExpectMsg::of("A").without_field(141)),
+        ],
+    )
+}
+
+/// T036 (US1, feature 007): BUG-89/FR-011 — a dictionary-invalid *admin* message (a TestRequest
+/// carrying a tag the dictionary doesn't define) draws a plain session-level Reject (35=3), not
+/// silent pass-through. Previously `validate_app` returned `None` unconditionally for every
+/// admin-typed message, so this would have gone unvalidated regardless of the dictionary.
+fn admin_message_dictionary_invalid_is_rejected(v: &str) -> Scenario {
+    let mut tr = client_message(v, "1", 2); // TestRequest
+    tr.body.set(Field::string(112, "TESTREQID"));
+    tr.body.set(Field::string(4321, "not-a-real-tag")); // unknown tag, below the UDF range (5000+)
+    scenario(
+        "BUG89_AdminMessageDictionaryInvalidIsRejected",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(tr),
+            Step::Expect(ExpectMsg::of("3")), // plain Reject, not BusinessMessageReject (35=j)
+        ],
+    )
+}
+
 /// 2_noseq — a post-logon message with no MsgSeqNum(34) draws a session-level Reject.
 fn missing_msg_seq_num(v: &str) -> Scenario {
     let mut m = Message::new();
-    m.header.set(Field::string(8, v));
+    m.header
+        .set(Field::string(8, crate::runner::wire_begin_string(v)));
     m.header.set(Field::string(35, "1")); // TestRequest, but without MsgSeqNum
     m.header.set(Field::string(49, "CLIENT"));
     m.header.set(Field::string(56, "SERVER"));
@@ -574,6 +621,30 @@ fn resend_request_bounded_end(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(rr),
             Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
+        ],
+    )
+}
+
+/// T018 (US1, feature 007): BUG-29/FR-007 — a `ResendRequest` for a sequence range higher than
+/// what's expected is answered immediately (a GapFill here, since only admin traffic has been
+/// sent), not deferred until our own gap toward the counterparty resolves. Previously this would
+/// be silently queued behind our own outstanding `ResendRequest`, which is exactly the shape of a
+/// `ResendRequest`-vs-`ResendRequest` deadlock when both sides are in this state simultaneously.
+fn resend_request_too_high_answered_immediately(v: &str) -> Scenario {
+    let mut rr = client_message(v, "2", 5); // too-high: server expects seq 2
+    rr.body.set(Field::int(7, 1)); // BeginSeqNo
+    rr.body.set(Field::int(16, 1)); // EndSeqNo
+    scenario(
+        "BUG29_ResendRequestTooHighAnsweredImmediately",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(rr),
+            // Their too-high ResendRequest is answered right away...
+            Step::Expect(ExpectMsg::of("4")),
+            // ...and we still separately request our own gap (seq 2..4).
+            Step::Expect(ExpectMsg::of("2").field(7, "2")),
         ],
     )
 }
@@ -1440,9 +1511,13 @@ fn invalid_logon_bad_sending_time(v: &str) -> Scenario {
     )
 }
 
-/// QFJ648 — a Logon with a negative HeartBtInt does not crash or corrupt session state; the
-/// invalid value is ignored and the acceptor's configured heartbeat interval is kept, and the
-/// session logs on normally (defensive handling, not a protocol violation reply).
+/// QFJ648/BUG-95/FR-019 (feature 007) — a Logon with a negative HeartBtInt is rejected
+/// (Logout + disconnect), matching QuickFIX/J's actual QFJ-648 fix: contrary to this scenario's
+/// previous assumption (that the invalid value was silently ignored, keeping the acceptor's
+/// configured default, and the session logged on normally), QFJ-648 is precisely the issue that
+/// *added* this rejection to QuickFIX/J's `Session.next()` (`RejectLogon("HeartBtInt must not be
+/// negative")`) — confirmed via QuickFIX/J's own source/issue history. The previous version of
+/// this scenario had it backwards.
 fn qfj648_negative_heart_bt_int(v: &str) -> Scenario {
     let mut lo = logon(v, 1, true);
     lo.body.set(Field::int(108, -1)); // HeartBtInt, invalid
@@ -1451,9 +1526,8 @@ fn qfj648_negative_heart_bt_int(v: &str) -> Scenario {
         v,
         vec![
             Step::Send(lo),
-            // Logon still succeeds (echoing the *default* HeartBtInt=30 the harness template
-            // configures, not the invalid -1) rather than a Reject/disconnect.
-            Step::Expect(ExpectMsg::of("A").field(108, "30")),
+            Step::Expect(ExpectMsg::of("5")), // Logout: HeartBtInt must not be negative
+            Step::ExpectDisconnect,
         ],
     )
 }
@@ -1531,7 +1605,7 @@ fn seq_reset_new_seq_no_less(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
-            Step::Expect(ExpectMsg::of("3").field(373, "5")), // ValueIsIncorrect
+            Step::Expect(expect_session_reject_reason(v, "3", "5")), // ValueIsIncorrect
         ],
     )
 }
@@ -1901,9 +1975,11 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(reverse_route_empty_tags(v));
         out.push(unsolicited_logout(v));
         out.push(logon_response_carries_reset_flag(v));
+        out.push(logon_response_does_not_echo_reset_flag_when_inbound_lacks_it(v));
         out.push(logon_adopts_heartbeat_interval(v));
         out.push(resend_request_gap_fill(v));
         out.push(resend_request_bounded_end(v));
+        out.push(resend_request_too_high_answered_immediately(v));
         out.push(resend_request_not_duplicated(v));
         out.push(resend_request_begin_zero_ignored(v));
         out.push(out_of_order_queued_then_drained(v));
@@ -1967,6 +2043,7 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(incorrect_data_format("FIX.4.4"));
     out.push(repeated_tag("FIX.4.4"));
     out.push(unregistered_msg_type("FIX.4.4"));
+    out.push(admin_message_dictionary_invalid_is_rejected("FIX.4.4"));
     // Special-category suites (T086) requiring per-acceptor session-feature toggles.
     out.push(next_expected_msg_seq_num("FIX.4.4"));
     out.push(last_msg_seq_num_processed("FIX.4.4"));

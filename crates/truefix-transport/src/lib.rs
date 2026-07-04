@@ -362,6 +362,23 @@ impl SessionHandle {
     pub async fn join(self) {
         let _ = self.task.await;
     }
+
+    /// Synchronously, non-gracefully abort the underlying connection task (BUG-27/FR-013, feature
+    /// 007) — no Logout is sent; this is a hard stop, not a courtesy disconnect. Used where an
+    /// async `.logout().await` isn't available (`Engine::shutdown()`'s synchronous signature,
+    /// `impl Drop for Engine`) or isn't appropriate (a caller that already knows the connection is
+    /// unresponsive). Prefer `logout()` when a graceful stop is possible.
+    pub fn abort(&self) {
+        self.task.abort();
+    }
+
+    /// Whether the underlying connection task has already finished (BUG-25, feature 007) —
+    /// non-consuming, unlike `join`, so a caller can poll it repeatedly (e.g.
+    /// `run_scheduled_initiator`'s reconnect loop, to detect a dropped connection and become
+    /// eligible to reconnect).
+    pub fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
 }
 
 /// Connect out as an initiator and run the session.
@@ -496,6 +513,25 @@ pub struct Acceptor<A: Application + 'static> {
     tls: Option<Arc<rustls::ServerConfig>>,
 }
 
+/// BUG-32/FR-008 (feature 007): unlike `AcceptorBuilder`'s multi-session `Registry`, a single-session
+/// `Acceptor` has exactly one identity (`config`'s fixed `SenderCompID`/`TargetCompID`), so a bare
+/// `bool` behind a mutex is enough to track whether that one identity currently has an active
+/// connection.
+type SingleSessionActive = Arc<std::sync::Mutex<bool>>;
+
+/// Clears the single-session active flag when the connection's task finishes, regardless of how it
+/// finishes (normal completion, error, or panic-unwind) — mirrors `ActiveGuard` in `route_and_run`.
+struct SingleSessionActiveGuard {
+    active: SingleSessionActive,
+}
+impl Drop for SingleSessionActiveGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.active.lock() {
+            *guard = false;
+        }
+    }
+}
+
 impl<A: Application + 'static> Acceptor<A> {
     /// Bind to `addr`.
     pub async fn bind(addr: SocketAddr, config: SessionConfig, app: Arc<A>) -> io::Result<Self> {
@@ -534,6 +570,7 @@ impl<A: Application + 'static> Acceptor<A> {
     /// Spawn the accept loop. Each connection is served as a session.
     pub fn serve(self) -> JoinHandle<()> {
         let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
+        let active: SingleSessionActive = Arc::new(std::sync::Mutex::new(false));
         tokio::spawn(async move {
             while let Ok((mut stream, peer)) = self.listener.accept().await {
                 // PROXY protocol (FR-015): a single-session acceptor has no allow-list to gate
@@ -546,20 +583,52 @@ impl<A: Application + 'static> Acceptor<A> {
                 )
                 .await;
                 self.services.socket_options.apply(&stream);
+
+                // BUG-32/FR-008 (feature 007): refuse a second connection while this acceptor's
+                // one session identity already has an active connection, for the same reason
+                // `route_and_run`'s `Registry.active` check exists on the multi-session path — a
+                // competing connection for the same identity would corrupt shared sequence-number
+                // bookkeeping.
+                {
+                    let mut guard = match active.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if *guard {
+                        if let Some(log) = &self.services.log {
+                            log.on_event(&format!(
+                                "refused a second connection for already-connected session {:?}/{:?}",
+                                self.config.sender_comp_id, self.config.target_comp_id
+                            ));
+                        }
+                        continue;
+                    }
+                    *guard = true;
+                }
+
                 let config = self.config.clone();
                 let app = self.app.clone();
                 let services = self.services.clone();
+                let guard = SingleSessionActiveGuard {
+                    active: active.clone(),
+                };
                 match &tls {
                     Some(acceptor) => {
                         let acceptor = acceptor.clone();
                         tokio::spawn(async move {
+                            let _guard = guard;
                             if let Ok(tls_stream) = acceptor.accept(stream).await {
-                                spawn_session_io(tls_stream, config, app, services);
+                                let handle = spawn_session_io(tls_stream, config, app, services);
+                                let _ = handle.task.await;
                             }
                         });
                     }
                     None => {
-                        spawn_session_io(stream, config, app, services);
+                        tokio::spawn(async move {
+                            let _guard = guard;
+                            let handle = spawn_session_io(stream, config, app, services);
+                            let _ = handle.task.await;
+                        });
                     }
                 }
             }
@@ -635,6 +704,11 @@ enum Inbound {
 /// genuine network reordering — but it *is* a real behavior change from strict wire order, which
 /// is exactly why the whole split is opt-in (`in_chan_capacity: None` never engages it).
 type AppSender = mpsc::Sender<Inbound>;
+
+/// Capacity of the admin-message channel (BUG-53/FR-045, feature 007) — see its construction site
+/// in `run_connection` for the rationale. Not user-configurable (unlike `in_chan_capacity`): this
+/// is a memory-safety bound, not a behavior trade-off an integrator should need to tune.
+const ADMIN_CHANNEL_CAPACITY: usize = 256;
 
 /// Build the application-message channel per `SessionConfig::in_chan_capacity` (US14, FR-019).
 /// `None` capacity returns `(None, _)` — the returned receiver's sole sender is dropped
@@ -726,11 +800,19 @@ async fn run_connection<A, S>(
     // handling) keep flowing, prioritized, even while a slow `Application` hook or a saturated
     // bounded application channel is stalling app-message processing.
     let (read_half, mut write_half) = split(stream);
-    let (admin_tx, mut admin_rx) = mpsc::unbounded_channel::<Inbound>();
+    // BUG-53/FR-045 (feature 007): bounded, not unbounded — an unbounded admin channel let a peer
+    // that keeps sending admin-classified traffic (heartbeats, TestRequests, garbled frames) faster
+    // than this connection's processing loop can drain it grow this queue's memory without limit,
+    // a DoS vector. `ADMIN_CHANNEL_CAPACITY` is generous enough that normal admin traffic (which is
+    // driven by heartbeat intervals, not line-rate) never comes close to filling it; only a
+    // genuinely abusive/malfunctioning peer applies backpressure, which then naturally propagates
+    // to the reader (its `.send().await` below blocks) and from there to the TCP connection itself
+    // (the reader stops draining the socket), rather than growing this process's memory.
+    let (admin_tx, mut admin_rx) = mpsc::channel::<Inbound>(ADMIN_CHANNEL_CAPACITY);
     let (app_tx, mut app_rx) = app_channel(in_chan_capacity);
     let reader_services = services.clone();
     let reader_id = id.clone();
-    tokio::spawn(read_loop(
+    let read_task = tokio::spawn(read_loop(
         read_half,
         buf,
         admin_tx,
@@ -738,6 +820,21 @@ async fn run_connection<A, S>(
         reader_services,
         reader_id,
     ));
+    // BUG-50/FR-043 (feature 007): abort the reader task whenever this connection's own task ends
+    // for *any* reason, including being aborted externally mid-flight (`SessionHandle::abort`/
+    // `ReconnectHandle::stop`). Without this, the reader task -- which owns the split `ReadHalf`
+    // -- keeps running orphaned even after this function's own future is torn down; since
+    // `tokio::io::split`'s underlying stream is only actually closed once *both* halves are
+    // dropped, a peer would never observe the connection close at all (only our write half would
+    // be gone, not the socket itself). `Drop` runs even when this async fn's own future is
+    // cancelled mid-poll (not just on a normal return), so this guard covers every exit path.
+    struct AbortReaderOnDrop(JoinHandle<()>);
+    impl Drop for AbortReaderOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _read_task_guard = AbortReaderOnDrop(read_task);
 
     let mut ticker = interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -839,11 +936,33 @@ async fn run_connection<A, S>(
         }
     }
 
+    // BUG-33/FR-009 (feature 007): a raw TCP drop (as opposed to a graceful Logout) never used to
+    // reach the state machine at all, so `ResetOnDisconnect`/`ResetOnLogout` were silently ignored
+    // on that path. Dispatching `Event::Disconnected` here — through the same `dispatch`/
+    // `perform_actions` pipeline every other event already uses — reaches `enter_disconnected()`
+    // and propagates any resulting `Action::ResetStore` to the store exactly as it would for a
+    // Logout-driven disconnect. This always returns `Err(())` (the event always leaves the session
+    // in `Disconnected` state), so its result is intentionally discarded.
+    let _ = dispatch(
+        &mut session,
+        Event::Disconnected,
+        &mut write_half,
+        &app,
+        &id,
+        &services,
+        &mut logged_on,
+    )
+    .await;
+
     let _ = write_half.shutdown().await;
     if let Some(monitor) = &services.monitor {
         monitor.mark_disconnected(&id);
     }
-    if logged_on {
+    // BUG-93/FR-029 (feature 007): fire on_logout whenever a Logon was sent or received on this
+    // connection, not only once it reached full `logged_on` state -- matching QFJ (`logonReceived
+    // || logonSent`) and QFGo, rather than silently skipping the callback for a connection that
+    // dropped mid-handshake.
+    if logged_on || session.logon_sent() || session.logon_received() {
         app.on_logout(&id).await;
         if let Some(log) = &services.log {
             log.on_event(&format!("{id}: logout"));
@@ -866,19 +985,23 @@ async fn recv_control(control: &mut mpsc::Receiver<Control>, open: bool) -> Opti
 /// [`run_connection`]'s processing loop). Ends when the stream closes/errors, or the processing
 /// loop has dropped its receivers (connection torn down from elsewhere).
 ///
-/// Administrative items are always forwarded the moment they're decoded (the admin channel is
-/// unbounded — never blocks). Application items, when a bounded channel is configured
-/// (`in_chan_capacity: Some(n)`), are *not* sent inline: decoding stages them into `pending_app`
-/// instead, and a separate loop below delivers them via `Sender::reserve()` — cancel-safe, so it
-/// can run concurrently (via `select!`) with continuing to read more bytes. This is what actually
-/// keeps admin traffic flowing under backpressure (US14, FR-019): an implementation that instead
-/// `.await`s each application send inline, in wire order, would still let one blocked send stall
-/// every frame decoded *after* it in the stream — including a later admin message — since a
-/// single sequential loop can't decode/forward anything past a point it's stuck awaiting.
+/// Administrative items are forwarded via the bounded admin channel (`ADMIN_CHANNEL_CAPACITY`,
+/// BUG-53/FR-045) — sized generously so ordinary admin traffic never blocks in practice, but
+/// bounded so a peer that floods admin-classified messages faster than the processing loop can
+/// drain them applies backpressure here (and from here, to the socket read below) instead of
+/// growing this process's memory without limit. Application items, when a bounded channel is
+/// configured (`in_chan_capacity: Some(n)`), are *not* sent inline: decoding stages them into
+/// `pending_app` instead, and a separate loop below delivers them via `Sender::reserve()` —
+/// cancel-safe, so it can run concurrently (via `select!`) with continuing to read more bytes.
+/// This is what actually keeps admin traffic flowing ahead of a *separately* backed-up application
+/// channel (US14, FR-019): an implementation that instead `.await`s each application send inline,
+/// in wire order, would still let one blocked send stall every frame decoded *after* it in the
+/// stream — including a later admin message — since a single sequential loop can't decode/forward
+/// anything past a point it's stuck awaiting.
 async fn read_loop<S: AsyncRead + Unpin>(
     mut read_half: S,
     mut buf: Vec<u8>,
-    admin_tx: mpsc::UnboundedSender<Inbound>,
+    admin_tx: mpsc::Sender<Inbound>,
     app_tx: Option<AppSender>,
     services: Services,
     id: SessionId,
@@ -897,6 +1020,7 @@ async fn read_loop<S: AsyncRead + Unpin>(
         &services,
         &id,
     )
+    .await
     .is_err()
     {
         return;
@@ -922,6 +1046,7 @@ async fn read_loop<S: AsyncRead + Unpin>(
                         &services,
                         &id,
                     )
+                    .await
                     .is_err()
                     {
                         return;
@@ -951,6 +1076,7 @@ async fn read_loop<S: AsyncRead + Unpin>(
                         buf.extend_from_slice(slice);
                     }
                     if classify_buffered(&mut buf, &admin_tx, true, &mut pending_app, &services, &id)
+                        .await
                         .is_err()
                     {
                         return;
@@ -962,15 +1088,18 @@ async fn read_loop<S: AsyncRead + Unpin>(
 }
 
 /// Frame and classify every complete message currently in `buf`. Administrative items (and
-/// garbled frames) are forwarded immediately via `admin_tx` (unbounded — never blocks).
-/// Application items are appended to `pending_app` for [`read_loop`] to deliver at its own pace,
-/// rather than sent here, so this function itself never blocks on a full bounded channel. When
-/// `has_app_channel` is `false` (`in_chan_capacity: None`), every item — admin or application —
-/// goes through `admin_tx` instead, in strict wire order, reproducing pre-US14 behavior exactly;
-/// see [`AppSender`]'s doc. `Err` means the processing loop is gone (its admin receiver dropped).
-fn classify_buffered(
+/// garbled frames) are forwarded via `admin_tx` — bounded (`ADMIN_CHANNEL_CAPACITY`, BUG-53/
+/// FR-045), so `.send().await` here can itself apply backpressure to this function's caller
+/// ([`read_loop`]) when a peer floods admin traffic faster than the processing loop drains it,
+/// rather than growing memory without limit. Application items are appended to `pending_app` for
+/// [`read_loop`] to deliver at its own pace, rather than sent here, so an application-channel
+/// backlog specifically never blocks this function. When `has_app_channel` is `false`
+/// (`in_chan_capacity: None`), every item — admin or application — goes through `admin_tx`
+/// instead, in strict wire order, reproducing pre-US14 behavior exactly; see [`AppSender`]'s doc.
+/// `Err` means the processing loop is gone (its admin receiver dropped).
+async fn classify_buffered(
     buf: &mut Vec<u8>,
-    admin_tx: &mpsc::UnboundedSender<Inbound>,
+    admin_tx: &mpsc::Sender<Inbound>,
     has_app_channel: bool,
     pending_app: &mut std::collections::VecDeque<Inbound>,
     services: &Services,
@@ -1002,15 +1131,15 @@ fn classify_buffered(
                         log.on_incoming(&String::from_utf8_lossy(&raw));
                     }
                     if !has_app_channel || is_admin(&msg) {
-                        admin_tx.send(Inbound::Message(msg)).map_err(|_| ())?;
+                        admin_tx.send(Inbound::Message(msg)).await.map_err(|_| ())?;
                     } else {
                         pending_app.push_back(Inbound::Message(msg));
                     }
                 } else {
                     // The frame length was determinable but the content failed to decode (bad
                     // checksum/body-length/tag): honor RejectGarbledMessage (FR-006) —
-                    // session-level, so it always goes through the (never-blocking) admin channel.
-                    admin_tx.send(Inbound::Garbled).map_err(|_| ())?;
+                    // session-level, so it always goes through the (bounded) admin channel.
+                    admin_tx.send(Inbound::Garbled).await.map_err(|_| ())?;
                 }
             }
             Ok(None) => return Ok(()),
@@ -1018,6 +1147,11 @@ fn classify_buffered(
             // the connection outright — this is the one framing error that must not just recover
             // and keep the connection open, since it's the actual DoS signal.
             Err(DecodeError::BodyLengthTooLarge { .. }) => return Err(()),
+            // BUG-100/FR-014 (feature 007): a declared BodyLength of exactly 0 gets the same
+            // hard-close treatment, rather than the generic malformed-frame skip-and-resync
+            // recovery below (which would otherwise just discard it and wait indefinitely for
+            // more bytes, since a zero-length body can't be resynced past).
+            Err(DecodeError::ZeroBodyLength) => return Err(()),
             Err(_) => {
                 // B14/FR-028 (feature 006): discard only the malformed prefix that caused this
                 // framing error, not the entire buffer — a legitimate message that happens to
@@ -1083,9 +1217,32 @@ where
 {
     match inbound {
         Inbound::Message(msg) => {
-            // Authentication / admin acceptance: an admin message the application rejects (e.g. a
-            // Logon with bad credentials) sends a Logout with the reject's text (if any) and tears
-            // the session down (FR-016).
+            // BUG-34/FR-010 (feature 007): a message the session layer is about to reject
+            // outright (stale latency, mismatched identity, or a too-low sequence number with no
+            // PossDupFlag — `Session::would_reject_before_processing`'s read-only precheck) must
+            // never reach `from_admin`/`from_app` at all; go straight to `dispatch`, which
+            // performs the actual reject/teardown.
+            //
+            // For every other message, `from_admin`/`from_app` still runs *before* `dispatch`,
+            // preserving existing semantics load-bearing elsewhere (e.g. `auth.rs`'s
+            // Username/Password check on Logon: the callback must be able to veto a Logon
+            // *before* the session commits to it and fires `on_logon` — `dispatch` performs both
+            // the state transition and the `on_logon` callback in one call, so reordering that
+            // relative to `from_admin` would let an unauthenticated Logon log on before the
+            // rejection is even checked).
+            if session.would_reject_before_processing(&msg) {
+                return dispatch(
+                    session,
+                    Event::Received(msg),
+                    stream,
+                    app,
+                    id,
+                    services,
+                    logged_on,
+                )
+                .await;
+            }
+
             if is_admin(&msg) {
                 if let Err(reject) = app.from_admin(&msg, id).await {
                     if let Some(log) = &services.log {
@@ -1405,6 +1562,21 @@ struct Registry {
     template: Option<SessionConfig>,
     allowed_remotes: Option<Vec<IpAddr>>,
     session_stores: HashMap<SessionId, Arc<dyn MessageStore>>,
+    /// BUG-61/FR-022 (feature 007): per-session `log`/`validator`/`fixt_dictionaries`/
+    /// `socket_options` overrides (attached via `AcceptorBuilder::with_session_services`),
+    /// resolved once a connection's `SessionId` is known — previously every session in a group
+    /// silently inherited these from whichever member happened to be built into the group-wide
+    /// `Services` (the "primary"), so two sessions sharing a port configuring e.g. different log
+    /// destinations would have the second session's traffic silently logged to the first's log
+    /// file instead. `store` is deliberately excluded here — already independently handled by
+    /// `session_stores` above (BUG-07, feature 006).
+    session_services: HashMap<SessionId, Services>,
+    /// BUG-32/FR-008 (feature 007): `SessionId`s with a currently-active connection — checked and
+    /// inserted in `route_and_run` before a second connection presenting the same identity is
+    /// routed, removed once that connection ends. Without this, a second connection for an
+    /// already-connected `SessionId` was accepted as a competing session, corrupting sequence-
+    /// number bookkeeping shared between the two.
+    active: std::sync::Mutex<std::collections::HashSet<SessionId>>,
 }
 
 /// Builds and serves a multi-session acceptor with optional dynamic sessions and allow-listing.
@@ -1417,6 +1589,7 @@ pub struct AcceptorBuilder<A: Application + 'static> {
     services: Services,
     tls: Option<Arc<rustls::ServerConfig>>,
     session_stores: HashMap<SessionId, Arc<dyn MessageStore>>,
+    session_services: HashMap<SessionId, Services>,
 }
 
 impl<A: Application + 'static> AcceptorBuilder<A> {
@@ -1441,6 +1614,7 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
             services: Services::default(),
             tls: None,
             session_stores: HashMap::new(),
+            session_services: HashMap::new(),
         })
     }
 
@@ -1479,6 +1653,22 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         store: Arc<dyn MessageStore>,
     ) -> Self {
         self.session_stores.insert(session_id, store);
+        self
+    }
+
+    /// Attach `log`/`socket_options`/`validator`/`fixt_dictionaries` specific to one
+    /// statically-registered session (keyed by its SessionID), overriding the group-wide
+    /// `Services` for that session only (BUG-61/FR-022, feature 007) — the same per-session
+    /// override principle [`Self::with_session_store`] already applies to `store`, extended to
+    /// the other fields that are just as legitimately per-session as sequence-number bookkeeping
+    /// (e.g. two sessions sharing a port configuring different log destinations or dictionaries).
+    /// `services.store` is ignored here (`store` stays governed exclusively by
+    /// [`Self::with_session_store`]); every other field of `services` not set to its default is
+    /// applied. Sessions not given an override here (including any connection matched via the
+    /// dynamic template) continue to use the group-wide `Services`.
+    #[must_use]
+    pub fn with_session_services(mut self, session_id: SessionId, services: Services) -> Self {
+        self.session_services.insert(session_id, services);
         self
     }
 
@@ -1523,6 +1713,8 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
             template: self.template,
             allowed_remotes: self.allowed_remotes,
             session_stores: self.session_stores,
+            session_services: self.session_services,
+            active: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let app = self.app;
         let services = self.services;
@@ -1591,7 +1783,13 @@ async fn route_and_run<A, S>(
         }
         match frame_length(&buf) {
             Ok(Some(total)) => match buf.get(..total).map(decode) {
-                Some(Ok(msg)) => break msg,
+                // BUG-52/FR-044 (feature 007): an acceptor must refuse a connection whose first
+                // inbound message isn't a Logon (QFJ/QFGo both close the socket immediately rather
+                // than routing/session-creating on anything else) -- previously any decodable first
+                // message was accepted here and used to derive a SessionId, so a non-Logon first
+                // message (or nothing at all) would silently fail routing further down instead of
+                // being rejected at the door.
+                Some(Ok(msg)) if msg.msg_type() == Some("A") => break msg,
                 _ => return,
             },
             Ok(None) => continue,
@@ -1662,6 +1860,68 @@ async fn route_and_run<A, S>(
         services.store = Some(store.clone());
     }
 
+    // BUG-61/FR-022 (feature 007): a statically-registered session with its own
+    // log/validator/fixt_dictionaries (attached via `AcceptorBuilder::with_session_services`) uses
+    // those instead of the group-wide `Services` — previously every session in a group silently
+    // inherited these from whichever member was built into the group-wide `Services` (the
+    // "primary"), so a second session configuring a different log destination or dictionary had
+    // its traffic silently routed to the first session's log/validator instead. `store` is
+    // untouched here (already resolved above, independently, by `session_stores`).
+    //
+    // `socket_options`/TLS remain a disclosed group-wide simplification here, same as the existing
+    // TLS-is-listener-scoped note in `crates/truefix/src/lib.rs`'s acceptor-group builder: safely
+    // re-applying per-session socket options this late would require reaching back into the
+    // (possibly TLS-wrapped) generic `S` for its underlying `TcpStream`, which isn't expressible
+    // without either an additional generic trait bound threaded through every caller of this
+    // function or unsafe raw-fd handling (forbidden by this project's `unsafe_code = "forbid"`).
+    // Socket options remain governed by the group-wide `Services`, applied once at accept time
+    // (before any session identity is known) — a narrower, disclosed limitation of this fix.
+    if let Some(overrides) = registry.session_services.get(&sid) {
+        let store = services.store.take();
+        services.log = overrides.log.clone();
+        services.validator = overrides.validator.clone();
+        services.fixt_dictionaries = overrides.fixt_dictionaries.clone();
+        services.store = store;
+    }
+
+    // BUG-32/FR-008 (feature 007): refuse a second connection presenting a `SessionId` that
+    // already has an active connection, rather than accepting it as a competing session (which
+    // would corrupt sequence-number bookkeeping shared between the two). Checked-and-inserted
+    // atomically under the same lock to avoid a race between two connections resolving to the
+    // same `sid` concurrently.
+    {
+        let mut active = match registry.active.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if !active.insert(sid.clone()) {
+            if let Some(log) = &services.log {
+                log.on_event(&format!(
+                    "refused a second connection for already-connected session {sid:?}"
+                ));
+            }
+            return;
+        }
+    }
+    // RAII guard: whatever path `run_connection` returns through (normal completion, error,
+    // panic-unwind), `sid` is removed from `active` so a legitimate future reconnect isn't
+    // permanently refused.
+    struct ActiveGuard {
+        registry: Arc<Registry>,
+        sid: SessionId,
+    }
+    impl Drop for ActiveGuard {
+        fn drop(&mut self) {
+            if let Ok(mut active) = self.registry.active.lock() {
+                active.remove(&self.sid);
+            }
+        }
+    }
+    let _guard = ActiveGuard {
+        registry: registry.clone(),
+        sid: sid.clone(),
+    };
+
     let (control_tx, control_rx) = mpsc::channel(8);
     run_connection(stream, config, app, services, control_tx, control_rx, buf).await;
 }
@@ -1718,12 +1978,31 @@ fn dynamic_config(
 pub struct ReconnectHandle {
     stop: Arc<AtomicBool>,
     task: JoinHandle<()>,
+    /// BUG-50/FR-043 (feature 007): an abort handle for the currently-active connection's own
+    /// task, if any is live right now -- lets `stop()` reach in and abort it immediately, rather
+    /// than only ever setting a flag the reconnect loop can't check again until that connection
+    /// ends on its own. `AbortHandle` (unlike `JoinHandle`) is cheaply `Clone`, so it can be
+    /// published here while the loop itself separately (and directly, not through this `Mutex`)
+    /// awaits the connection's full `JoinHandle` to completion.
+    current: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
 }
 
 impl ReconnectHandle {
-    /// Signal the loop to stop after the current attempt.
+    /// Signal the loop to stop after the current attempt, and abort a currently-active connection
+    /// immediately if one is live right now (BUG-50/FR-043, feature 007) -- previously this only
+    /// set a flag, checked at the top of the reconnect loop and after a connection's own task
+    /// returned; while a connection was live, the loop was blocked awaiting it and never saw the
+    /// flag until that connection ended on its own (which, absent a graceful close from either
+    /// side, could be never).
     pub fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        let guard = match self.current.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(handle) = guard.as_ref() {
+            handle.abort();
+        }
     }
 
     /// Wait for the loop to finish.
@@ -1781,6 +2060,9 @@ where
 {
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
+    let current: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let loop_current = current.clone();
     let id = config.session_id();
     let task = tokio::spawn(async move {
         let mut connected_before = false;
@@ -1794,6 +2076,10 @@ where
             if let Ok(stream) =
                 tcp_connect(addr, config.local_bind_addr, config.connect_timeout).await
             {
+                // BUG-39/FR-021 (feature 007): apply the configured socket options here, matching
+                // every other connection path (plain `connect_initiator`, the TLS variant below,
+                // acceptor-side connections) -- previously this one path skipped it entirely.
+                services.socket_options.apply(&stream);
                 if connected_before {
                     metrics_export::record_reconnect(&id);
                 }
@@ -1801,8 +2087,22 @@ where
                 // GAP-14/FR-014 (feature 005): a successful connect clears the backoff ladder —
                 // stepped delays only escalate across *consecutive* failed attempts.
                 backoff_step = 0;
+                // BUG-51/FR-042 (feature 007): a successful connect also resets endpoint rotation
+                // back to the primary (index 0) -- matching QFJ's `nextSocketAddressIndex = 0`.
+                // Previously `next_endpoint` was only ever incremented, so after a connection to a
+                // non-primary endpoint dropped, the next reconnect attempt kept rotating forward
+                // instead of preferring the primary again.
+                next_endpoint = 0;
                 let (control_tx, control_rx) = mpsc::channel(8);
-                run_connection(
+                // BUG-50/FR-043 (feature 007): run this connection as its own task (rather than
+                // awaiting it directly in this loop) so its (cheaply `Clone`-able) `AbortHandle`
+                // can be published to `current` -- letting `ReconnectHandle::stop()` reach in and
+                // abort it immediately rather than only being checked once this connection ends
+                // on its own. The full `JoinHandle` itself is awaited directly here, never through
+                // the shared `Mutex` -- holding a `std::sync::Mutex` guard across an `.await`
+                // would risk `stop()` (called synchronously, from another task) deadlocking
+                // against it for the entire lifetime of the connection.
+                let conn_task = tokio::spawn(run_connection(
                     stream,
                     config.clone(),
                     app.clone(),
@@ -1810,8 +2110,22 @@ where
                     control_tx,
                     control_rx,
                     Vec::new(),
-                )
-                .await;
+                ));
+                {
+                    let mut guard = match loop_current.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    *guard = Some(conn_task.abort_handle());
+                }
+                let _ = conn_task.await;
+                {
+                    let mut guard = match loop_current.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    *guard = None;
+                }
             }
             if loop_stop.load(Ordering::SeqCst) {
                 break;
@@ -1820,7 +2134,11 @@ where
             backoff_step = backoff_step.saturating_add(1);
         }
     });
-    ReconnectHandle { stop, task }
+    ReconnectHandle {
+        stop,
+        task,
+        current,
+    }
 }
 
 /// As [`connect_initiator_reconnecting_multi`], but performs a TLS handshake on every connection
@@ -1839,6 +2157,9 @@ where
 {
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
+    let current: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let loop_current = current.clone();
     let id = config.session_id();
     let connector = tokio_rustls::TlsConnector::from(tls);
     let task = tokio::spawn(async move {
@@ -1859,8 +2180,14 @@ where
                     }
                     connected_before = true;
                     backoff_step = 0;
+                    // BUG-51/FR-042 (feature 007): reset endpoint rotation back to the primary on
+                    // a successful connect -- see the identical fix (and its full rationale) in
+                    // the plain (non-TLS) `connect_initiator_reconnecting_multi` above.
+                    next_endpoint = 0;
                     let (control_tx, control_rx) = mpsc::channel(8);
-                    run_connection(
+                    // BUG-50/FR-043 (feature 007): see the identical fix (and its full rationale)
+                    // in the plain (non-TLS) `connect_initiator_reconnecting_multi` above.
+                    let conn_task = tokio::spawn(run_connection(
                         stream,
                         config.clone(),
                         app.clone(),
@@ -1868,8 +2195,22 @@ where
                         control_tx,
                         control_rx,
                         Vec::new(),
-                    )
-                    .await;
+                    ));
+                    {
+                        let mut guard = match loop_current.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        *guard = Some(conn_task.abort_handle());
+                    }
+                    let _ = conn_task.await;
+                    {
+                        let mut guard = match loop_current.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        *guard = None;
+                    }
                 }
             }
             if loop_stop.load(Ordering::SeqCst) {
@@ -1879,7 +2220,11 @@ where
             backoff_step = backoff_step.saturating_add(1);
         }
     });
-    ReconnectHandle { stop, task }
+    ReconnectHandle {
+        stop,
+        task,
+        current,
+    }
 }
 
 // ===========================================================================================
@@ -1938,6 +2283,13 @@ where
             false
         };
         let mut connected_before = false;
+        // BUG-94/FR-026 (feature 007): consecutive failed *connect attempts* back off using the
+        // same `ReconnectInterval`-step pattern `reconnect_delay` already applies elsewhere in
+        // this file, instead of retrying at a fixed 200ms. Tracked independently of the loop's own
+        // 200ms sleep below, which stays fast so schedule-boundary detection remains responsive --
+        // only the connect *attempt* itself is skipped until `next_retry_at` elapses.
+        let mut failed_attempts: usize = 0;
+        let mut next_retry_at: Option<std::time::Instant> = None;
         while !loop_stop.load(Ordering::SeqCst) {
             let now = time::OffsetDateTime::now_utc();
             // The boundary-crossing decision (reset-on-entry / logout-on-exit) is a pure,
@@ -1960,18 +2312,37 @@ where
                 truefix_session::ScheduleAction::None => {}
             }
             was_in_session = schedule.non_stop || schedule.is_in_session(now);
+            // BUG-25 (feature 007): a `SessionHandle` whose underlying connection task has
+            // already finished (e.g. the TCP connection dropped) must free `current` so the
+            // reconnect condition below can fire again -- previously `current` stayed `Some`
+            // forever after any drop, since nothing ever re-checked liveness.
+            if current.as_ref().is_some_and(SessionHandle::is_finished) {
+                current = None;
+            }
             // Independently of the boundary decision, keep retrying a connection while in
-            // session and disconnected (e.g. after a transient network drop).
-            if was_in_session && current.is_none() {
-                if let Ok(handle) =
-                    connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
-                        .await
+            // session and disconnected (e.g. after a transient network drop) -- but only once
+            // this attempt's own backoff delay (if any) has elapsed.
+            if was_in_session
+                && current.is_none()
+                && next_retry_at.is_none_or(|t| std::time::Instant::now() >= t)
+            {
+                match connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
+                    .await
                 {
-                    if connected_before {
-                        metrics_export::record_reconnect(&id);
+                    Ok(handle) => {
+                        if connected_before {
+                            metrics_export::record_reconnect(&id);
+                        }
+                        connected_before = true;
+                        current = Some(handle);
+                        failed_attempts = 0;
+                        next_retry_at = None;
                     }
-                    connected_before = true;
-                    current = Some(handle);
+                    Err(_) => {
+                        let delay = reconnect_delay(&config, failed_attempts);
+                        failed_attempts = failed_attempts.saturating_add(1);
+                        next_retry_at = Some(std::time::Instant::now() + delay);
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
