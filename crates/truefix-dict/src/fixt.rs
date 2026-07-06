@@ -51,7 +51,9 @@ impl FixtDictionaries {
     /// Resolve the application dictionary for an explicit `appl_ver_id`, falling back to the
     /// DefaultApplVerID.
     pub fn application_for(&self, appl_ver_id: Option<&str>) -> Option<&DataDictionary> {
-        let key = appl_ver_id.or(self.default_appl_ver_id.as_deref())?;
+        let key = appl_ver_id
+            .filter(|id| !id.is_empty())
+            .or(self.default_appl_ver_id.as_deref())?;
         self.applications.get(key)
     }
 }

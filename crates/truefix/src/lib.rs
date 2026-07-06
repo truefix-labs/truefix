@@ -37,14 +37,30 @@ use tokio::task::JoinHandle;
 
 use truefix_config::{
     ConfigError, ConnectionType, ProxyKind, ProxySpec, ResolvedSession, SessionSettings,
-    SocketOptionsSpec,
+    SocketEndpoint, SocketOptionsSpec,
 };
 use truefix_transport::{
     AcceptorBuilder, ProxyConfig, ProxyType, ReconnectHandle, Services, SocketOptions,
-    build_client_config, build_server_config, connect_initiator_reconnecting_multi,
-    connect_initiator_reconnecting_multi_tls, connect_initiator_tls, connect_initiator_via_proxy,
-    connect_initiator_via_proxy_tls, connect_initiator_with,
+    build_client_config, build_server_config, connect_initiator_reconnecting_endpoints,
+    connect_initiator_reconnecting_endpoints_tls, connect_initiator_tls,
+    connect_initiator_via_proxy, connect_initiator_via_proxy_tls, connect_initiator_with,
 };
+
+async fn resolve_socket_endpoint(endpoint: &SocketEndpoint) -> std::io::Result<SocketAddr> {
+    tokio::net::lookup_host((endpoint.host(), endpoint.port()))
+        .await?
+        .next()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "could not resolve address {}:{}",
+                    endpoint.host(),
+                    endpoint.port()
+                ),
+            )
+        })
+}
 
 fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {
     SocketOptions {
@@ -65,10 +81,9 @@ fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {
 /// at config-resolution time, same as every other connection target in this crate), so the SOCKS/
 /// HTTP-CONNECT handshake tunnels to that resolved `SocketAddr` rather than deferring DNS
 /// resolution of the FIX counterparty to the proxy side.
-fn to_transport_proxy_config(spec: &ProxySpec) -> std::io::Result<ProxyConfig> {
-    use std::net::ToSocketAddrs;
-    let proxy_addr = (spec.host.as_str(), spec.port)
-        .to_socket_addrs()?
+async fn to_transport_proxy_config(spec: &ProxySpec) -> std::io::Result<ProxyConfig> {
+    let proxy_addr = tokio::net::lookup_host((spec.host.as_str(), spec.port))
+        .await?
         .next()
         .ok_or_else(|| {
             std::io::Error::new(
@@ -320,21 +335,24 @@ impl Engine {
         // it individually sets `AcceptorTemplate`/`DynamicSession`/`AllowedRemoteAddresses` — every
         // other acceptor (the overwhelming common case: one session per port, no special keys) keeps
         // today's exact single-session path, unchanged.
-        let mut acceptor_addr_counts: HashMap<SocketAddr, usize> = HashMap::new();
+        let mut acceptor_addr_counts: HashMap<SocketEndpoint, usize> = HashMap::new();
         for rs in &resolved {
             if rs.connection == ConnectionType::Acceptor {
-                *acceptor_addr_counts.entry(rs.address).or_insert(0) += 1;
+                *acceptor_addr_counts.entry(rs.address.clone()).or_insert(0) += 1;
             }
         }
         let mut singles = Vec::new();
-        let mut acceptor_groups: HashMap<SocketAddr, Vec<ResolvedSession>> = HashMap::new();
+        let mut acceptor_groups: HashMap<SocketEndpoint, Vec<ResolvedSession>> = HashMap::new();
         for rs in resolved {
             let is_grouped = rs.connection == ConnectionType::Acceptor
                 && (acceptor_addr_counts.get(&rs.address).copied().unwrap_or(0) > 1
                     || rs.acceptor_template
                     || !rs.allowed_remote_addresses.is_empty());
             if is_grouped {
-                acceptor_groups.entry(rs.address).or_default().push(rs);
+                acceptor_groups
+                    .entry(rs.address.clone())
+                    .or_default()
+                    .push(rs);
             } else {
                 singles.push(rs);
             }
@@ -359,10 +377,13 @@ impl Engine {
                 .iter()
                 .all(|m| m.session.continue_initialization_on_error);
             let result: Result<(), EngineError> = async {
+                let bind_addr = resolve_socket_endpoint(&addr)
+                    .await
+                    .map_err(|e| EngineError::Io(e.to_string()))?;
                 let template_count = members.iter().filter(|m| m.acceptor_template).count();
                 if template_count > 1 {
                     return Err(EngineError::Config(
-                        ConfigError::AmbiguousAcceptorTemplate { addr },
+                        ConfigError::AmbiguousAcceptorTemplate { addr: bind_addr },
                     ));
                 }
                 // BUG-07/FR-011 (feature 006): SessionQualifier has no wire tag, so two sessions
@@ -385,7 +406,7 @@ impl Engine {
                         {
                             return Err(EngineError::Config(
                                 ConfigError::AmbiguousSessionQualifier {
-                                    addr,
+                                    addr: bind_addr,
                                     session_a: format!(
                                         "{}:{}->{}",
                                         a.session.begin_string,
@@ -404,7 +425,7 @@ impl Engine {
                     }
                 }
                 let primary = members.first().ok_or_else(|| {
-                    EngineError::Io(format!("acceptor group at {addr} has no sessions"))
+                    EngineError::Io(format!("acceptor group at {bind_addr} has no sessions"))
                 })?;
                 let primary_session_id = primary.session.session_id();
                 let session_id = format!(
@@ -450,8 +471,7 @@ impl Engine {
                     }),
                     // NEW-96 (feature 009): was permanently `false` via `Services::default()` --
                     // no `.cfg` -> `Services` path existed for this key at all.
-                    log_message_when_session_not_found: primary
-                        .log_message_when_session_not_found,
+                    log_message_when_session_not_found: primary.log_message_when_session_not_found,
                     ..Services::default()
                 };
 
@@ -469,10 +489,9 @@ impl Engine {
                 // the shared-Services note above).
                 let tls_spec = members.iter().find_map(|m| m.tls.as_ref()).cloned();
 
-                let mut builder = AcceptorBuilder::bind(addr, app.clone())
+                let mut builder = AcceptorBuilder::bind_with(bind_addr, app.clone(), services)
                     .await
-                    .map_err(|e| EngineError::Io(e.to_string()))?
-                    .with_services(services);
+                    .map_err(|e| EngineError::Io(e.to_string()))?;
                 if !allow.is_empty() {
                     builder = builder.allow_remotes(allow);
                 }
@@ -551,7 +570,7 @@ impl Engine {
             if let Err(e) = result {
                 if continue_on_error {
                     tracing::error!(
-                        addr = %addr,
+                        addr = ?addr,
                         error = %e,
                         "skipping acceptor group after a startup error (ContinueInitializationOnError=Y)"
                     );
@@ -613,8 +632,11 @@ impl Engine {
                 };
                 match rs.connection {
                     ConnectionType::Acceptor => {
+                        let bind_addr = resolve_socket_endpoint(&rs.address)
+                            .await
+                            .map_err(|e| EngineError::Io(e.to_string()))?;
                         let mut acc =
-                            Acceptor::bind_with(rs.address, rs.session, app.clone(), services)
+                            Acceptor::bind_with(bind_addr, rs.session, app.clone(), services)
                                 .await
                                 .map_err(|e| EngineError::Io(e.to_string()))?;
                         if let Some(tls) = &rs.tls {
@@ -625,12 +647,15 @@ impl Engine {
                         acceptors.push(acc.serve());
                     }
                     ConnectionType::Initiator => {
-                        let proxy = rs
-                            .proxy
-                            .as_ref()
-                            .map(to_transport_proxy_config)
-                            .transpose()
-                            .map_err(|e| EngineError::Proxy(e.to_string()))?;
+                        let proxy = if let Some(spec) = rs.proxy.as_ref() {
+                            Some(
+                                to_transport_proxy_config(spec)
+                                    .await
+                                    .map_err(|e| EngineError::Proxy(e.to_string()))?,
+                            )
+                        } else {
+                            None
+                        };
 
                         // US1 (feature 004, FR-001): route to the failover-capable reconnecting
                         // connector when backup endpoints are configured. Proxy+failover is out of
@@ -647,8 +672,8 @@ impl Engine {
                             } else {
                                 let mut addrs =
                                     Vec::with_capacity(1 + rs.failover_addresses.len());
-                                addrs.push(rs.address);
-                                addrs.extend(rs.failover_addresses.iter().copied());
+                                addrs.push(rs.address.clone());
+                                addrs.extend(rs.failover_addresses.iter().cloned());
                                 let handle = if let Some(tls) = &rs.tls {
                                     let client_cfg = build_client_config(tls)
                                         .map_err(|e| EngineError::Tls(e.to_string()))?;
@@ -656,7 +681,7 @@ impl Engine {
                                     let server_name =
                                         rustls::pki_types::ServerName::try_from(host)
                                             .map_err(|e| EngineError::Tls(e.to_string()))?;
-                                    connect_initiator_reconnecting_multi_tls(
+                                    connect_initiator_reconnecting_endpoints_tls(
                                         addrs,
                                         rs.session,
                                         app.clone(),
@@ -665,7 +690,7 @@ impl Engine {
                                         server_name,
                                     )
                                 } else {
-                                    connect_initiator_reconnecting_multi(
+                                    connect_initiator_reconnecting_endpoints(
                                         addrs,
                                         rs.session,
                                         app.clone(),
@@ -686,7 +711,7 @@ impl Engine {
                                     .map_err(|e| EngineError::Tls(e.to_string()))?;
                                 connect_initiator_via_proxy_tls(
                                     proxy,
-                                    &rs.address.ip().to_string(),
+                                    rs.address.host(),
                                     rs.address.port(),
                                     rs.session,
                                     app.clone(),
@@ -699,7 +724,7 @@ impl Engine {
                             }
                             (None, Some(proxy)) => connect_initiator_via_proxy(
                                 proxy,
-                                &rs.address.ip().to_string(),
+                                rs.address.host(),
                                 rs.address.port(),
                                 rs.session,
                                 app.clone(),
@@ -708,13 +733,16 @@ impl Engine {
                             .await
                             .map_err(|e| EngineError::Proxy(e.to_string()))?,
                             (Some(tls), None) => {
+                                let target_addr = resolve_socket_endpoint(&rs.address)
+                                    .await
+                                    .map_err(|e| EngineError::Io(e.to_string()))?;
                                 let client_cfg = build_client_config(tls)
                                     .map_err(|e| EngineError::Tls(e.to_string()))?;
                                 let host = tls.server_name.clone().unwrap_or_default();
                                 let server_name = rustls::pki_types::ServerName::try_from(host)
                                     .map_err(|e| EngineError::Tls(e.to_string()))?;
                                 connect_initiator_tls(
-                                    rs.address,
+                                    target_addr,
                                     rs.session,
                                     app.clone(),
                                     services,
@@ -724,14 +752,19 @@ impl Engine {
                                 .await
                                 .map_err(|e| EngineError::Io(e.to_string()))?
                             }
-                            (None, None) => connect_initiator_with(
-                                rs.address,
-                                rs.session,
-                                app.clone(),
-                                services,
-                            )
-                            .await
-                            .map_err(|e| EngineError::Io(e.to_string()))?,
+                            (None, None) => {
+                                let target_addr = resolve_socket_endpoint(&rs.address)
+                                    .await
+                                    .map_err(|e| EngineError::Io(e.to_string()))?;
+                                connect_initiator_with(
+                                    target_addr,
+                                    rs.session,
+                                    app.clone(),
+                                    services,
+                                )
+                                .await
+                                .map_err(|e| EngineError::Io(e.to_string()))?
+                            }
                         };
                         initiators.push(handle);
                     }

@@ -3,10 +3,11 @@
 //! Mirrors `truefix_store::RedbStore`'s design: a modern, license-clean replacement for
 //! QuickFIX/J's obsolete `SleepycatStore`/`SleepycatLog`, not a port of it (Constitution Principle
 //! III). Like [`crate::SqlLog`]/[`crate::MssqlLog`], the [`Log`] trait is synchronous while `redb`'s
-//! API is also synchronous but blocking — each entry is pushed onto an unbounded channel (a
-//! non-blocking, sync send) and written by a background task holding the single `redb::Database`
-//! handle, routing each write through `tokio::task::spawn_blocking` (matching `RedbStore`'s own
-//! discipline of never blocking the executor with `redb`'s blocking API).
+//! API is also synchronous but blocking — each entry is pushed onto a bounded channel and written
+//! by a background task holding the single `redb::Database` handle, routing each write through
+//! `tokio::task::spawn_blocking` (matching `RedbStore`'s own discipline of never blocking the
+//! executor with `redb`'s blocking API). A saturated channel drops excess entries under [`Log`]'s
+//! best-effort contract rather than growing without limit.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,6 +16,8 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use tokio::sync::mpsc;
 
 use crate::{Log, LogError, is_heartbeat};
+
+const ASYNC_LOG_CHANNEL_CAPACITY: usize = 1024;
 
 /// GAP-41/FR-019 (feature 005): the value type widened from bare `&str` to
 /// `(logged_at: Unix seconds, session_id, text)`, so a row can be audited/replayed on its own
@@ -71,7 +74,7 @@ impl RedbLogConfig {
 /// (incoming/outgoing/event), each keyed by an auto-incrementing counter maintained in the
 /// background writer task (redb has no built-in identity/autoincrement column).
 pub struct RedbLog {
-    tx: mpsc::UnboundedSender<Entry>,
+    tx: mpsc::Sender<Entry>,
     include_heartbeats: bool,
 }
 
@@ -132,7 +135,7 @@ impl RedbLog {
         let mut next_outgoing = next_key(&db, OUTGOING)?;
         let mut next_event = next_key(&db, EVENT)?;
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<Entry>();
+        let (tx, mut rx) = mpsc::channel::<Entry>(ASYNC_LOG_CHANNEL_CAPACITY);
         let session_id = config.session_id;
         tokio::spawn(async move {
             while let Some(entry) = rx.recv().await {
@@ -182,7 +185,7 @@ impl Log for RedbLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.send(Entry::Message {
+        let _ = self.tx.try_send(Entry::Message {
             direction: "I",
             text: message.to_owned(),
         });
@@ -191,13 +194,13 @@ impl Log for RedbLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.send(Entry::Message {
+        let _ = self.tx.try_send(Entry::Message {
             direction: "O",
             text: message.to_owned(),
         });
     }
     fn on_event(&self, text: &str) {
-        let _ = self.tx.send(Entry::Event {
+        let _ = self.tx.try_send(Entry::Event {
             text: text.to_owned(),
         });
     }

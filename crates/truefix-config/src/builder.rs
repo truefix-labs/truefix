@@ -23,6 +23,36 @@ pub enum ConnectionType {
     Initiator,
 }
 
+/// A configured socket endpoint whose hostname has not been resolved yet.
+///
+/// Keeping the original host instead of collapsing it to the first [`SocketAddr`] lets
+/// reconnecting initiators repeat DNS lookup for every connection attempt (FR-030).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SocketEndpoint {
+    host: String,
+    port: u16,
+}
+
+impl SocketEndpoint {
+    /// Construct an unresolved endpoint.
+    pub fn new(host: impl Into<String>, port: u16) -> Self {
+        Self {
+            host: host.into(),
+            port,
+        }
+    }
+
+    /// The configured hostname or IP literal.
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The configured TCP port.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 /// A fully-resolved per-session configuration ready to start.
 #[derive(Debug, Clone)]
 pub struct ResolvedSession {
@@ -30,8 +60,9 @@ pub struct ResolvedSession {
     pub session: SessionConfig,
     /// Initiator or acceptor.
     pub connection: ConnectionType,
-    /// The accept (bind) or connect (target) address.
-    pub address: SocketAddr,
+    /// The accept (bind) or connect (target) endpoint. DNS remains unresolved until the endpoint
+    /// is actually bound or connected.
+    pub address: SocketEndpoint,
     /// The message store to build for this session.
     pub store: StoreConfig,
     /// TLS material and settings, present when `SocketUseSSL=Y` (FR-017).
@@ -41,7 +72,7 @@ pub struct ResolvedSession {
     /// Additional backup endpoints (initiator only), in failover order, parsed from numbered
     /// `SocketConnectHost<N>`/`SocketConnectPort<N>` keys (FR-019). Empty when no backups are
     /// configured.
-    pub failover_addresses: Vec<SocketAddr>,
+    pub failover_addresses: Vec<SocketEndpoint>,
     /// A file-backed log to build for this session, present when `FileLogPath` is set (FR-026).
     pub log: Option<LogSpec>,
     /// A SQL-backed log to build for this session, present when `JdbcURL` is set (US3, feature 004,
@@ -556,8 +587,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         bool_key(map, "DynamicSession", false) || map.contains_key("AcceptorTemplate");
     let allowed_remote_addresses = resolve_allowed_remote_addresses(map, &session)?;
     // NEW-96 (feature 009): parse the key that was previously registered `Impl` but never read.
-    let log_message_when_session_not_found =
-        bool_key(map, "LogMessageWhenSessionNotFound", false);
+    let log_message_when_session_not_found = bool_key(map, "LogMessageWhenSessionNotFound", false);
 
     Ok(ResolvedSession {
         session: cfg,
@@ -911,7 +941,10 @@ fn opt_u32_key(map: &Map, key: &str, session: &str) -> Result<Option<u32>, Confi
 /// Resolve numbered backup endpoints `SocketConnectHost<N>`/`SocketConnectPort<N>` (N = 1, 2, ...;
 /// the unnumbered `SocketConnectHost`/`SocketConnectPort` is the primary `address` and is not
 /// repeated here) into failover order (FR-019). Stops at the first missing `N`.
-fn resolve_failover_addresses(map: &Map, session: &str) -> Result<Vec<SocketAddr>, ConfigError> {
+fn resolve_failover_addresses(
+    map: &Map,
+    session: &str,
+) -> Result<Vec<SocketEndpoint>, ConfigError> {
     let mut addrs = Vec::new();
     let mut n = 1u32;
     loop {
@@ -934,16 +967,7 @@ fn resolve_failover_addresses(map: &Map, session: &str) -> Result<Vec<SocketAddr
             session: session.to_owned(),
             reason: format!("expected a port number, got {port_str:?}"),
         })?;
-        let addr = (host, port)
-            .to_socket_addrs()
-            .ok()
-            .and_then(|mut it| it.next())
-            .ok_or_else(|| ConfigError::InvalidValue {
-                key: host_key.clone(),
-                session: session.to_owned(),
-                reason: format!("could not resolve address {host}:{port}"),
-            })?;
-        addrs.push(addr);
+        addrs.push(SocketEndpoint::new(host, port));
         n += 1;
     }
     Ok(addrs)
@@ -1079,7 +1103,7 @@ fn resolve_address(
     map: &Map,
     connection: ConnectionType,
     session: &str,
-) -> Result<SocketAddr, ConfigError> {
+) -> Result<SocketEndpoint, ConfigError> {
     let (host, port_key) = match connection {
         ConnectionType::Acceptor => (
             map.get("SocketAcceptAddress")
@@ -1101,15 +1125,7 @@ fn resolve_address(
         session: session.to_owned(),
         reason: format!("expected a port number, got {port_str:?}"),
     })?;
-    (host, port)
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut it| it.next())
-        .ok_or_else(|| ConfigError::InvalidValue {
-            key: port_key.to_owned(),
-            session: session.to_owned(),
-            reason: format!("could not resolve address {host}:{port}"),
-        })
+    Ok(SocketEndpoint::new(host, port))
 }
 
 /// Resolve `JdbcURL`/`FileStorePath`/`FileStoreSync`/`FileStoreMaxCachedMsgs` (FR-025, and US3

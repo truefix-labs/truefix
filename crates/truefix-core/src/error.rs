@@ -100,6 +100,12 @@ pub enum DecodeError {
         /// The configured/sane maximum.
         max: usize,
     },
+    /// Dictionary-driven repeating-group nesting exceeded the defensive recursion limit.
+    #[error("repeating-group nesting exceeds the maximum depth {max}")]
+    GroupNestingTooDeep {
+        /// Maximum supported nesting depth.
+        max: usize,
+    },
     /// The declared BodyLength does not match the actual body size.
     #[error("BodyLength mismatch: declared {declared}, actual {actual}")]
     BodyLengthMismatch {

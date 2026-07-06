@@ -35,9 +35,10 @@ use crate::{MessageStore, StoreError};
 fn creation_time_file(path: &Path) -> Result<time::OffsetDateTime, StoreError> {
     match fs::read_to_string(path) {
         Ok(s) => {
-            let secs: i64 = s.trim().parse().unwrap_or(0);
-            Ok(time::OffsetDateTime::from_unix_timestamp(secs)
-                .unwrap_or(time::OffsetDateTime::UNIX_EPOCH))
+            let corrupted =
+                || StoreError::Backend(format!("corrupted creation-time file {path:?}: {s:?}"));
+            let secs: i64 = s.trim().parse().map_err(|_| corrupted())?;
+            time::OffsetDateTime::from_unix_timestamp(secs).map_err(|_| corrupted())
         }
         Err(e) if e.kind() == ErrorKind::NotFound => reset_creation_time_file(path),
         Err(e) => Err(io_err(e)),
@@ -164,6 +165,10 @@ impl BodyLog {
     }
 
     fn reset(&self) -> Result<(), StoreError> {
+        // NEW-76/FR-045 (feature 009): use the same lock ordering as append(). Truncating before
+        // acquiring the index lock could race with an append that had already calculated its
+        // offset, leaving the body and index inconsistent.
+        let mut guard = self.lock()?;
         // BUG-15/FR-016 (feature 006): sync when `FileStoreSync=Y`, matching `append()`'s
         // existing discipline — previously this never synced regardless of the option, so a
         // crash immediately after `fs::write` truncated the body file, but before the OS
@@ -179,7 +184,7 @@ impl BodyLog {
         if self.sync {
             f.sync_data().map_err(io_err)?;
         }
-        self.lock()?.clear();
+        guard.clear();
         Ok(())
     }
 }
@@ -554,6 +559,10 @@ impl MessageStore for CachedFileStore {
                 Some(bytes) => out.push((seq_no, bytes)),
                 None => {
                     if let Some(bytes) = self.body.read(seq_no)? {
+                        self.cache
+                            .lock()
+                            .map_err(|_| poisoned())?
+                            .insert(seq_no, bytes.clone());
                         out.push((seq_no, bytes));
                     }
                 }

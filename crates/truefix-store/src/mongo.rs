@@ -7,6 +7,7 @@
 
 use async_trait::async_trait;
 use mongodb::bson::{Binary, doc, spec::BinarySubtype};
+use mongodb::error::{Error as MongoError, ErrorKind, WriteFailure};
 use mongodb::options::IndexOptions;
 use mongodb::{Client, Collection, IndexModel};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,26 @@ fn backend<E: std::fmt::Display>(e: E) -> StoreError {
 
 fn now_unix() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+fn session_unique_index() -> IndexModel {
+    IndexModel::builder()
+        .keys(doc! { "session_id": 1 })
+        .options(
+            IndexOptions::builder()
+                .name("session_id_unique".to_owned())
+                .unique(true)
+                .build(),
+        )
+        .build()
+}
+
+fn is_duplicate_key(error: &MongoError) -> bool {
+    match error.kind.as_ref() {
+        ErrorKind::Command(command) => command.code == 11000,
+        ErrorKind::Write(WriteFailure::WriteError(write)) => write.code == 11000,
+        _ => false,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,6 +115,10 @@ impl MongoStore {
         let messages: Collection<MessageDoc> = db.collection(&config.messages_collection);
 
         // Idempotent: creating an index that already exists with the same spec is a no-op.
+        sessions
+            .create_index(session_unique_index())
+            .await
+            .map_err(backend)?;
         let index = IndexModel::builder()
             .keys(doc! { "session_id": 1, "seq": 1 })
             .options(IndexOptions::builder().unique(true).build())
@@ -112,19 +137,39 @@ impl MongoStore {
 
     async fn ensure_session_row(&self) -> Result<(), StoreError> {
         let filter = doc! { "session_id": &self.session_id };
-        let existing = self.sessions.find_one(filter).await.map_err(backend)?;
-        if existing.is_none() {
-            self.sessions
-                .insert_one(SessionDoc {
-                    session_id: self.session_id.clone(),
-                    sender: 1,
-                    target: 1,
-                    creation_time: Some(now_unix()),
-                })
-                .await
-                .map_err(backend)?;
+        let update = doc! {
+            "$setOnInsert": {
+                "session_id": &self.session_id,
+                "sender": 1i64,
+                "target": 1i64,
+                "creation_time": now_unix(),
+            },
+        };
+        match self
+            .sessions
+            .update_one(filter.clone(), update)
+            .upsert(true)
+            .await
+        {
+            Ok(_) => Ok(()),
+            // Two exact-filter upserts can race after both observe no match. The unique index
+            // guarantees only one insert wins; if the loser receives E11000, confirm the winner's
+            // row is visible and treat initialization as complete.
+            Err(error) if is_duplicate_key(&error) => {
+                if self
+                    .sessions
+                    .find_one(filter)
+                    .await
+                    .map_err(backend)?
+                    .is_some()
+                {
+                    Ok(())
+                } else {
+                    Err(backend(error))
+                }
+            }
+            Err(error) => Err(backend(error)),
         }
-        Ok(())
     }
 
     async fn get_seq(&self, sender: bool) -> Result<u64, StoreError> {
@@ -187,10 +232,7 @@ impl MessageStore for MongoStore {
     // message is durably saved but the sender sequence isn't advanced (or vice versa).
     async fn save_and_advance_sender(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
         let mut txn_session = self.client.start_session().await.map_err(backend)?;
-        txn_session
-            .start_transaction()
-            .await
-            .map_err(backend)?;
+        txn_session.start_transaction().await.map_err(backend)?;
 
         let msg_filter = doc! { "session_id": &self.session_id, "seq": seq as i64 };
         let msg_update = doc! {
@@ -266,5 +308,20 @@ impl MessageStore for MongoStore {
         Ok(row
             .and_then(|r| r.creation_time)
             .and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_index_is_unique_on_session_id() {
+        let index = session_unique_index();
+
+        assert_eq!(index.keys, doc! { "session_id": 1 });
+        let options = index.options.expect("index options");
+        assert_eq!(options.unique, Some(true));
+        assert_eq!(options.name.as_deref(), Some("session_id_unique"));
     }
 }

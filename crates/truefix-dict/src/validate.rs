@@ -308,10 +308,10 @@ impl DataDictionary {
                     if let Some(nested_entries) = entry.group(tag) {
                         self.validate_structured_group(nested_entries, tag, opts)?;
                     }
-                } else if opts.check_field_types
+                } else if (opts.check_field_types || opts.validate_fields_have_values)
                     && let Some(field) = entry.get(tag)
                 {
-                    self.check_group_field_value(gdef, field)?;
+                    self.check_group_field_value(gdef, field, opts)?;
                 }
             }
             if opts.check_required_fields {
@@ -340,7 +340,20 @@ impl DataDictionary {
             *pos += 1;
             return Ok(());
         };
-        let declared = body.get(*pos).and_then(|f| f.as_int().ok()).unwrap_or(-1);
+        let Some(count_field) = body.get(*pos) else {
+            return Err(ValidationError::session(
+                RejectReason::IncorrectDataFormat,
+                Some(count_tag),
+                "repeating-group count is missing",
+            ));
+        };
+        let declared = count_field.as_int().map_err(|_| {
+            ValidationError::session(
+                RejectReason::IncorrectDataFormat,
+                Some(count_tag),
+                "repeating-group count has incorrect data format",
+            )
+        })?;
         *pos += 1; // consume the count field
 
         let mut found = 0i64;
@@ -365,8 +378,8 @@ impl DataDictionary {
             // group entry's own delimiter field gets type/enum-checked — via the group's `child`
             // dictionary when present (falling back to this dictionary's own field registry,
             // which `child` is itself derived from).
-            if opts.check_field_types {
-                self.check_group_field_value(gdef, f)?;
+            if opts.check_field_types || opts.validate_fields_have_values {
+                self.check_group_field_value(gdef, f, opts)?;
             }
             found += 1;
             *pos += 1; // consume delimiter
@@ -407,8 +420,8 @@ impl DataDictionary {
                 } else {
                     // GAP-24/FR-024 (feature 005): same per-field type/enum check as the
                     // delimiter above, for every other member field of this group entry.
-                    if opts.check_field_types {
-                        self.check_group_field_value(gdef, mf)?;
+                    if opts.check_field_types || opts.validate_fields_have_values {
+                        self.check_group_field_value(gdef, mf, opts)?;
                     }
                     *pos += 1;
                 }
@@ -445,8 +458,19 @@ impl DataDictionary {
         &self,
         gdef: &GroupDef,
         field: &Field,
+        opts: &ValidationOptions,
     ) -> Result<(), ValidationError> {
         let tag = field.tag();
+        if opts.validate_fields_have_values && field.value_bytes().is_empty() {
+            return Err(ValidationError::session(
+                RejectReason::TagSpecifiedWithoutValue,
+                Some(tag),
+                "group field has no value",
+            ));
+        }
+        if !opts.check_field_types {
+            return Ok(());
+        }
         let Some(fdef) = gdef
             .child
             .as_deref()

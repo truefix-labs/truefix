@@ -151,20 +151,22 @@ async fn connect_http(
 }
 
 /// Parse a PROXY protocol (v1 or v2) header at the start of `buf`, returning the original client
-/// address it declares and the number of bytes the header occupied — or `None` if `buf` doesn't
-/// start with a complete, valid header.
-fn parse_proxy_header(buf: &[u8]) -> Option<(SocketAddr, usize)> {
+/// address it declares (when it contains an IP address) and the number of bytes the header
+/// occupied — or `None` if `buf` doesn't start with a complete, valid header. A complete
+/// Unknown/Unspecified/Unix-address header has no usable client IP but still returns its length so
+/// callers consume it before FIX framing begins.
+fn parse_proxy_header(buf: &[u8]) -> Option<(Option<SocketAddr>, usize)> {
     match HeaderResult::parse(buf) {
         HeaderResult::V1(Ok(header)) => {
             let len = header.header.len();
             let addr = match header.addresses {
                 v1::Addresses::Tcp4(a) => {
-                    SocketAddr::new(IpAddr::V4(a.source_address), a.source_port)
+                    Some(SocketAddr::new(IpAddr::V4(a.source_address), a.source_port))
                 }
                 v1::Addresses::Tcp6(a) => {
-                    SocketAddr::new(IpAddr::V6(a.source_address), a.source_port)
+                    Some(SocketAddr::new(IpAddr::V6(a.source_address), a.source_port))
                 }
-                v1::Addresses::Unknown => return None,
+                v1::Addresses::Unknown => None,
             };
             Some((addr, len))
         }
@@ -172,12 +174,12 @@ fn parse_proxy_header(buf: &[u8]) -> Option<(SocketAddr, usize)> {
             let len = header.len();
             let addr = match header.addresses {
                 v2::Addresses::IPv4(a) => {
-                    SocketAddr::new(IpAddr::V4(a.source_address), a.source_port)
+                    Some(SocketAddr::new(IpAddr::V4(a.source_address), a.source_port))
                 }
                 v2::Addresses::IPv6(a) => {
-                    SocketAddr::new(IpAddr::V6(a.source_address), a.source_port)
+                    Some(SocketAddr::new(IpAddr::V6(a.source_address), a.source_port))
                 }
-                v2::Addresses::Unspecified | v2::Addresses::Unix(_) => return None,
+                v2::Addresses::Unspecified | v2::Addresses::Unix(_) => None,
             };
             Some((addr, len))
         }
@@ -245,7 +247,7 @@ async fn peek_proxy_header(stream: &mut TcpStream, peer: SocketAddr) -> SocketAd
                 if stream.read_exact(&mut discard).await.is_err() {
                     return peer;
                 }
-                return addr;
+                return addr.unwrap_or(peer);
             }
             None => {
                 if n < buf_len {

@@ -117,9 +117,11 @@ impl FieldType {
     /// rejected here. Callers pass `true` only when validating against a FIX.4.0/4.1 dictionary.
     pub fn value_ok(self, field: &Field, legacy_char_lenient: bool) -> bool {
         match self {
-            Self::Int | Self::Length | Self::SeqNum | Self::NumInGroup | Self::DayOfMonth => {
-                field.as_int().is_ok()
+            Self::Int => field.as_int().is_ok(),
+            Self::Length | Self::SeqNum | Self::NumInGroup => {
+                field.as_int().is_ok_and(|value| value >= 0)
             }
+            Self::DayOfMonth => field.as_int().is_ok_and(|value| (1..=31).contains(&value)),
             Self::Float
             | Self::Price
             | Self::Qty
@@ -190,8 +192,7 @@ fn is_valid_month_year(s: &str) -> bool {
     if let Some(week) = rest.strip_prefix('w') {
         matches!(week, "1" | "2" | "3" | "4" | "5")
     } else {
-        rest.bytes().all(|c| c.is_ascii_digit())
-            && (1..=31).contains(&rest.parse().unwrap_or(0))
+        rest.bytes().all(|c| c.is_ascii_digit()) && (1..=31).contains(&rest.parse().unwrap_or(0))
     }
 }
 

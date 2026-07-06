@@ -599,6 +599,13 @@ impl Session {
         self.next_in_seq = 1;
         self.queue.clear();
         self.resend_requested = false;
+        // NEW-32 (feature 009): an operational reset mid-session must also clear any
+        // in-progress resend/test-request bookkeeping tied to the sequence state being reset --
+        // previously left stale, so a resend chunk or outstanding TestRequest from before the
+        // reset could be misapplied to the freshly-reset sequence space afterward.
+        self.resend_target = None;
+        self.resend_chunk_end = None;
+        self.test_request_outstanding = false;
         if full {
             self.next_out_seq = 1;
             self.store.clear();
@@ -820,8 +827,7 @@ impl Session {
         }
 
         if mt.as_deref() == Some("4") {
-            let gap_fill =
-                msg.body.get(GAP_FILL_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
+            let gap_fill = msg.body.get(GAP_FILL_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
             if !gap_fill {
                 // A plain SequenceReset-Reset's own MsgSeqNum is intentionally not checked
                 // against `next_in_seq` (QFJ ignores it for Reset mode) -- unchanged from before
@@ -907,6 +913,13 @@ impl Session {
                 actions
             }
             Ordering::Greater => {
+                // NEW-85/FR-049 (feature 009): Logout is a terminal control message. Processing
+                // it immediately avoids deadlocking teardown behind a sequence gap that may never
+                // be filled; unlike ordinary too-high traffic it is neither queued nor answered
+                // with a ResendRequest.
+                if mt.as_deref() == Some("5") {
+                    return self.on_logout_msg();
+                }
                 let mut actions = Vec::new();
                 // BUG-29/FR-007 (feature 007): a too-high `ResendRequest` is answered immediately
                 // rather than deferred to `drain_queue` once our own gap toward the counterparty
@@ -1092,7 +1105,12 @@ impl Session {
                 continue;
             }
             let mt = msg.msg_type().map(str::to_owned);
-            actions.extend(self.process_in_order(&msg, mt.as_deref()));
+            // NEW-86/FR-050 (feature 009): a too-high ResendRequest is answered immediately when
+            // first received. It stays queued only so sequence accounting advances when the gap
+            // closes; invoking its handler again here would send the same resend burst twice.
+            if mt.as_deref() != Some("2") {
+                actions.extend(self.process_in_order(&msg, mt.as_deref()));
+            }
             self.next_in_seq = self.next_in_seq.saturating_add(1);
         }
         if self.queue.is_empty() {
@@ -1260,12 +1278,41 @@ impl Session {
     fn on_sequence_reset(&mut self, msg: &Message) -> Vec<Action> {
         let gap_fill = msg.body.get(GAP_FILL_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
         let new_seq_present = msg.body.get(NEW_SEQ_NO).is_some();
+        // NEW-34 (feature 009): `n >= 0`, not `n > 0` -- a present `NewSeqNo=0` must still flow
+        // through as `Some(0)` for the non-gap-fill path below, so it's rejected via the existing
+        // "NewSeqNo is decreasing" check (0 is always less than `next_in_seq`, which starts at 1)
+        // rather than being silently filtered out to `None` and treated as if NewSeqNo were
+        // absent entirely -- previously a non-gap-fill SequenceReset with NewSeqNo=0 present was
+        // accepted as a silent no-op, neither applying nor rejecting it.
         let new_seq = msg
             .body
             .get(NEW_SEQ_NO)
             .and_then(|f| f.as_int().ok())
-            .filter(|&n| n > 0)
+            .filter(|&n| n >= 0)
             .map(|n| n as u64);
+        let ref_seq = msg
+            .header
+            .get(MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&s| s > 0)
+            .map_or(0, |s| s as u64);
+
+        // NEW-70/FR-040 (feature 009): NewSeqNo is required by both SequenceReset modes.
+        // Previously this check lived only in the plain-reset branch; a gap-fill missing tag 36
+        // therefore returned no action and was silently accepted without updating sequence state.
+        if !new_seq_present {
+            let seq = self.next_seq();
+            let rej = admin::reject_with_reason(
+                &self.config,
+                seq,
+                ref_seq,
+                msg.msg_type(),
+                Some(NEW_SEQ_NO),
+                1, // SessionRejectReason: Required tag missing
+                "NewSeqNo is missing",
+            );
+            return vec![self.send_stored(rej)];
+        }
 
         // BUG-06/FR-002/FR-003 (feature 006): plain-mode (non-gap-fill) SequenceReset anti-replay
         // hole. Unlike gap-fill mode, a decreasing NewSeqNo must be rejected rather than applied —
@@ -1275,25 +1322,6 @@ impl Session {
         // `on_received` before that check runs). A missing NewSeqNo tag entirely is a required-field
         // violation, not a silent skip that still drains the queue.
         if !gap_fill {
-            let ref_seq = msg
-                .header
-                .get(MSG_SEQ_NUM)
-                .and_then(|f| f.as_int().ok())
-                .filter(|&s| s > 0)
-                .map_or(0, |s| s as u64);
-            if !new_seq_present {
-                let seq = self.next_seq();
-                let rej = admin::reject_with_reason(
-                    &self.config,
-                    seq,
-                    ref_seq,
-                    msg.msg_type(),
-                    Some(NEW_SEQ_NO),
-                    1, // SessionRejectReason: Required tag missing
-                    "NewSeqNo is missing",
-                );
-                return vec![self.send_stored(rej)];
-            }
             if let Some(ns) = new_seq {
                 if ns < self.next_in_seq {
                     let seq = self.next_seq();
@@ -1395,7 +1423,8 @@ impl Session {
         // realistic trigger (peer reconnects with a fresh seq=1 Logon after our own sequences had
         // already advanced) would be rejected as "too low" before the reset logic further below
         // ever runs.
-        let acceptor_forces_reset = self.config.role == Role::Acceptor && self.config.reset_on_logon;
+        let acceptor_forces_reset =
+            self.config.role == Role::Acceptor && self.config.reset_on_logon;
         if !poss_dup
             && !requests_reset
             && !acceptor_forces_reset
@@ -1434,6 +1463,25 @@ impl Session {
                 reason: 0,
                 ref_tag: None,
                 text: Some("HeartBtInt must not be negative".to_owned()),
+                session_status: None,
+            });
+        }
+
+        // NEW-71/FR-041 (feature 009): dictionary validation normally enforces required Logon
+        // fields, but it is optional. An acceptor without a dictionary must still require a
+        // positive HeartBtInt rather than silently retaining its configured default when tag 108
+        // is absent, malformed, or zero. Initiator-side Logon-response behavior is unchanged.
+        if self.config.role == Role::Acceptor
+            && msg
+                .body
+                .get(HEART_BT_INT)
+                .and_then(|f| f.as_int().ok())
+                .is_none_or(|hbi| hbi <= 0)
+        {
+            return self.reject_logon(&truefix_core::Reject {
+                reason: 0,
+                ref_tag: Some(HEART_BT_INT),
+                text: Some("HeartBtInt is required and must be positive".to_owned()),
                 session_status: None,
             });
         }
@@ -1489,7 +1537,11 @@ impl Session {
             // `disconnect_on_error`, so `disconnect_on_error=false` left only a bare session
             // Reject sent and the session stranded in `AwaitingLogon` instead of torn down.
             let seq = self.next_seq();
-            let lo = admin::logout(&self.config, seq, Some("Logon failed dictionary validation"));
+            let lo = admin::logout(
+                &self.config,
+                seq,
+                Some("Logon failed dictionary validation"),
+            );
             actions.push(self.send_stored(lo));
             self.state = SessionState::Disconnected;
             actions.push(Action::Disconnect);
@@ -1723,11 +1775,7 @@ impl Session {
                 // session-end behavior -- previously this was an abrupt TCP drop with no Logout,
                 // leaving the counterparty to observe an ungraceful disconnect.
                 let seq = self.next_seq();
-                let lo = admin::logout(
-                    &self.config,
-                    seq,
-                    Some("session schedule window closed"),
-                );
+                let lo = admin::logout(&self.config, seq, Some("session schedule window closed"));
                 let send = self.send_stored(lo);
                 let reset = self.enter_disconnected(DisconnectReason::Other);
                 let mut actions = vec![send];

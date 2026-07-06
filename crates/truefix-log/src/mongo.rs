@@ -1,15 +1,18 @@
 //! MongoDB-backed log, behind the `mongodb` feature (US6, feature 004).
 //!
 //! Matches QuickFIX/Go's `MongoStore`/`MongoLog` option. The [`Log`] trait is synchronous and
-//! infallible, while `mongodb` is async: each entry is pushed onto an unbounded channel (a
-//! non-blocking, sync send) and written by a background task, mirroring `SqlLog`/`MssqlLog`'s
-//! shape. Unlike `RedbLog`, no `spawn_blocking` is needed — `mongodb`'s API is natively async.
+//! infallible, while `mongodb` is async: each entry is pushed onto a bounded channel and written
+//! by a background task, mirroring `SqlLog`/`MssqlLog`'s shape. A saturated channel drops excess
+//! entries under [`Log`]'s best-effort contract rather than growing without limit. Unlike
+//! `RedbLog`, no `spawn_blocking` is needed — `mongodb`'s API is natively async.
 
 use mongodb::bson::doc;
 use mongodb::{Client, Collection};
 use tokio::sync::mpsc;
 
 use crate::{Log, LogError, is_heartbeat};
+
+const ASYNC_LOG_CHANNEL_CAPACITY: usize = 1024;
 
 fn io_err<E: std::fmt::Display>(e: E) -> LogError {
     LogError::Io(e.to_string())
@@ -67,7 +70,7 @@ impl MongoLogConfig {
 /// A MongoDB-backed log writing to configurable incoming/outgoing/event collections via a
 /// background task (US6).
 pub struct MongoLog {
-    tx: mpsc::UnboundedSender<Entry>,
+    tx: mpsc::Sender<Entry>,
     include_heartbeats: bool,
 }
 
@@ -88,7 +91,7 @@ impl MongoLog {
             db.collection(&config.outgoing_collection);
         let event: Collection<mongodb::bson::Document> = db.collection(&config.event_collection);
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<Entry>();
+        let (tx, mut rx) = mpsc::channel::<Entry>(ASYNC_LOG_CHANNEL_CAPACITY);
         let session_id = config.session_id;
         tokio::spawn(async move {
             while let Some(entry) = rx.recv().await {
@@ -132,7 +135,7 @@ impl Log for MongoLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.send(Entry::Message {
+        let _ = self.tx.try_send(Entry::Message {
             direction: "I",
             text: message.to_owned(),
         });
@@ -141,13 +144,13 @@ impl Log for MongoLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.send(Entry::Message {
+        let _ = self.tx.try_send(Entry::Message {
             direction: "O",
             text: message.to_owned(),
         });
     }
     fn on_event(&self, text: &str) {
-        let _ = self.tx.send(Entry::Event {
+        let _ = self.tx.try_send(Entry::Event {
             text: text.to_owned(),
         });
     }

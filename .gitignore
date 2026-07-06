@@ -11,6 +11,11 @@ release/
 *.rlib
 *.prof*
 
+# Node.js tooling
+node_modules/
+dist/
+build/
+
 # Editors / OS
 .idea/
 .vscode/

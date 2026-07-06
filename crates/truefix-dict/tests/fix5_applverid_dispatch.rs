@@ -27,7 +27,10 @@ fn execution_report(appl_ver_id: &str) -> Message {
 #[test]
 fn crack_fix50_only_dispatches_applverid_7() {
     let mut h = NoopHandler;
-    assert!(crack_fix50(&execution_report("7"), &mut h), "FIX50 (ApplVerID=7) should dispatch");
+    assert!(
+        crack_fix50(&execution_report("7"), &mut h),
+        "FIX50 (ApplVerID=7) should dispatch"
+    );
     assert!(
         !crack_fix50(&execution_report("8"), &mut h),
         "FIX50SP1 (ApplVerID=8) must NOT dispatch via crack_fix50 (NEW-06)"

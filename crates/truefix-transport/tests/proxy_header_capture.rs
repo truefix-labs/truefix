@@ -87,7 +87,9 @@ async fn a_proxy_v2_header_exceeding_4096_bytes_is_not_truncated() {
     let mut builder =
         Builder::with_addresses(Version::Two | Command::Proxy, Protocol::Stream, addresses);
     for _ in 0..20 {
-        builder = builder.write_tlv(Type::NoOp, vec![0u8; 250].as_slice()).unwrap();
+        builder = builder
+            .write_tlv(Type::NoOp, vec![0u8; 250].as_slice())
+            .unwrap();
     }
     let header = builder.build().unwrap();
     assert!(

@@ -98,28 +98,35 @@ pub fn decode_with_groups(input: &[u8], spec: &dyn GroupSpec) -> Result<Message,
             body.push(tok);
         }
     }
-    decode_section_with_groups(&header, spec, &mut msg.header);
-    decode_section_with_groups(&body, spec, &mut msg.body);
-    decode_section_with_groups(&trailer, spec, &mut msg.trailer);
+    decode_section_with_groups(&header, spec, &mut msg.header)?;
+    decode_section_with_groups(&body, spec, &mut msg.body)?;
+    decode_section_with_groups(&trailer, spec, &mut msg.trailer)?;
     Ok(msg)
 }
 
 /// Decode one wire section's (header/body/trailer) tokens into `out`, consuming a delimiter-led
 /// repeating group wherever `spec.group_of` matches a token's tag (nested groups recurse via
 /// `build_group`); every other token becomes a plain field.
-fn decode_section_with_groups(tokens: &[Token], spec: &dyn GroupSpec, out: &mut FieldMap) {
+fn decode_section_with_groups(
+    tokens: &[Token],
+    spec: &dyn GroupSpec,
+    out: &mut FieldMap,
+) -> Result<(), DecodeError> {
     let mut pos = 0usize;
     while let Some(tok) = tokens.get(pos) {
         let tag = tok.0;
         if let Some((delimiter, members)) = spec.group_of(tag) {
-            let group = build_group(tokens, &mut pos, spec, tag, delimiter, members);
+            let group = build_group(tokens, &mut pos, spec, tag, delimiter, members, 0)?;
             out.add_group(group);
         } else {
             out.add_field(Field::new(tag, tok.1.clone()));
             pos += 1;
         }
     }
+    Ok(())
 }
+
+const MAX_GROUP_NESTING_DEPTH: usize = 32;
 
 /// Consume a repeating group starting at the count token, returning the structured [`Group`].
 fn build_group(
@@ -129,7 +136,13 @@ fn build_group(
     count_tag: u32,
     delimiter: u32,
     members: &[u32],
-) -> Group {
+    depth: usize,
+) -> Result<Group, DecodeError> {
+    if depth >= MAX_GROUP_NESTING_DEPTH {
+        return Err(DecodeError::GroupNestingTooDeep {
+            max: MAX_GROUP_NESTING_DEPTH,
+        });
+    }
     // NEW-22 (feature 009): capture the wire-declared count before consuming its token, so a
     // re-encode preserves it verbatim even when it doesn't match the actual entry count found
     // below (previously silently "corrected" to `entries.len()` on encode, discarding the wire's
@@ -153,7 +166,7 @@ fn build_group(
                 break;
             }
             if let Some((d2, m2)) = spec.group_of(tag) {
-                let sub = build_group(tokens, pos, spec, tag, d2, m2);
+                let sub = build_group(tokens, pos, spec, tag, d2, m2, depth + 1)?;
                 entry.add_group(sub);
             } else {
                 entry.add_field(Field::new(tag, t.1.clone()));
@@ -165,7 +178,7 @@ fn build_group(
     if let Some(n) = declared {
         group.set_declared_count(n);
     }
-    group
+    Ok(group)
 }
 
 /// Tokenize `input` and verify BeginString/BodyLength/CheckSum.

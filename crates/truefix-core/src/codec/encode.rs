@@ -74,7 +74,14 @@ fn render_members_ordered(map: &FieldMap, order: &[u32], out: &mut Vec<u8>) {
         Member::Field(f) => Some(f.tag()),
         Member::Group { count_tag, .. } => Some(*count_tag),
     };
+    // NEW-80 (feature 009): `order` (a dictionary's `field_order`) may itself list the same tag
+    // more than once -- track already-emitted tags so a duplicate entry in `order` doesn't render
+    // its member twice.
+    let mut emitted: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for &wanted in order {
+        if !emitted.insert(wanted) {
+            continue;
+        }
         for member in members {
             if tag_of(member) == Some(wanted) {
                 render_one_member(member, out);
@@ -82,7 +89,8 @@ fn render_members_ordered(map: &FieldMap, order: &[u32], out: &mut Vec<u8>) {
         }
     }
     for member in members {
-        if !order.contains(&tag_of(member).unwrap_or(0)) {
+        let tag = tag_of(member).unwrap_or(0);
+        if !emitted.contains(&tag) {
             render_one_member(member, out);
         }
     }

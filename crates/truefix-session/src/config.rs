@@ -200,7 +200,7 @@ impl SessionConfig {
             timestamp_precision: TimeStampPrecision::Milliseconds,
             logon_timeout: 10,
             logout_timeout: 10,
-            reconnect_interval: 5,
+            reconnect_interval: 30,
             schedule: None,
             send_redundant_resend_requests: false,
             closed_resend_interval: false,

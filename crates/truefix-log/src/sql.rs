@@ -2,8 +2,10 @@
 //!
 //! Supports PostgreSQL, MySQL, and SQLite (FR-024), selected by the connect URL's scheme, mirroring
 //! `truefix_store::SqlStore`. The [`Log`] trait is synchronous and infallible, while `sqlx` is
-//! async: each entry is pushed onto an unbounded channel (a non-blocking, sync send) and written
-//! to the database by a background task. Table names (`JdbcLogIncomingTable`/
+//! async: each entry is pushed onto a bounded channel and written to the database by a background
+//! task. When the database cannot keep up, excess entries are dropped in accordance with [`Log`]'s
+//! best-effort contract instead of allowing the queue to consume unbounded memory. Table names
+//! (`JdbcLogIncomingTable`/
 //! `JdbcLogOutgoingTable`/`JdbcLogEventTable`) and pool settings are configurable via
 //! [`SqlLogConfig`]; `JdbcLogHeartBeats` filters Heartbeat messages before they're queued.
 
@@ -18,6 +20,8 @@ use sqlx::{Database, MySqlPool, PgPool, SqlitePool};
 use tokio::sync::mpsc;
 
 use crate::{Log, LogError, is_heartbeat};
+
+const ASYNC_LOG_CHANNEL_CAPACITY: usize = 1024;
 
 fn io_err<E: std::fmt::Display>(e: E) -> LogError {
     LogError::Io(e.to_string())
@@ -281,7 +285,7 @@ async fn insert_text(pool: &Pool, table: &str, session_id: &str, text: &str) {
 
 /// A SQL-backed log writing to configurable incoming/outgoing/event tables via a background task.
 pub struct SqlLog {
-    tx: mpsc::UnboundedSender<Entry>,
+    tx: mpsc::Sender<Entry>,
     include_heartbeats: bool,
 }
 
@@ -303,7 +307,7 @@ impl SqlLog {
         ensure_table(&pool, &config.outgoing_table).await?;
         ensure_table(&pool, &config.event_table).await?;
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<Entry>();
+        let (tx, mut rx) = mpsc::channel::<Entry>(ASYNC_LOG_CHANNEL_CAPACITY);
         let incoming_table = config.incoming_table;
         let outgoing_table = config.outgoing_table;
         let event_table = config.event_table;
@@ -338,7 +342,7 @@ impl Log for SqlLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.send(Entry::Message {
+        let _ = self.tx.try_send(Entry::Message {
             direction: "I",
             text: message.to_owned(),
         });
@@ -347,13 +351,13 @@ impl Log for SqlLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.send(Entry::Message {
+        let _ = self.tx.try_send(Entry::Message {
             direction: "O",
             text: message.to_owned(),
         });
     }
     fn on_event(&self, text: &str) {
-        let _ = self.tx.send(Entry::Event {
+        let _ = self.tx.try_send(Entry::Event {
             text: text.to_owned(),
         });
     }

@@ -66,7 +66,11 @@ fn too_high_gap_fill_is_queued_not_applied_immediately_and_does_not_discard_queu
             .any(|a| matches!(a, Action::Send(m) if m.msg_type() == Some("2"))),
         "expected a ResendRequest for the gap, got: {actions:?}"
     );
-    assert_eq!(s.next_in_seq(), 2, "the too-high message is queued, not applied");
+    assert_eq!(
+        s.next_in_seq(),
+        2,
+        "the too-high message is queued, not applied"
+    );
     assert_eq!(s.queued_len(), 1, "the too-high app message must be queued");
 
     // A gap-fill SequenceReset arrives with its OWN MsgSeqNum (10) also too high relative to

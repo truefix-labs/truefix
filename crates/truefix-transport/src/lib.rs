@@ -38,6 +38,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 
+use truefix_config::SocketEndpoint;
 use truefix_core::{DecodeError, Message, decode, decode_with_groups};
 use truefix_log::Log;
 use truefix_session::{
@@ -229,6 +230,54 @@ pub struct Services {
     /// connection is torn down) rather than blocking indefinitely. `None` (the default) leaves
     /// writes unbounded, as before.
     pub sync_write_timeout: Option<Duration>,
+    /// Optional hostname resolver override. Production uses Tokio's asynchronous resolver; this
+    /// hook also makes reconnect-time DNS behavior deterministic in integration tests.
+    pub address_resolver: Option<Arc<dyn AddressResolver>>,
+}
+
+/// Asynchronous hostname resolution used by reconnecting initiators.
+#[async_trait::async_trait]
+pub trait AddressResolver: Send + Sync {
+    /// Resolve every address currently associated with `endpoint`.
+    async fn resolve(&self, endpoint: &SocketEndpoint) -> io::Result<Vec<SocketAddr>>;
+}
+
+async fn resolve_endpoint(
+    endpoint: &SocketEndpoint,
+    resolver: Option<&dyn AddressResolver>,
+) -> io::Result<Vec<SocketAddr>> {
+    if let Some(resolver) = resolver {
+        return resolver.resolve(endpoint).await;
+    }
+    tokio::net::lookup_host((endpoint.host(), endpoint.port()))
+        .await
+        .map(Iterator::collect)
+}
+
+async fn connect_endpoint(
+    endpoint: &SocketEndpoint,
+    resolver: Option<&dyn AddressResolver>,
+    local_bind_addr: Option<SocketAddr>,
+    connect_timeout: Option<Duration>,
+) -> io::Result<TcpStream> {
+    let addrs = resolve_endpoint(endpoint, resolver).await?;
+    let mut last_error = None;
+    for addr in addrs {
+        match tcp_connect(addr, local_bind_addr, connect_timeout).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "could not resolve address {}:{}",
+                endpoint.host(),
+                endpoint.port()
+            ),
+        )
+    }))
 }
 
 /// Control messages to a running session task.
@@ -1136,7 +1185,9 @@ async fn classify_buffered(
                 // must also check `fixt_dictionaries`, or header/trailer repeating groups (e.g.
                 // NoHops) never get group-aware decoding under FIXT 1.1 at all.
                 let decoded = match (&services.validator, &services.fixt_dictionaries) {
-                    (Some((dict, _)), _) => decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dict)),
+                    (Some((dict, _)), _) => {
+                        decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dict))
+                    }
                     (None, Some((dicts, _))) => {
                         decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dicts.transport()))
                     }
@@ -1173,8 +1224,8 @@ async fn classify_buffered(
                 // B14/FR-028 (feature 006): discard only the malformed prefix that caused this
                 // framing error, not the entire buffer — a legitimate message that happens to
                 // follow a few garbled/non-FIX bytes in the same read must not be discarded along
-                // with them. Recovery scans for the next plausible frame start (an SOH-delimited
-                // "8=") past at least one byte (guaranteeing forward progress); if none is found,
+                // with them. Recovery scans for the next plausible frame start ("8=") past at
+                // least one byte (guaranteeing forward progress); if none is found,
                 // nothing in the buffer is recoverable and it's cleared as before.
                 let skip = next_frame_start(buf).unwrap_or(buf.len());
                 buf.drain(..skip);
@@ -1188,12 +1239,11 @@ async fn classify_buffered(
 }
 
 /// Scan `buf` (from byte offset 1 onward, guaranteeing forward progress even when byte 0 itself
-/// looks like a frame start) for the next SOH-delimited `"8="` — a plausible start of a new FIX
-/// message, per [`classify_buffered`]'s malformed-prefix recovery (B14/FR-028, feature 006).
+/// looks like a frame start) for the next `"8="` — a plausible start of a new FIX message, per
+/// [`classify_buffered`]'s malformed-prefix recovery (B14/FR-028, feature 006). The preceding
+/// garbage need not end in SOH (NEW-74/FR-043, feature 009).
 fn next_frame_start(buf: &[u8]) -> Option<usize> {
-    (1..buf.len().saturating_sub(1)).find(|&i| {
-        buf.get(i..i + 2) == Some(b"8=") && buf.get(i - 1) == Some(&truefix_core::tags::SOH)
-    })
+    (1..buf.len().saturating_sub(1)).find(|&i| buf.get(i..i + 2) == Some(b"8="))
 }
 
 /// A [`truefix_core::GroupSpec`] adapter that only reports a group definition for count tags the
@@ -1610,23 +1660,22 @@ pub struct AcceptorBuilder<A: Application + 'static> {
 impl<A: Application + 'static> AcceptorBuilder<A> {
     /// Bind a multi-session acceptor.
     ///
-    /// Always binds with `SO_REUSEADDR` (`B11`/FR-012, feature 006) — unlike the single-session
-    /// [`Acceptor::bind_with`], which threads a per-caller `SocketReuseAddress` choice through
-    /// `Services` supplied before binding, this constructor takes no `Services`/socket-options
-    /// parameter at all (they're attached afterward via [`Self::with_services`]), so there is no
-    /// pre-bind signal to make this conditional on without a breaking signature change. Multi-
-    /// session acceptors are the operationally restart-sensitive case this bug describes, and
-    /// `SO_REUSEADDR` on a listening socket is a standard, safe default (matches QuickFIX/J's own
-    /// default).
+    /// Uses default [`Services`]. Call [`Self::bind_with`] when listener options such as
+    /// `SocketReuseAddress` must be configured before binding.
     pub async fn bind(addr: SocketAddr, app: Arc<A>) -> io::Result<Self> {
-        let listener = bind_listener_with_options(addr, true)?;
+        Self::bind_with(addr, app, Services::default()).await
+    }
+
+    /// Bind a multi-session acceptor with services available before the listener is created.
+    pub async fn bind_with(addr: SocketAddr, app: Arc<A>, services: Services) -> io::Result<Self> {
+        let listener = bind_listener_with_options(addr, services.socket_options.reuse_address)?;
         Ok(Self {
             listener,
             app,
             sessions: HashMap::new(),
             template: None,
             allowed_remotes: None,
-            services: Services::default(),
+            services,
             tls: None,
             session_stores: HashMap::new(),
             session_services: HashMap::new(),
@@ -1643,6 +1692,11 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
     /// The bound local address.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    /// Return the effective `SO_REUSEADDR` setting on the bound listener.
+    pub fn listener_reuse_address(&self) -> io::Result<bool> {
+        socket2::SockRef::from(&self.listener).reuse_address()
     }
 
     /// Register a static session (keyed by its SessionID).
@@ -1714,7 +1768,9 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         self
     }
 
-    /// Attach store/log/socket services.
+    /// Attach store/log/socket services. Because the listener is already bound,
+    /// `services.socket_options.reuse_address` cannot affect it; pass listener options through
+    /// [`Self::bind_with`] instead.
     #[must_use]
     pub fn with_services(mut self, services: Services) -> Self {
         self.services = services;
@@ -2108,6 +2164,24 @@ pub fn connect_initiator_reconnecting_multi<A>(
 where
     A: Application + 'static,
 {
+    let endpoints = addrs
+        .into_iter()
+        .map(|addr| SocketEndpoint::new(addr.ip().to_string(), addr.port()))
+        .collect();
+    connect_initiator_reconnecting_endpoints(endpoints, config, app, services)
+}
+
+/// Connect as a reconnecting initiator while retaining configured hostnames. Every attempt
+/// resolves the selected endpoint anew and tries all addresses returned by DNS (FR-030).
+pub fn connect_initiator_reconnecting_endpoints<A>(
+    endpoints: Vec<SocketEndpoint>,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+) -> ReconnectHandle
+where
+    A: Application + 'static,
+{
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
     let current: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> =
@@ -2119,12 +2193,17 @@ where
         let mut next_endpoint = 0usize;
         let mut backoff_step = 0usize;
         while !loop_stop.load(Ordering::SeqCst) {
-            let Some(&addr) = addrs.get(next_endpoint % addrs.len().max(1)) else {
-                break; // addrs is empty; nothing to connect to
+            let Some(endpoint) = endpoints.get(next_endpoint % endpoints.len().max(1)) else {
+                break; // endpoints is empty; nothing to connect to
             };
             next_endpoint = next_endpoint.wrapping_add(1);
-            if let Ok(stream) =
-                tcp_connect(addr, config.local_bind_addr, config.connect_timeout).await
+            if let Ok(stream) = connect_endpoint(
+                endpoint,
+                services.address_resolver.as_deref(),
+                config.local_bind_addr,
+                config.connect_timeout,
+            )
+            .await
             {
                 // BUG-39/FR-021 (feature 007): apply the configured socket options here, matching
                 // every other connection path (plain `connect_initiator`, the TLS variant below,
@@ -2205,6 +2284,26 @@ pub fn connect_initiator_reconnecting_multi_tls<A>(
 where
     A: Application + 'static,
 {
+    let endpoints = addrs
+        .into_iter()
+        .map(|addr| SocketEndpoint::new(addr.ip().to_string(), addr.port()))
+        .collect();
+    connect_initiator_reconnecting_endpoints_tls(endpoints, config, app, services, tls, server_name)
+}
+
+/// TLS counterpart of [`connect_initiator_reconnecting_endpoints`]. Hostname resolution is
+/// repeated before every TCP/TLS connection attempt.
+pub fn connect_initiator_reconnecting_endpoints_tls<A>(
+    endpoints: Vec<SocketEndpoint>,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+    tls: Arc<rustls::ClientConfig>,
+    server_name: rustls::pki_types::ServerName<'static>,
+) -> ReconnectHandle
+where
+    A: Application + 'static,
+{
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
     let current: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> =
@@ -2217,11 +2316,17 @@ where
         let mut next_endpoint = 0usize;
         let mut backoff_step = 0usize;
         while !loop_stop.load(Ordering::SeqCst) {
-            let Some(&addr) = addrs.get(next_endpoint % addrs.len().max(1)) else {
-                break; // addrs is empty; nothing to connect to
+            let Some(endpoint) = endpoints.get(next_endpoint % endpoints.len().max(1)) else {
+                break; // endpoints is empty; nothing to connect to
             };
             next_endpoint = next_endpoint.wrapping_add(1);
-            if let Ok(tcp) = tcp_connect(addr, config.local_bind_addr, config.connect_timeout).await
+            if let Ok(tcp) = connect_endpoint(
+                endpoint,
+                services.address_resolver.as_deref(),
+                config.local_bind_addr,
+                config.connect_timeout,
+            )
+            .await
             {
                 services.socket_options.apply(&tcp);
                 if let Ok(stream) = connector.connect(server_name.clone(), tcp).await {
@@ -2507,15 +2612,12 @@ mod scheduled_initiator_nonblocking_connect_tests {
         let schedule = Schedule::non_stop();
         let never_connects = std::future::pending::<()>();
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(1),
-            async {
-                tokio::select! {
-                    _ = never_connects => unreachable!("connect must never resolve in this test"),
-                    () = wait_for_stop_or_schedule_change(&stop, &schedule, true) => (),
-                }
-            },
-        )
+        let result = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                _ = never_connects => unreachable!("connect must never resolve in this test"),
+                () = wait_for_stop_or_schedule_change(&stop, &schedule, true) => (),
+            }
+        })
         .await;
         assert!(
             result.is_ok(),

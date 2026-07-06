@@ -38,10 +38,13 @@ fn server_suite_scenario_run_count_does_not_regress() {
     let scenarios = server_suite();
     let total_runs: usize = scenarios.iter().map(|s| s.versions.len()).sum();
     assert!(
-        total_runs >= 425,
-        "server_suite() produced {total_runs} scenario runs, below the 425-run floor established \
-         at feature 009's US1 (NEW-63's dict_invalid_logon_disconnects_without_disconnect_on_error, \
-         +1 run — FIX.4.4 — on top of the 424-run floor established at 007 Polish closeout (T116)) \
+        total_runs >= 444,
+        "server_suite() produced {total_runs} scenario runs, below the 444-run floor established \
+         by feature 009 T111 (NEW-85 too-high Logout, +9 version runs), T090 (NEW-69 empty \
+         group-member value, +1 FIX.4.4 run), and T093 (NEW-70 gap-fill missing NewSeqNo, +9 \
+         version runs) on top of the 425-run floor established at feature 009's US1 (NEW-63's \
+         dict_invalid_logon_disconnects_without_disconnect_on_error, +1 run — FIX.4.4 — on top \
+         of the 424-run floor established at 007 Polish closeout (T116)) \
          — up from the 405-run floor at 006 US9 closeout (T084's MinQty scenario, tag 110, +2 runs \
          — FIX.4.2 and FIX.4.4 — on top of the 403-run floor from US1 closeout: session \
          protocol-correctness fixes BUG-06/BUG-22/B3/B5/B7, up from 373 at 005 closeout). The +19 \

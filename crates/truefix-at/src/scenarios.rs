@@ -175,6 +175,22 @@ fn unsolicited_logout(v: &str) -> Scenario {
     )
 }
 
+/// NEW-85/FR-049 (009/US2) — Logout is terminal even when its MsgSeqNum is above the expected
+/// value. It is answered immediately instead of being queued behind a ResendRequest.
+fn too_high_logout_processed_immediately(v: &str) -> Scenario {
+    scenario(
+        "NEW85_TooHighLogoutProcessedImmediately",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(client_message(v, "5", 5)),
+            Step::Expect(ExpectMsg::of("5")),
+            Step::ExpectDisconnect,
+        ],
+    )
+}
+
 /// 2f — a ResendRequest for already-sent admin traffic is answered with a SequenceReset-GapFill.
 fn resend_request_gap_fill(v: &str) -> Scenario {
     let mut rr = client_message(v, "2", 2);
@@ -294,6 +310,26 @@ fn sequence_reset_reset_missing_new_seq_no_rejected(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
             Step::Expect(expect_session_reject_reason(v, "3", "1")), // RequiredTagMissing
+        ],
+    )
+}
+
+/// NEW-70/FR-040 (009/US2) — gap-fill mode also requires NewSeqNo(36). A malformed gap-fill must
+/// draw a required-tag-missing Reject rather than being silently accepted without advancing.
+fn sequence_reset_gap_fill_missing_new_seq_no_rejected(v: &str) -> Scenario {
+    let mut sr = client_message(v, "4", 2);
+    sr.body.set(Field::string(123, "Y")); // GapFillFlag, but no NewSeqNo
+    scenario(
+        "NEW70_GapFillMissingNewSeqNoRejected",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(sr),
+            Step::Expect(
+                expect_session_reject_reason(v, "3", "1") // RequiredTagMissing
+                    .field(371, "36"), // RefTagID = NewSeqNo
+            ),
         ],
     )
 }
@@ -657,6 +693,10 @@ fn resend_request_too_high_answered_immediately(v: &str) -> Scenario {
     let mut rr = client_message(v, "2", 5); // too-high: server expects seq 2
     rr.body.set(Field::int(7, 1)); // BeginSeqNo
     rr.body.set(Field::int(16, 1)); // EndSeqNo
+    let mut after_gap = client_message(v, "1", 6);
+    after_gap
+        .body
+        .set(Field::string(112, "NO-DUPLICATE-RESEND"));
     scenario(
         "BUG29_ResendRequestTooHighAnsweredImmediately",
         v,
@@ -668,6 +708,14 @@ fn resend_request_too_high_answered_immediately(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("4")),
             // ...and we still separately request our own gap (seq 2..4).
             Step::Expect(ExpectMsg::of("2").field(7, "2")),
+            Step::Send(client_message(v, "0", 2)),
+            Step::Send(client_message(v, "0", 3)),
+            Step::Send(client_message(v, "0", 4)),
+            Step::Send(after_gap),
+            // NEW-86: draining the queued seq-5 ResendRequest only advances sequence accounting;
+            // it must not emit the already-sent GapFill a second time. A duplicate would arrive
+            // before this Heartbeat and fail the expectation.
+            Step::Expect(ExpectMsg::of("0").field(112, "NO-DUPLICATE-RESEND")),
         ],
     )
 }
@@ -989,6 +1037,26 @@ fn group_count_mismatch(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(order),
             Step::Expect(ExpectMsg::of("3").field(373, "16")), // IncorrectNumInGroupCount
+        ],
+    )
+}
+
+/// NEW-69/FR-039 (009/US2) — an empty value inside a repeating-group entry is subject to the
+/// same TagSpecifiedWithoutValue validation as a top-level field.
+fn empty_value_inside_group(v: &str) -> Scenario {
+    let order = nos_with_group(2, &[(453, "1"), (448, ""), (447, "1"), (452, "1")]);
+    scenario(
+        "NEW69_EmptyValueInsideRepeatingGroup",
+        v,
+        vec![
+            Step::Send(logon(v, 1, true)),
+            Step::Expect(ExpectMsg::of("A")),
+            Step::Send(order),
+            Step::Expect(
+                ExpectMsg::of("3")
+                    .field(371, "448") // RefTagID = PartyID
+                    .field(373, "4"), // TagSpecifiedWithoutValue
+            ),
         ],
     )
 }
@@ -1985,6 +2053,7 @@ pub fn resynch_suite() -> Vec<Scenario> {
         sequence_reset_reset("FIX.4.4"),
         sequence_reset_gap_fill_advances("FIX.4.4"),
         sequence_reset_gap_fill_backward_ignored("FIX.4.4"),
+        sequence_reset_gap_fill_missing_new_seq_no_rejected("FIX.4.4"),
         resend_request_chunk_size("FIX.4.4"),
         chunked_resend_auto_continues("FIX.4.4"),
     ]
@@ -2002,6 +2071,7 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(reverse_route(v));
         out.push(reverse_route_empty_tags(v));
         out.push(unsolicited_logout(v));
+        out.push(too_high_logout_processed_immediately(v));
         out.push(logon_response_carries_reset_flag(v));
         out.push(logon_response_does_not_echo_reset_flag_when_inbound_lacks_it(v));
         out.push(logon_adopts_heartbeat_interval(v));
@@ -2014,6 +2084,7 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(sequence_reset_reset(v));
         out.push(sequence_reset_gap_fill_advances(v));
         out.push(sequence_reset_gap_fill_backward_ignored(v));
+        out.push(sequence_reset_gap_fill_missing_new_seq_no_rejected(v));
         out.push(resend_request_nothing_to_resend(v));
         out.push(reject_message_consumed(v));
         out.push(heartbeat_consumed(v));
@@ -2053,6 +2124,7 @@ pub fn server_suite() -> Vec<Scenario> {
     // Field-validation scenarios require the dictionary; authored for FIX.4.4.
     out.push(valid_new_order_accepted("FIX.4.4"));
     out.push(group_count_mismatch("FIX.4.4"));
+    out.push(empty_value_inside_group("FIX.4.4"));
     out.push(group_out_of_order("FIX.4.4"));
     out.push(nested_group_missing_delimiter("FIX.4.4"));
     out.push(group_zero_count("FIX.4.4"));
@@ -2093,7 +2165,9 @@ pub fn server_suite() -> Vec<Scenario> {
     // 006 US1: dictionary/tweak-dependent session protocol-correctness fixes (T021).
     out.push(gap_fill_drained_message_is_validated("FIX.4.4"));
     out.push(dictionary_failure_disconnect_sends_logout("FIX.4.4"));
-    out.push(dict_invalid_logon_disconnects_without_disconnect_on_error("FIX.4.4"));
+    out.push(dict_invalid_logon_disconnects_without_disconnect_on_error(
+        "FIX.4.4",
+    ));
     out.push(unparseable_sending_time_fails_latency("FIX.4.4"));
     // 006 US9 (T084): MinQty (tag 110) is a recognized, accepted field (BUG-17 MinQty follow-up).
     out.push(min_qty_field_accepted_44());

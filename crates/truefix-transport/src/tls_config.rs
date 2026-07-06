@@ -49,10 +49,9 @@ pub enum TlsConfigError {
     /// The rustls configuration could not be built.
     #[error("rustls: {0}")]
     Rustls(#[from] rustls::Error),
-    /// `CipherSuites` (FR-017) matched none of the process-default provider's recognized suites
-    /// (GAP-53, feature 006) — previously silently produced a `CryptoProvider` with zero usable
-    /// cipher suites, surfacing only later as an opaque `rustls::Error` at handshake time.
-    #[error("CipherSuites {0:?} matched no recognized cipher suite")]
+    /// Names in `CipherSuites` (FR-017) that do not match any suite supported by the
+    /// process-default provider.
+    #[error("CipherSuites contains unrecognized cipher suites: {0:?}")]
     UnrecognizedCipherSuites(Vec<String>),
 }
 
@@ -168,6 +167,20 @@ fn crypto_provider(names: &[String]) -> Result<Arc<CryptoProvider>, TlsConfigErr
     if names.is_empty() {
         return Ok(Arc::new(base));
     }
+    let unrecognized: Vec<_> = names
+        .iter()
+        .filter(|name| {
+            !base.cipher_suites.iter().any(|suite| {
+                let suite_name = format!("{:?}", suite.suite());
+                name.eq_ignore_ascii_case(&suite_name)
+            })
+        })
+        .cloned()
+        .collect();
+    if !unrecognized.is_empty() {
+        return Err(TlsConfigError::UnrecognizedCipherSuites(unrecognized));
+    }
+
     let cipher_suites: Vec<_> = base
         .cipher_suites
         .iter()
@@ -177,11 +190,6 @@ fn crypto_provider(names: &[String]) -> Result<Arc<CryptoProvider>, TlsConfigErr
         })
         .copied()
         .collect();
-    // GAP-53 (feature 006): a name that matches nothing (typo, unsupported suite) must be a
-    // clear configuration-time error, not a silently-empty (and thus non-functional) suite set.
-    if cipher_suites.is_empty() {
-        return Err(TlsConfigError::UnrecognizedCipherSuites(names.to_vec()));
-    }
     Ok(Arc::new(CryptoProvider {
         cipher_suites,
         ..base

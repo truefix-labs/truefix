@@ -17,6 +17,8 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::{Log, LogError, is_heartbeat};
 
+const ASYNC_LOG_CHANNEL_CAPACITY: usize = 1024;
+
 fn io_err<E: std::fmt::Display>(e: E) -> LogError {
     LogError::Io(e.to_string())
 }
@@ -152,8 +154,9 @@ fn parse_semicolon_form(rest: &str) -> Result<Config, LogError> {
             (u.to_owned(), p.to_owned())
         }
         None => {
-            let u = prop_user
-                .ok_or_else(|| io_err("mssql URL must include a user property or user:password@"))?;
+            let u = prop_user.ok_or_else(|| {
+                io_err("mssql URL must include a user property or user:password@")
+            })?;
             let p = prop_password.ok_or_else(|| {
                 io_err("mssql URL must include a password property or user:password@")
             })?;
@@ -299,7 +302,7 @@ impl MssqlLogConfig {
 /// An MSSQL-backed log writing to configurable incoming/outgoing/event tables via a background
 /// task (FR-020).
 pub struct MssqlLog {
-    tx: mpsc::UnboundedSender<Entry>,
+    tx: mpsc::Sender<Entry>,
     include_heartbeats: bool,
 }
 
@@ -326,7 +329,7 @@ impl MssqlLog {
         ensure_table(&mut client, &config.outgoing_table).await?;
         ensure_table(&mut client, &config.event_table).await?;
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<Entry>();
+        let (tx, mut rx) = mpsc::channel::<Entry>(ASYNC_LOG_CHANNEL_CAPACITY);
         let incoming_table = config.incoming_table;
         let outgoing_table = config.outgoing_table;
         let event_table = config.event_table;
@@ -361,7 +364,7 @@ impl Log for MssqlLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.send(Entry::Message {
+        let _ = self.tx.try_send(Entry::Message {
             direction: "I",
             text: message.to_owned(),
         });
@@ -370,13 +373,13 @@ impl Log for MssqlLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.send(Entry::Message {
+        let _ = self.tx.try_send(Entry::Message {
             direction: "O",
             text: message.to_owned(),
         });
     }
     fn on_event(&self, text: &str) {
-        let _ = self.tx.send(Entry::Event {
+        let _ = self.tx.try_send(Entry::Event {
             text: text.to_owned(),
         });
     }

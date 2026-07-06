@@ -1,10 +1,9 @@
 //! T067/T068 (US10) — socket options and numbered `SocketConnectHost<N>`/`SocketConnectPort<N>`
 //! backup endpoints map from a settings file into a runnable `ResolvedSession` (FR-019).
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
-use truefix_config::{ResolvedSession, SessionSettings};
+use truefix_config::{ResolvedSession, SessionSettings, SocketEndpoint};
 
 fn resolved(cfg: &str) -> ResolvedSession {
     SessionSettings::parse(cfg)
@@ -99,9 +98,9 @@ fn numbered_backup_endpoints_are_mapped_in_order() {
         "SocketConnectHost1=10.0.0.2\nSocketConnectPort1=5002\n\
          SocketConnectHost2=10.0.0.3\nSocketConnectPort2=5003\n",
     ));
-    let expected: Vec<SocketAddr> = vec![
-        "10.0.0.2:5002".parse().unwrap(),
-        "10.0.0.3:5003".parse().unwrap(),
+    let expected = vec![
+        SocketEndpoint::new("10.0.0.2", 5002),
+        SocketEndpoint::new("10.0.0.3", 5003),
     ];
     assert_eq!(rs.failover_addresses, expected);
 }

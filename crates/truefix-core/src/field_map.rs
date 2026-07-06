@@ -37,17 +37,31 @@ impl FieldMap {
         self.members.push(Member::Field(field));
     }
 
-    /// Set a top-level field, replacing an existing one with the same tag, else appending.
+    /// Set a top-level field, replacing an existing one with the same tag (in place, preserving
+    /// its position), else appending. If more than one field with this tag is already present
+    /// (NEW-81, feature 009 -- e.g. because `add_field` was used to push duplicates directly,
+    /// bypassing this method's usual dedup), every stale copy is removed, leaving only the new
+    /// value at the first occurrence's position.
     pub fn set(&mut self, field: Field) {
-        for m in &mut self.members {
-            if let Member::Field(existing) = m
-                && existing.tag() == field.tag()
-            {
-                *existing = field;
-                return;
+        let tag = field.tag();
+        let mut replaced = false;
+        self.members.retain_mut(|m| {
+            let Member::Field(existing) = m else {
+                return true;
+            };
+            if existing.tag() != tag {
+                return true;
             }
+            if replaced {
+                return false;
+            }
+            *existing = field.clone();
+            replaced = true;
+            true
+        });
+        if !replaced {
+            self.members.push(Member::Field(field));
         }
-        self.members.push(Member::Field(field));
     }
 
     /// Get the first top-level field with `tag`.

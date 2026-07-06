@@ -25,7 +25,7 @@ use thiserror::Error;
 
 pub use builder::{
     ConnectionType, LenientResolve, LogKind, LogSpec, ProxyKind, ProxySpec, ResolvedSession,
-    SocketOptionsSpec, SqlLogSpec, TlsSpec, TlsVersion,
+    SocketEndpoint, SocketOptionsSpec, SqlLogSpec, TlsSpec, TlsVersion,
 };
 pub use keys::{APPENDIX_A_KEYS, KeyInfo, Stance, key_info};
 

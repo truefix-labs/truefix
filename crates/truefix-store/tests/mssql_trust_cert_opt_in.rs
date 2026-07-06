@@ -39,8 +39,10 @@ async fn disabling_trust_server_certificate_does_not_break_the_connect_path() {
         ..MssqlStoreConfig::new(&url)
     };
 
-    let connect_fut =
-        tokio::time::timeout(Duration::from_secs(3), MssqlStore::connect_with_config(config));
+    let connect_fut = tokio::time::timeout(
+        Duration::from_secs(3),
+        MssqlStore::connect_with_config(config),
+    );
     let accept_fut = tokio::time::timeout(Duration::from_secs(3), listener.accept());
     let (_connect_result, accept_result) = tokio::join!(connect_fut, accept_fut);
 

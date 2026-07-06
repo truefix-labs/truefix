@@ -68,7 +68,13 @@ fn logon_sequence_reset_and_reject_are_still_processed_normally_before_logon() {
     for mt in ["A", "4", "3"] {
         let mut s = Session::new(cfg());
         s.handle(Event::Connected);
-        let _ = s.handle(Event::Received(msg(mt, 1)));
+        let mut inbound = msg(mt, 1);
+        if mt == "A" {
+            // A Logon must itself be protocol-valid so this remains a focused allow-list control
+            // after NEW-71 made HeartBtInt mandatory even without dictionary validation.
+            inbound.body.set(Field::int(108, 30));
+        }
+        let _ = s.handle(Event::Received(inbound));
         assert_ne!(
             s.state(),
             SessionState::Disconnected,

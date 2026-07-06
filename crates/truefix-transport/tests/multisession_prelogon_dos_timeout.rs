@@ -32,10 +32,11 @@ fn acc(sender: &str, target: &str, logon_timeout: u32) -> SessionConfig {
 /// from the registered sessions' `logon_timeout` -- not left open indefinitely.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_silent_pre_logon_connection_is_disconnected_within_bounded_time() {
-    let acceptor = AcceptorBuilder::bind("127.0.0.1:0".parse().unwrap(), std::sync::Arc::new(NoopApp))
-        .await
-        .unwrap()
-        .with_session(acc("SERVER", "CLIENT", 1));
+    let acceptor =
+        AcceptorBuilder::bind("127.0.0.1:0".parse().unwrap(), std::sync::Arc::new(NoopApp))
+            .await
+            .unwrap()
+            .with_session(acc("SERVER", "CLIENT", 1));
     let addr = acceptor.local_addr().unwrap();
     acceptor.serve();
 
@@ -59,10 +60,11 @@ async fn a_silent_pre_logon_connection_is_disconnected_within_bounded_time() {
 /// `Ok(None)`) must still be bounded by the same timeout, not merely by EOF/error detection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_connection_trickling_non_soh_bytes_is_disconnected_within_bounded_time() {
-    let acceptor = AcceptorBuilder::bind("127.0.0.1:0".parse().unwrap(), std::sync::Arc::new(NoopApp))
-        .await
-        .unwrap()
-        .with_session(acc("SERVER", "CLIENT", 1));
+    let acceptor =
+        AcceptorBuilder::bind("127.0.0.1:0".parse().unwrap(), std::sync::Arc::new(NoopApp))
+            .await
+            .unwrap()
+            .with_session(acc("SERVER", "CLIENT", 1));
     let addr = acceptor.local_addr().unwrap();
     acceptor.serve();
 

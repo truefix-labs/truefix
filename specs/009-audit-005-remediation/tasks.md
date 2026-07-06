@@ -625,214 +625,327 @@ fixes.
 
 ### Group count round-trip fidelity (FR-026, `NEW-22`)
 
-- [ ] T063 [P] [US2] Add a failing test: a wire message with `NoX=3` and 2 actual entries does not
+- [X] T063 [P] [US2] Add a failing test: a wire message with `NoX=3` and 2 actual entries does not
   silently re-encode as `NoX=2`, in `crates/truefix-core/tests/group_count_round_trip.rs` (new).
-- [ ] T064 [US2] Fix `build_group` in `crates/truefix-core/src/codec/decode.rs` (~L88-110) — makes
-  T063 pass (depends on T063, sequenced after T062 since both touch `decode.rs`).
+  — **complete**: 2 tests; the regression test was replayed against the pre-fix revision and
+  failed with `453=2` instead of preserving wire-declared `453=3`.
+- [X] T064 [US2] Fix `build_group` in `crates/truefix-core/src/codec/decode.rs` (~L88-110) — makes
+  T063 pass (depends on T063, sequenced after T062 since both touch `decode.rs`). — **complete**:
+  decoded groups retain an optional wire-declared count and re-encode it until an entry mutation
+  invalidates it; newly-built groups still emit `entries.len()`. `truefix-core` tests and clippy
+  pass.
 
 ### `CachedFileStore` read-through caching (FR-027, `NEW-23`)
 
-- [ ] T065 [P] [US2] Add a failing test: a cache-miss `get()` populates the cache, so a repeated
+- [X] T065 [P] [US2] Add a failing test: a cache-miss `get()` populates the cache, so a repeated
   resend of the same sequence hits cache, not disk, in
-  `crates/truefix-store/tests/cached_file_store_read_through.rs` (new).
-- [ ] T066 [US2] Fix `CachedFileStore::get` in `crates/truefix-store/src/file.rs` to insert on
-  cache miss — makes T065 pass (depends on T065).
+  `crates/truefix-store/tests/cached_file_store_read_through.rs` (new). — **complete**: a
+  one-entry cache forces a miss, then the body file is removed to prove the second read is served
+  from the newly-populated cache; the pre-fix version failed with an I/O error.
+- [X] T066 [US2] Fix `CachedFileStore::get` in `crates/truefix-store/src/file.rs` to insert on
+  cache miss — makes T065 pass (depends on T065). — **complete**: successful disk reads now use
+  the existing bounded-cache insertion/eviction path. Targeted tests and clippy pass.
 
 ### Bounded async log channels (FR-028, `NEW-24`)
 
-- [ ] T067 [P] [US2] Add a failing test: an async log backend's channel applies backpressure under
+- [X] T067 [P] [US2] Add a failing test: an async log backend's channel applies backpressure under
   a simulated slow consumer, rather than growing unbounded, in
-  `crates/truefix-log/tests/bounded_async_channel.rs` (new).
-- [ ] T068 [US2] Change `mpsc::unbounded_channel()` to a bounded `mpsc::channel(BOUND)` in
-  `crates/truefix-log/src/{sql,mssql,mongo,redb}.rs` — makes T067 pass (depends on T067).
+  `crates/truefix-log/tests/bounded_async_channel.rs` (new). — **complete**: a 4096-entry burst
+  against the slower redb writer proves pending work is capped; the old unbounded channel accepts
+  and persists the entire burst.
+- [X] T068 [US2] Change `mpsc::unbounded_channel()` to a bounded `mpsc::channel(BOUND)` in
+  `crates/truefix-log/src/{sql,mssql,mongo,redb}.rs` — makes T067 pass (depends on T067). —
+  **complete**: all four async backends use capacity 1024 plus non-blocking `try_send`; saturation
+  sheds excess log entries under the existing synchronous, infallible, best-effort `Log` contract
+  rather than blocking a Tokio runtime thread or growing memory without bound. All-feature
+  targeted tests and clippy pass.
 
 ### `CipherSuites` typo detection (FR-029, `NEW-25`)
 
-- [ ] T069 [P] [US2] Add a failing test: `CipherSuites` with one valid name and one typo'd name
-  errors, in `crates/truefix-transport/tests/cipher_suite_typo_errors.rs` (new).
-- [ ] T070 [US2] Fix `crypto_provider()` in `crates/truefix-transport/src/tls_config.rs` (~L195-225)
+- [X] T069 [P] [US2] Add a failing test: `CipherSuites` with one valid name and one typo'd name
+  errors, in `crates/truefix-transport/tests/cipher_suite_typo_errors.rs` (new). — **complete**:
+  the mixed valid/invalid list passed under the old "only error when zero suites matched" logic.
+- [X] T070 [US2] Fix `crypto_provider()` in `crates/truefix-transport/src/tls_config.rs` (~L195-225)
   to verify every listed name matched — makes T069 pass (depends on T069, sequenced after T027 since
-  both touch `tls_config.rs`).
+  both touch `tls_config.rs`). — **complete**: every requested suite is checked before provider
+  filtering and the error contains only unmatched names. The new test, existing TLS hardening
+  tests (including live local handshakes), and clippy pass.
 
 ### DNS resolved at connect time (FR-030, `NEW-26`)
 
-- [ ] T071 [P] [US2] Add a failing test: a reconnecting initiator re-resolves DNS at each connect
+- [X] T071 [P] [US2] Add a failing test: a reconnecting initiator re-resolves DNS at each connect
   attempt rather than once at config-load time, in
-  `crates/truefix-config/tests/dns_resolved_at_connect_time.rs` (new).
-- [ ] T072 [US2] Fix `resolve_address`/`resolve_failover_addresses` in
+  `crates/truefix-config/tests/dns_resolved_at_connect_time.rs` (new). — **complete**: config
+  resolution preserves an intentionally unresolvable hostname, and a transport integration test
+  uses a deterministic resolver returning two different listeners on consecutive reconnects.
+- [X] T072 [US2] Fix `resolve_address`/`resolve_failover_addresses` in
   `crates/truefix-config/src/builder.rs` (~L870-900, ~L760-800) to defer resolution to connect time
   — makes T071 pass (depends on T071, sequenced after T037/T038/T052 since all touch `builder.rs`).
+  — **complete**: `SocketEndpoint` retains host/port through config and facade layers; plain and
+  TLS reconnect loops resolve on every attempt and try all returned addresses. Existing
+  `SocketAddr` reconnect APIs remain compatible wrappers. Workspace check, targeted tests, and
+  related clippy pass.
 
 ### Async DNS in `Engine::start` (FR-031, `NEW-27`)
 
-- [ ] T073 [P] [US2] Add a failing test/assertion: `Engine::start`'s hostname resolution does not
+- [X] T073 [P] [US2] Add a failing test/assertion: `Engine::start`'s hostname resolution does not
   block the async executor (verifiable via a current-thread runtime test that would otherwise
-  stall), in `crates/truefix/tests/engine_start_async_dns.rs` (new).
-- [ ] T074 [US2] Replace blocking `std::net::ToSocketAddrs` with `tokio::net::lookup_host` in
+  stall), in `crates/truefix/tests/engine_start_async_dns.rs` (new). — **complete**: first-polling
+  startup with an `.invalid` proxy host must return `Pending`, while a peer task still runs.
+- [X] T074 [US2] Replace blocking `std::net::ToSocketAddrs` with `tokio::net::lookup_host` in
   `to_transport_proxy_config` (`crates/truefix/src/lib.rs` ~L78-99, ~L494) — makes T073 pass
-  (depends on T073).
+  (depends on T073). — **complete**: proxy resolution is async with unchanged first-address and
+  error-mapping semantics. The current-thread test and related clippy pass.
 
 ### `reset_sequences` field clearing (FR-032, `NEW-32`)
 
-- [ ] T075 [P] [US2] Add a failing test: an operational `reset()` mid-session clears
+- [X] T075 [P] [US2] Add a failing test: an operational `reset()` mid-session clears
   `resend_target`/`resend_chunk_end`/`test_request_outstanding`, in
-  `crates/truefix-session/tests/reset_sequences_clears_resend_state.rs` (new).
-- [ ] T076 [US2] Fix `reset_sequences()` in `crates/truefix-session/src/state.rs` (~L919-925) —
+  `crates/truefix-session/tests/reset_sequences_clears_resend_state.rs` (new). — **complete**: 1
+  test, driving `reset()` directly (not via a reconnect `Event::Connected`, which already clears
+  the same fields via a separate pre-existing mechanism — an earlier draft masked the bug by
+  going through `Event::Connected` afterward, since that path already clears this state; corrected
+  to feed in-order messages directly on the same live connection after `reset()`, matching
+  operational-reset's real "same connection, sequences renumbered" semantics). Confirmed catching
+  the bug via temporary revert.
+- [X] T076 [US2] Fix `reset_sequences()` in `crates/truefix-session/src/state.rs` (~L919-925) —
   makes T075 pass (depends on T075, sequenced after T009/T012/T015/T023/T030/T033/T044(wait
-  validate.rs not state.rs)/T055 since all touch `state.rs`).
+  validate.rs not state.rs)/T055 since all touch `state.rs`). — **complete**: `cargo test -p
+  truefix-session`, `cargo clippy -p truefix-session --all-targets -- -D warnings`: both clean.
 
 ### `AcceptorBuilder::bind` honors `SocketReuseAddress` (FR-033, `NEW-33`)
 
-- [ ] T077 [P] [US2] Add a failing test: `SocketReuseAddress=N` results in `bind_listener_with_
+- [X] T077 [P] [US2] Add a failing test: `SocketReuseAddress=N` results in `bind_listener_with_
   options(addr, false)` being called, not hardcoded `true`, in
-  `crates/truefix-transport/tests/socket_reuse_address_honored.rs` (new).
-- [ ] T078 [US2] Fix `AcceptorBuilder::bind` in `crates/truefix-transport/src/lib.rs` (~L1230) —
-  makes T077 pass (depends on T077, sequenced after T006/T020/T042 since all touch `lib.rs`).
+  `crates/truefix-transport/tests/socket_reuse_address_honored.rs` (new). — **complete**: the test
+  reads the bound listener's actual `SO_REUSEADDR` value rather than relying on timing.
+- [X] T078 [US2] Fix `AcceptorBuilder::bind` in `crates/truefix-transport/src/lib.rs` (~L1230) —
+  makes T077 pass (depends on T077, sequenced after T006/T020/T042 since all touch `lib.rs`). —
+  **complete**: new `bind_with(..., Services)` applies socket options before binding; existing
+  `bind` delegates with defaults, and Engine grouped acceptors use `bind_with`. Targeted socket
+  tests and related clippy pass.
 
 ### `NewSeqNo=0` rejection (FR-034, `NEW-34`)
 
-- [ ] T079 [P] [US2] Add a failing test: a non-gap-fill `SequenceReset` with `NewSeqNo=0` present is
-  rejected, in `crates/truefix-session/tests/sequence_reset_new_seq_zero.rs` (new).
-- [ ] T080 [US2] Fix `on_sequence_reset` in `crates/truefix-session/src/state.rs` (~L1040-1075):
+- [X] T079 [P] [US2] Add a failing test: a non-gap-fill `SequenceReset` with `NewSeqNo=0` present is
+  rejected, in `crates/truefix-session/tests/sequence_reset_new_seq_zero.rs` (new). —
+  **complete**: the regression test requires a session-level Reject referencing `NewSeqNo(36)`;
+  the old zero filter silently accepted the message as a no-op.
+- [X] T080 [US2] Fix `on_sequence_reset` in `crates/truefix-session/src/state.rs` (~L1040-1075):
   remove the `.filter(|&n| n > 0)` that maps a present zero to `None` — makes T079 pass (depends on
-  T079, sequenced after T076).
+  T079, sequenced after T076). — **complete**: zero remains present and reaches the existing
+  decreasing-sequence rejection path, while negative parsed values remain excluded. The targeted
+  test and `truefix-session` clippy pass.
 
 ### Empty `ApplVerID` fallback (FR-035, `NEW-64`)
 
-- [ ] T081 [P] [US2] Add a failing test: `application_for` with `ApplVerID=""` falls back to
-  `DefaultApplVerID`, in `crates/truefix-dict/tests/empty_applverid_fallback.rs` (new).
-- [ ] T082 [US2] Fix `application_for` in `crates/truefix-dict/src/fixt.rs` — makes T081 pass
-  (depends on T081).
+- [X] T081 [P] [US2] Add a failing test: `application_for` with `ApplVerID=""` falls back to
+  `DefaultApplVerID`, in `crates/truefix-dict/tests/empty_applverid_fallback.rs` (new). —
+  **complete**: the old direct lookup treated the empty string as an explicit unknown key and
+  returned `None`.
+- [X] T082 [US2] Fix `application_for` in `crates/truefix-dict/src/fixt.rs` — makes T081 pass
+  (depends on T081). — **complete**: empty explicit IDs are filtered before applying the existing
+  default resolution. The new test, existing FIXT dictionary tests, and clippy pass.
 
 ### Cyclic group recursion bound (FR-036, `NEW-65`)
 
-- [ ] T083 [P] [US2] Add a failing test: a crafted cyclic repeating-group dictionary drives
+- [X] T083 [P] [US2] Add a failing test: a crafted cyclic repeating-group dictionary drives
   `decode_with_groups` on a message within `MAX_BODY_LEN`; confirm bounded recursion (no stack
   overflow), in `crates/truefix-dict/tests/cyclic_group_recursion_bound.rs` (new) — a Principle I
-  "never panics" regression test.
-- [ ] T084 [US2] Add a group-member cycle guard in `crates/truefix-dict/src/parser.rs` (mirroring
+  "never panics" regression test. — **complete**: a two-group cycle and an acyclic control prove
+  malformed dictionaries are rejected before crafted in-bound messages can drive recursive
+  grouped decode.
+- [X] T084 [US2] Add a group-member cycle guard in `crates/truefix-dict/src/parser.rs` (mirroring
   the existing component-cycle check) or a recursion depth limit in `build_group`
   (`crates/truefix-core/src/codec/decode.rs`) — makes T083 pass (depends on T083, sequenced after
-  T064 if touching `decode.rs`).
+  T064 if touching `decode.rs`). — **complete**: grouped decode enforces a depth limit of 32 and
+  returns typed `DecodeError::GroupNestingTooDeep`. This preserves the recursive group definitions
+  present in bundled FIX Repository dictionaries while bounding crafted wire-data recursion.
 
 ### `DayOfMonth`/negative-value range checks (FR-037, `NEW-66`, `NEW-67`)
 
-- [ ] T085 [P] [US2] Add a failing test: `DayOfMonth` outside 1-31 and negative
+- [X] T085 [P] [US2] Add a failing test: `DayOfMonth` outside 1-31 and negative
   `Length`/`SeqNum`/`NumInGroup` values are rejected, in
-  `crates/truefix-dict/tests/day_of_month_and_negative_ranges.rs` (new).
-- [ ] T086 [US2] Add the range checks to the shared match arm in `FieldType::value_ok`
+  `crates/truefix-dict/tests/day_of_month_and_negative_ranges.rs` (new). — **complete**:
+  table-driven boundary tests cover days 0/1/31/32 and negative/nonnegative integer types; the
+  former shared integer-only check accepted every numeric invalid value.
+- [X] T086 [US2] Add the range checks to the shared match arm in `FieldType::value_ok`
   (`crates/truefix-dict/src/model.rs`) — makes T085 pass (depends on T085, sequenced after T059).
+  — **complete**: `Int` remains signed, `Length`/`SeqNum`/`NumInGroup` require nonnegative values,
+  and `DayOfMonth` requires 1–31. Targeted and existing field-type tests plus clippy pass.
 
 ### Group count type-check on grouped-decode path (FR-038, `NEW-68`)
 
-- [ ] T087 [P] [US2] Add a failing test: a non-numeric group count field on the grouped-decode path
+- [X] T087 [P] [US2] Add a failing test: a non-numeric group count field on the grouped-decode path
   is reported as `IncorrectDataFormat`, in
-  `crates/truefix-dict/tests/group_count_type_check.rs` (new).
-- [ ] T088 [US2] Fix `validate_group` in `crates/truefix-dict/src/validate.rs` — makes T087 pass
-  (depends on T087, sequenced after T057/T044).
+  `crates/truefix-dict/tests/group_count_type_check.rs` (new). — **complete**: the test disables
+  general field-type validation to exercise group-structure validation directly; the old `-1`
+  fallback returned the less precise `IncorrectNumInGroupCount`.
+- [X] T088 [US2] Fix `validate_group` in `crates/truefix-dict/src/validate.rs` — makes T087 pass
+  (depends on T087, sequenced after T057/T044). — **complete**: count parsing now returns
+  `IncorrectDataFormat` with the count tag instead of using a sentinel. Targeted/existing group
+  tests and clippy pass.
 
 ### Empty values inside groups (FR-039, `NEW-69`)
 
-- [ ] T089 [P] [US2] Add a failing test: an empty-valued field inside a group entry is rejected, in
-  `crates/truefix-dict/tests/empty_value_inside_group.rs` (new).
-- [ ] T090 [US2] Add an AT scenario for this in `crates/truefix-at/src/scenarios.rs`
-  (`contracts/fixt-and-dictionary.md`).
-- [ ] T091 [US2] Fix `check_group_field_value` in `crates/truefix-dict/src/validate.rs` to enforce
+- [X] T089 [P] [US2] Add a failing test: an empty-valued field inside a group entry is rejected, in
+  `crates/truefix-dict/tests/empty_value_inside_group.rs` (new). — **complete**: structured-group
+  rejection plus a `ValidateFieldsHaveValues=N` control cover the path skipped by top-level fields.
+- [X] T090 [US2] Add an AT scenario for this in `crates/truefix-at/src/scenarios.rs`
+  (`contracts/fixt-and-dictionary.md`). — **complete**: a FIX.4.4 NewOrderSingle with empty
+  PartyID expects TagSpecifiedWithoutValue and RefTagID=448; the server-suite floor rises by 1.
+- [X] T091 [US2] Fix `check_group_field_value` in `crates/truefix-dict/src/validate.rs` to enforce
   `TagSpecifiedWithoutValue` — makes T089/T090 pass (depends on T089, T090, sequenced after T088).
+  — **complete**: structured/flat group members apply empty-value validation independently of
+  general type checking while respecting its own toggle. Unit tests, the full 444-run server AT,
+  and related clippy pass.
 
 ### Gap-fill missing `NewSeqNo` (FR-040, `NEW-70`)
 
-- [ ] T092 [P] [US2] Add a failing test: a gap-fill `SequenceReset` missing `NewSeqNo` is rejected,
+- [X] T092 [P] [US2] Add a failing test: a gap-fill `SequenceReset` missing `NewSeqNo` is rejected,
   not silently accepted with no update, in
-  `crates/truefix-session/tests/gapfill_missing_new_seq_no.rs` (new).
-- [ ] T093 [US2] Add an AT scenario for this in `crates/truefix-at/src/scenarios.rs`.
-- [ ] T094 [US2] Fix the gap-fill branch of `on_sequence_reset` in
+  `crates/truefix-session/tests/gapfill_missing_new_seq_no.rs` (new). — **complete**:
+  acceptor/initiator symmetry tests confirmed the old path returned no actions.
+- [X] T093 [US2] Add an AT scenario for this in `crates/truefix-at/src/scenarios.rs`. —
+  **complete**: `NEW70_GapFillMissingNewSeqNoRejected` runs across all 9 server-suite versions and
+  FIX.4.4 resynch, raising the server-suite floor by 9 runs.
+- [X] T094 [US2] Fix the gap-fill branch of `on_sequence_reset` in
   `crates/truefix-session/src/state.rs` — makes T092/T093 pass (depends on T092, T093, sequenced
-  after T080).
+  after T080). — **complete**: the common SequenceReset path now emits RequiredTagMissing for
+  absent `NewSeqNo` before reset/gap-fill-specific handling. 29 related session tests, resynch AT,
+  coverage, and clippy pass.
 
 ### Acceptor `HeartBtInt` omission, no-dictionary case (FR-041, `NEW-71`)
 
-- [ ] T095 [P] [US2] Add a failing test: with no dictionary configured, an acceptor rejects a Logon
+- [X] T095 [P] [US2] Add a failing test: with no dictionary configured, an acceptor rejects a Logon
   omitting `HeartBtInt`, in
-  `crates/truefix-session/tests/acceptor_heartbtint_omitted_no_dict.rs` (new).
-- [ ] T096 [US2] Fix the acceptor arm of `on_logon` in `crates/truefix-session/src/state.rs` —
-  makes T095 pass (depends on T095, sequenced after T094).
+  `crates/truefix-session/tests/acceptor_heartbtint_omitted_no_dict.rs` (new). — **complete**:
+  missing/zero/positive acceptor cases and an initiator-boundary control are covered.
+- [X] T096 [US2] Fix the acceptor arm of `on_logon` in `crates/truefix-session/src/state.rs` —
+  makes T095 pass (depends on T095, sequenced after T094). — **complete**: an acceptor now rejects
+  absent, malformed, zero, or negative HeartBtInt even without dictionary validation; initiator
+  Logon-response behavior is unchanged. Targeted/valid-logon-state tests and clippy pass.
 
 ### `reconnect_interval` default (FR-042, `NEW-73`)
 
-- [ ] T097 [US2] Add a test asserting `SessionConfig::new()`'s `reconnect_interval` is `30`, then
+- [X] T097 [US2] Add a test asserting `SessionConfig::new()`'s `reconnect_interval` is `30`, then
   change the field default from `5` to `30` in `crates/truefix-session/src/config.rs`, in
   `crates/truefix-session/tests/reconnect_interval_default.rs` (new) — combined test+fix task per
-  the trivial, single-value nature of this change (per Clarifications).
+  the trivial, single-value nature of this change (per Clarifications). — **complete**:
+  constructor default is now 30 seconds and the test also confirms no backoff steps are introduced;
+  `.cfg` resolution already had an independent 30-second default and is unchanged. Targeted test
+  and clippy pass.
 
 ### Frame resync preserves valid frame (FR-043, `NEW-74`)
 
-- [ ] T098 [P] [US2] Add a failing test: a valid FIX frame following non-SOH-terminated garbage is
+- [X] T098 [P] [US2] Add a failing test: a valid FIX frame following non-SOH-terminated garbage is
   not discarded, in
-  `crates/truefix-transport/tests/frame_resync_preserves_valid_frame.rs` (new).
-- [ ] T099 [US2] Fix `next_frame_start` in `crates/truefix-transport/src/lib.rs` — makes T098 pass
-  (depends on T098, sequenced after T006/T020/T042/T078).
+  `crates/truefix-transport/tests/frame_resync_preserves_valid_frame.rs` (new). — **complete**:
+  a live acceptor receives garbage immediately followed by a valid Logon in one write; the old
+  resync logic timed out after discarding the valid frame.
+- [X] T099 [US2] Fix `next_frame_start` in `crates/truefix-transport/src/lib.rs` — makes T098 pass
+  (depends on T098, sequenced after T006/T020/T042/T078). — **complete**: forward resync still
+  starts at offset one but no longer requires a preceding SOH before a candidate `8=`. New and
+  existing framing tests plus clippy pass.
 
 ### Mongo `sessions` unique index (FR-044, `NEW-75`)
 
-- [ ] T100 [P] [US2] Add a failing test: two concurrent connects for the same `session_id` do not
+- [X] T100 [P] [US2] Add a failing test: two concurrent connects for the same `session_id` do not
   produce duplicate session documents, in
-  `crates/truefix-store/tests/mongo_session_unique_index.rs` (new, `mongodb` feature).
-- [ ] T101 [US2] Add a unique index on `sessions.session_id` (or an upsert in `ensure_session_row`)
+  `crates/truefix-store/tests/mongo_session_unique_index.rs` (new, `mongodb` feature). —
+  **complete**: a feature-gated 16-connect concurrency test asserts one raw document; it compiles
+  and follows the repository's environment-variable skip convention because no live Mongo was
+  configured in this environment.
+- [X] T101 [US2] Add a unique index on `sessions.session_id` (or an upsert in `ensure_session_row`)
   in `crates/truefix-store/src/mongo.rs` — makes T100 pass (depends on T100, sequenced after
-  T004/T025).
+  T004/T025). — **complete**: a named unique index plus `$setOnInsert` upsert preserves existing
+  sequence state; an E11000 loser succeeds only after confirming the row exists. Static index
+  tests, mongodb-feature check, and clippy pass; live concurrency execution remains environment
+  dependent.
 
 ### `BodyLog::reset` lock ordering (FR-045, `NEW-76`)
 
-- [ ] T102 [P] [US2] Add a failing test/assertion: `reset()` acquires the index lock before
-  truncating, in `crates/truefix-store/tests/bodylog_reset_lock_order.rs` (new).
-- [ ] T103 [US2] Fix `BodyLog::reset` in `crates/truefix-store/src/file.rs` — makes T102 pass
-  (depends on T102, sequenced after T066).
+- [X] T102 [P] [US2] Add a failing test/assertion: `reset()` acquires the index lock before
+  truncating, in `crates/truefix-store/tests/bodylog_reset_lock_order.rs` (new). — **complete**:
+  the test poisons the index lock and proves a failed reset leaves the body file untouched.
+- [X] T103 [US2] Fix `BodyLog::reset` in `crates/truefix-store/src/file.rs` — makes T102 pass
+  (depends on T102, sequenced after T066). — **complete**: reset now holds the index guard before
+  opening/truncating the body and clears through that same guard.
 
 ### Creation-time parse error (FR-046, `NEW-77`)
 
-- [ ] T104 [P] [US2] Add a failing test: an unparseable (present) creation-time file surfaces a
-  typed `StoreError`, in `crates/truefix-store/tests/creation_time_parse_error.rs` (new).
-- [ ] T105 [US2] Fix `creation_time_file()` in `crates/truefix-store/src/file.rs` — makes T104 pass
-  (depends on T104, sequenced after T103).
+- [X] T104 [P] [US2] Add a failing test: an unparseable (present) creation-time file surfaces a
+  typed `StoreError`, in `crates/truefix-store/tests/creation_time_parse_error.rs` (new). —
+  **complete**: a corrupt present file must fail open instead of becoming the Unix epoch.
+- [X] T105 [US2] Fix `creation_time_file()` in `crates/truefix-store/src/file.rs` — makes T104 pass
+  (depends on T104, sequenced after T103). — **complete**: both integer parsing and timestamp-range
+  failures return a contextual `StoreError::Backend`; missing-file initialization is unchanged.
+  Both targeted tests and store clippy pass.
 
 ### `render_members_ordered` dedup (FR-047, `NEW-80`)
 
-- [ ] T106 [P] [US2] Add a failing test: a tag appearing twice in `field_order` is emitted once on
-  encode, in `crates/truefix-core/tests/render_members_ordered_no_dup.rs` (new).
-- [ ] T107 [US2] Fix `render_members_ordered` in `crates/truefix-core/src/codec/encode.rs`
+- [X] T106 [P] [US2] Add a failing test: a tag appearing twice in `field_order` is emitted once on
+  encode, in `crates/truefix-core/tests/render_members_ordered_no_dup.rs` (new). — **complete**
+  (implemented by a parallel subagent, worked from a pre-NEW-22 base commit; fix and test
+  re-applied onto the current tree and re-verified here). 1 test: a duplicate tag in `order`
+  encodes exactly once. Confirmed catching the bug via revert-and-retest.
+- [X] T107 [US2] Fix `render_members_ordered` in `crates/truefix-core/src/codec/encode.rs`
   (~L71-89) — implement alongside T157 (`FR-083`'s complexity fix for the same function, US3) in one
-  pass to avoid touching it twice (research.md §R3) — makes T106 pass (depends on T106).
+  pass to avoid touching it twice (research.md §R3) — makes T106 pass (depends on T106). —
+  **complete, partially**: added a `HashSet<u32>` tracking already-emitted tags (the first loop
+  skips a duplicate `order` entry; the trailing "unlisted fields" loop checks the set instead of
+  `order.contains(...)`, avoiding an `O(order.len())` scan per member as a side benefit). T157's
+  own complexity-hygiene requirements (US3, not yet reached) may still warrant a further pass over
+  this same function — not deviated from the "implement alongside" intent, since T157 hasn't been
+  reached yet in task order; whoever implements T157 should re-read this function's current state
+  first.
 
 ### `FieldMap::set` duplicate removal (FR-048, `NEW-81`)
 
-- [ ] T108 [P] [US2] Add a failing test: `FieldMap::set` on a tag with a pre-existing duplicate
+- [X] T108 [P] [US2] Add a failing test: `FieldMap::set` on a tag with a pre-existing duplicate
   entry removes the stale copy, in
-  `crates/truefix-core/tests/fieldmap_set_removes_duplicates.rs` (new).
-- [ ] T109 [US2] Fix `FieldMap::set` in `crates/truefix-core/src/field_map.rs` (~L38) — makes T108
-  pass (depends on T108, sequenced after T064/T084).
+  `crates/truefix-core/tests/fieldmap_set_removes_duplicates.rs` (new). — **complete**
+  (implemented by a parallel subagent, worked from a pre-NEW-22 base commit; fix and test
+  re-applied onto the current tree and re-verified here). 1 test: 3 duplicate copies pushed via
+  `add_field` (bypassing `set`'s usual dedup), then `set` leaves exactly one, with the new value.
+  Confirmed catching the bug via revert-and-retest.
+- [X] T109 [US2] Fix `FieldMap::set` in `crates/truefix-core/src/field_map.rs` (~L38) — makes T108
+  pass (depends on T108, sequenced after T064/T084). — **complete**: rewritten with
+  `Vec::retain_mut` — keeps/overwrites the first matching-tag field in place (preserving prior
+  "replace in place" semantics for the common single-match case) and strips every additional
+  stale duplicate found afterward. `cargo test -p truefix-core`, `cargo clippy -p truefix-core
+  --all-targets -- -D warnings`, `cargo build --workspace`: all clean.
 
 ### Too-high `Logout`/`ResendRequest` handling (FR-049, FR-050, `NEW-85`, `NEW-86`)
 
-- [ ] T110 [P] [US2] Add failing tests: a too-high `Logout` after logon is processed immediately
+- [X] T110 [P] [US2] Add failing tests: a too-high `Logout` after logon is processed immediately
   (not queued behind a `ResendRequest`); a too-high `ResendRequest` already answered is not
   reprocessed when `drain_queue` reaches it, in
-  `crates/truefix-session/tests/too_high_logout_and_resend_request.rs` (new).
-- [ ] T111 [US2] Add AT scenarios for both cases in `crates/truefix-at/src/scenarios.rs`
-  (`contracts/session-protocol.md`).
-- [ ] T112 [US2] Fix the `Ordering::Greater` branch and `process_in_order`/`drain_queue` in
+  `crates/truefix-session/tests/too_high_logout_and_resend_request.rs` (new). — **complete**:
+  both wire-action ordering and queue/sequence state are asserted.
+- [X] T111 [US2] Add AT scenarios for both cases in `crates/truefix-at/src/scenarios.rs`
+  (`contracts/session-protocol.md`). — **complete**: NEW-85 adds a 9-version immediate-Logout
+  scenario; the existing too-high ResendRequest scenario now fills the gap and proves no duplicate
+  response precedes a subsequent TestRequest reply. The floor rises from 435 to 444.
+- [X] T112 [US2] Fix the `Ordering::Greater` branch and `process_in_order`/`drain_queue` in
   `crates/truefix-session/src/state.rs` to special-case `Logout` (immediate) and skip re-invoking
   `on_resend_request` for an already-answered too-high `ResendRequest` — makes T110/T111 pass
-  (depends on T110, T111, sequenced after T096).
+  (depends on T110, T111, sequenced after T096). — **complete**: too-high Logout bypasses queueing;
+  queued ResendRequest drains only for sequence accounting. Targeted tests, full server AT, and
+  clippy pass.
 
 ### PROXY `Unknown`/`Unspecified`/Unix header byte consumption (FR-051, `NEW-94`)
 
-- [ ] T113 [P] [US2] Add a failing test: a fully-parsed PROXY header with an `Unknown`/`Unspecified`/
+- [X] T113 [P] [US2] Add a failing test: a fully-parsed PROXY header with an `Unknown`/`Unspecified`/
   Unix address still has its byte length consumed from the stream, in
-  `crates/truefix-transport/tests/proxy_unknown_address_consumes_bytes.rs` (new).
-- [ ] T114 [US2] Fix the `Unknown`/`Unspecified`/`Unix(_)` arms in
+  `crates/truefix-transport/tests/proxy_unknown_address_consumes_bytes.rs` (new). — **complete**:
+  live tests cover PROXY v1 Unknown plus v2 Unspecified and Unix headers followed by a FIX Logon.
+- [X] T114 [US2] Fix the `Unknown`/`Unspecified`/`Unix(_)` arms in
   `crates/truefix-transport/src/proxy.rs` (~L156-186) to return `Some((None, len))` instead of
-  `None` — makes T113 pass (depends on T113, sequenced after T040).
+  `None` — makes T113 pass (depends on T113, sequenced after T040). — **complete**:
+  `parse_proxy_header` now distinguishes a complete header with no usable IP from an incomplete or
+  invalid header; the caller consumes its bytes and retains the socket peer address. New/existing
+  PROXY tests and clippy pass.
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently. Re-run
 `cargo test --workspace --all-features` and `cargo test -p truefix-at --test coverage --test
