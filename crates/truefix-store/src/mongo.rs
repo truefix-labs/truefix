@@ -73,6 +73,7 @@ impl MongoStoreConfig {
 /// [`crate::SqlStore`]: a `sessions` collection for sequence numbers, a `messages` collection for
 /// message bodies with a compound `(session_id, seq)` unique index.
 pub struct MongoStore {
+    client: Client,
     sessions: Collection<SessionDoc>,
     messages: Collection<MessageDoc>,
     session_id: String,
@@ -100,6 +101,7 @@ impl MongoStore {
         messages.create_index(index).await.map_err(backend)?;
 
         let store = Self {
+            client,
             sessions,
             messages,
             session_id: config.session_id,
@@ -177,6 +179,52 @@ impl MessageStore for MongoStore {
             .upsert(true)
             .await
             .map_err(backend)?;
+        Ok(())
+    }
+    // NEW-08 (feature 009): a transactional override, mirroring SqlStore/MssqlStore/RedbStore/
+    // FileStore's existing atomicity guarantee -- the trait's default two-call implementation
+    // (`save()` then `set_next_sender_seq()`) leaves a crash window between the two calls where a
+    // message is durably saved but the sender sequence isn't advanced (or vice versa).
+    async fn save_and_advance_sender(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
+        let mut txn_session = self.client.start_session().await.map_err(backend)?;
+        txn_session
+            .start_transaction()
+            .await
+            .map_err(backend)?;
+
+        let msg_filter = doc! { "session_id": &self.session_id, "seq": seq as i64 };
+        let msg_update = doc! {
+            "$set": {
+                "data": Binary {
+                    subtype: BinarySubtype::Generic,
+                    bytes: message.to_vec(),
+                },
+            },
+        };
+        if let Err(e) = self
+            .messages
+            .update_one(msg_filter, msg_update)
+            .upsert(true)
+            .session(&mut txn_session)
+            .await
+        {
+            let _ = txn_session.abort_transaction().await;
+            return Err(backend(e));
+        }
+
+        let seq_filter = doc! { "session_id": &self.session_id };
+        let seq_update = doc! { "$set": { "sender": (seq + 1) as i64 } };
+        if let Err(e) = self
+            .sessions
+            .update_one(seq_filter, seq_update)
+            .session(&mut txn_session)
+            .await
+        {
+            let _ = txn_session.abort_transaction().await;
+            return Err(backend(e));
+        }
+
+        txn_session.commit_transaction().await.map_err(backend)?;
         Ok(())
     }
     async fn get(&self, begin: u64, end: u64) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {

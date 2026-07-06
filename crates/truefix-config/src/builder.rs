@@ -79,6 +79,12 @@ pub struct ResolvedSession {
     /// one of the two (or the generic `DataDictionary`) is set, which [`Self::validator`] alone
     /// already covers.
     pub fixt_dictionaries: Option<truefix_dict::FixtDictionaries>,
+    /// NEW-96 (feature 009): `LogMessageWhenSessionNotFound` — acceptor-only, logs a diagnostic
+    /// when an inbound message's Logon matches neither a static session nor a dynamic template,
+    /// before the connection is refused. Was registered `Impl` in the key registry but had no
+    /// `.cfg` parsing path at all (`Services.log_message_when_session_not_found`, which the
+    /// mechanism genuinely consumes, was permanently `false` via `Services::default()`).
+    pub log_message_when_session_not_found: bool,
 }
 
 /// Which non-File/SQL `truefix-log` backend to build, selected via the `Log` config key
@@ -549,6 +555,9 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     let acceptor_template =
         bool_key(map, "DynamicSession", false) || map.contains_key("AcceptorTemplate");
     let allowed_remote_addresses = resolve_allowed_remote_addresses(map, &session)?;
+    // NEW-96 (feature 009): parse the key that was previously registered `Impl` but never read.
+    let log_message_when_session_not_found =
+        bool_key(map, "LogMessageWhenSessionNotFound", false);
 
     Ok(ResolvedSession {
         session: cfg,
@@ -568,6 +577,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         allowed_remote_addresses,
         log_kind,
         fixt_dictionaries,
+        log_message_when_session_not_found,
     })
 }
 
@@ -634,6 +644,14 @@ fn resolve_validator(
         validate_incoming_message: bool_key(map, "ValidateIncomingMessage", true),
         allow_pos_dup: bool_key(map, "AllowPosDup", true),
         requires_orig_sending_time: bool_key(map, "RequiresOrigSendingTime", false),
+        // NEW-10 (feature 009): 5 more keys registered as `Impl` in `keys.rs` but never actually
+        // read here -- an operator setting any of these to a non-default value saw no effect
+        // despite the registry claiming full implementation.
+        validate_fields_have_values: bool_key(map, "ValidateFieldsHaveValues", true),
+        validate_unordered_group_fields: bool_key(map, "ValidateUnorderedGroupFields", true),
+        validate_user_defined_fields: bool_key(map, "ValidateUserDefinedFields", false),
+        allow_unknown_msg_fields: bool_key(map, "AllowUnknownMsgFields", false),
+        first_field_in_group_is_delimiter: bool_key(map, "FirstFieldInGroupIsDelimiter", true),
         ..truefix_dict::ValidationOptions::default()
     };
     Ok(Some((dict, opts)))

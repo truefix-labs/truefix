@@ -41,7 +41,7 @@ use tokio::time::{MissedTickBehavior, interval};
 use truefix_core::{DecodeError, Message, decode, decode_with_groups};
 use truefix_log::Log;
 use truefix_session::{
-    Action, Application, Event, Schedule, Session, SessionConfig, SessionId, SessionState,
+    Action, Application, Event, Role, Schedule, Session, SessionConfig, SessionId, SessionState,
     SessionStatus,
 };
 use truefix_store::MessageStore;
@@ -941,9 +941,20 @@ async fn run_connection<A, S>(
     // and propagates any resulting `Action::ResetStore` to the store exactly as it would for a
     // Logout-driven disconnect. This always returns `Err(())` (the event always leaves the session
     // in `Disconnected` state), so its result is intentionally discarded.
+    //
+    // NEW-56 (feature 009): this dispatch runs for *every* teardown, including ones an internal
+    // handler (`on_logout_msg`, or a logon/logout/heartbeat/schedule timeout in `on_tick`) already
+    // fully processed with its own correct reason. Re-using that already-recorded reason (rather
+    // than a fixed default) makes this redundant second call idempotent instead of potentially
+    // consulting the wrong flag; `Other` covers the remaining case (a raw TCP drop, or an
+    // error-driven path that sets `state` directly and uses the separate `reset_on_error`
+    // mechanism instead — neither is a completed graceful Logout).
+    let reason = session
+        .last_disconnect_reason()
+        .unwrap_or(truefix_session::DisconnectReason::Other);
     let _ = dispatch(
         &mut session,
-        Event::Disconnected,
+        Event::Disconnected(reason),
         &mut write_half,
         &app,
         &id,
@@ -1119,9 +1130,17 @@ async fn classify_buffered(
                 // riskier change than this fix's actual scope (GAP-26 is specifically about
                 // header/trailer groups being invisible, not a mandate to restructure body-group
                 // handling too).
-                let decoded = match &services.validator {
-                    Some((dict, _)) => decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dict)),
-                    None => decode(&raw),
+                // NEW-58 (feature 009): under a FIXT 1.1 dual-dictionary configuration,
+                // `services.validator` is unset (the session uses `fixt_dictionaries` instead --
+                // see `run_connection`'s `session.set_fixt_dictionaries` call) -- so this dispatch
+                // must also check `fixt_dictionaries`, or header/trailer repeating groups (e.g.
+                // NoHops) never get group-aware decoding under FIXT 1.1 at all.
+                let decoded = match (&services.validator, &services.fixt_dictionaries) {
+                    (Some((dict, _)), _) => decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dict)),
+                    (None, Some((dicts, _))) => {
+                        decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dicts.transport()))
+                    }
+                    (None, None) => decode(&raw),
                 };
                 if let Ok(msg) = decoded {
                     metrics_export::record_received(id);
@@ -1756,6 +1775,29 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
     }
 }
 
+/// NEW-93 (feature 009): the pre-Logon read loop in [`route_and_run`] has no `Session`/ticker of
+/// its own yet (those only start once a Logon is decoded), so nothing bounds how long a silent or
+/// SOH-less-garbage-trickling peer can hold the connection open. Picks the largest configured
+/// `logon_timeout` across every statically-registered session and the dynamic template (whichever
+/// session ends up matching should get at least as long as its own configured timeout), falling
+/// back to `SessionConfig::new`'s own default when no session is registered yet.
+fn prelogon_read_timeout(registry: &Registry) -> Duration {
+    let default = SessionConfig::new("FIX.4.4", "S", "T", Role::Acceptor).logon_timeout;
+    let max_configured = registry
+        .sessions
+        .values()
+        .chain(registry.template.iter())
+        .map(|c| c.logon_timeout)
+        .max()
+        .unwrap_or(default);
+    Duration::from_secs(u64::from(max_configured.max(1)))
+}
+
+/// NEW-93 (feature 009): a defensive cap on the pre-Logon buffer, independent of the
+/// `prelogon_read_timeout` above -- even if a peer keeps the connection alive within the timeout
+/// window, its buffer must not grow past a bound no legitimate Logon could ever reach.
+const PRELOGON_BUF_CAP: usize = truefix_core::MAX_BODY_LEN;
+
 async fn route_and_run<A, S>(
     mut stream: S,
     app: Arc<A>,
@@ -1765,32 +1807,44 @@ async fn route_and_run<A, S>(
     A: Application + 'static,
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    // Read until the first complete message (the Logon) so we can route by SessionID.
-    let mut buf: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let logon = loop {
-        match stream.read(&mut chunk).await {
-            Ok(0) | Err(_) => return,
-            Ok(n) => {
-                if let Some(slice) = chunk.get(..n) {
-                    buf.extend_from_slice(slice);
+    let timeout = prelogon_read_timeout(&registry);
+    let read_logon = async {
+        // Read until the first complete message (the Logon) so we can route by SessionID.
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => {
+                    if let Some(slice) = chunk.get(..n) {
+                        buf.extend_from_slice(slice);
+                    }
                 }
             }
+            if buf.len() > PRELOGON_BUF_CAP {
+                return None;
+            }
+            match frame_length(&buf) {
+                Ok(Some(total)) => match buf.get(..total).map(decode) {
+                    // BUG-52/FR-044 (feature 007): an acceptor must refuse a connection whose first
+                    // inbound message isn't a Logon (QFJ/QFGo both close the socket immediately
+                    // rather than routing/session-creating on anything else) -- previously any
+                    // decodable first message was accepted here and used to derive a SessionId, so
+                    // a non-Logon first message (or nothing at all) would silently fail routing
+                    // further down instead of being rejected at the door.
+                    Some(Ok(msg)) if msg.msg_type() == Some("A") => return Some((msg, buf)),
+                    _ => return None,
+                },
+                Ok(None) => continue,
+                Err(_) => return None,
+            }
         }
-        match frame_length(&buf) {
-            Ok(Some(total)) => match buf.get(..total).map(decode) {
-                // BUG-52/FR-044 (feature 007): an acceptor must refuse a connection whose first
-                // inbound message isn't a Logon (QFJ/QFGo both close the socket immediately rather
-                // than routing/session-creating on anything else) -- previously any decodable first
-                // message was accepted here and used to derive a SessionId, so a non-Logon first
-                // message (or nothing at all) would silently fail routing further down instead of
-                // being rejected at the door.
-                Some(Ok(msg)) if msg.msg_type() == Some("A") => break msg,
-                _ => return,
-            },
-            Ok(None) => continue,
-            Err(_) => return,
-        }
+    };
+    let Ok(Some((logon, buf))) = tokio::time::timeout(timeout, read_logon).await else {
+        // Either the timeout fired (NEW-93) or the loop itself gave up (EOF/error/non-Logon/
+        // oversized buffer) -- in every case the connection is simply dropped, matching the
+        // existing `return` behavior for those cases.
+        return;
     };
 
     let begin = logon.begin_string().unwrap_or_default().to_owned();
@@ -2245,6 +2299,29 @@ impl ScheduledHandle {
     }
 }
 
+/// NEW-14 (feature 009): polls `loop_stop` and the schedule's in-session status every 200ms
+/// (matching `run_scheduled_initiator`'s own poll cadence), resolving as soon as either the stop
+/// flag is set or the in-session status differs from `was_in_session` (a boundary crossed) —
+/// raced via `tokio::select!` against an in-flight connect attempt so neither is blocked
+/// indefinitely by the other.
+async fn wait_for_stop_or_schedule_change(
+    loop_stop: &AtomicBool,
+    schedule: &Schedule,
+    was_in_session: bool,
+) {
+    loop {
+        if loop_stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let now = time::OffsetDateTime::now_utc();
+        let in_session_now = schedule.non_stop || schedule.is_in_session(now);
+        if in_session_now != was_in_session {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// Run an initiator that connects only while the `schedule` is in session. On each transition
 /// into a session window the store is reset (disconnect → reset sequence numbers → clear store →
 /// reconnect, FR-E3); on a transition out of the window the session is logged out.
@@ -2321,22 +2398,38 @@ where
                 && current.is_none()
                 && next_retry_at.is_none_or(|t| std::time::Instant::now() >= t)
             {
-                match connect_initiator_with(addr, config.clone(), app.clone(), services.clone())
-                    .await
-                {
-                    Ok(handle) => {
-                        if connected_before {
-                            metrics_export::record_reconnect(&id);
+                // NEW-14 (feature 009): race the connect attempt against the stop flag and
+                // schedule-boundary detection -- previously this `.await`ed inline, so with no
+                // `connect_timeout` configured (the default), a hanging/black-holed connect
+                // blocked `loop_stop`/schedule-boundary observation indefinitely, defeating the
+                // 200ms poll cadence for as long as the connect attempt was outstanding.
+                let connect_fut =
+                    connect_initiator_with(addr, config.clone(), app.clone(), services.clone());
+                let abandoned =
+                    wait_for_stop_or_schedule_change(&loop_stop, &schedule, was_in_session);
+                tokio::select! {
+                    result = connect_fut => {
+                        match result {
+                            Ok(handle) => {
+                                if connected_before {
+                                    metrics_export::record_reconnect(&id);
+                                }
+                                connected_before = true;
+                                current = Some(handle);
+                                failed_attempts = 0;
+                                next_retry_at = None;
+                            }
+                            Err(_) => {
+                                let delay = reconnect_delay(&config, failed_attempts);
+                                failed_attempts = failed_attempts.saturating_add(1);
+                                next_retry_at = Some(std::time::Instant::now() + delay);
+                            }
                         }
-                        connected_before = true;
-                        current = Some(handle);
-                        failed_attempts = 0;
-                        next_retry_at = None;
                     }
-                    Err(_) => {
-                        let delay = reconnect_delay(&config, failed_attempts);
-                        failed_attempts = failed_attempts.saturating_add(1);
-                        next_retry_at = Some(std::time::Instant::now() + delay);
+                    () = abandoned => {
+                        // The stop flag or a schedule boundary fired mid-connect -- the connect
+                        // future is dropped (cancelled) here; loop back around immediately so the
+                        // boundary/stop-check logic above re-evaluates on the next iteration.
                     }
                 }
             }
@@ -2391,6 +2484,59 @@ mod connect_timeout_tests {
         })
         .await;
         assert_eq!(result.unwrap(), 42);
+    }
+}
+
+#[cfg(test)]
+mod scheduled_initiator_nonblocking_connect_tests {
+    // T041/T042 (US1, feature 009, NEW-14): `wait_for_stop_or_schedule_change` is the mechanism
+    // `run_scheduled_initiator` races an in-flight connect against, so `loop_stop`/schedule
+    // boundaries are observed promptly instead of being blocked by a hanging connect attempt.
+    // A genuinely-hanging real TCP connect isn't used here (OS-dependent, slow, and flaky across
+    // environments) -- this tests the extracted helper directly against a never-resolving future
+    // standing in for one, using `tokio::time::pause()` (virtual time) for determinism, matching
+    // `connect_timeout_tests`'s existing pattern in this same file.
+    use super::wait_for_stop_or_schedule_change;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+    use truefix_session::Schedule;
+
+    #[tokio::test(start_paused = true)]
+    async fn resolves_promptly_once_the_stop_flag_is_set_even_with_a_pending_connect() {
+        let stop = AtomicBool::new(true); // already set, standing in for a concurrent stop() call
+        let schedule = Schedule::non_stop();
+        let never_connects = std::future::pending::<()>();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            async {
+                tokio::select! {
+                    _ = never_connects => unreachable!("connect must never resolve in this test"),
+                    () = wait_for_stop_or_schedule_change(&stop, &schedule, true) => (),
+                }
+            },
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "wait_for_stop_or_schedule_change must resolve promptly once the stop flag is set, \
+             not be blocked by a pending connect (NEW-14)"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn never_resolves_while_still_in_session_and_not_stopped() {
+        let stop = AtomicBool::new(false);
+        let schedule = Schedule::non_stop(); // always "in session" -- was_in_session never changes
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_for_stop_or_schedule_change(&stop, &schedule, true),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "must not resolve while neither the stop flag nor the schedule boundary has changed"
+        );
     }
 }
 

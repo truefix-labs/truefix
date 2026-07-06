@@ -14,6 +14,9 @@ pub(crate) enum Member {
         count_tag: u32,
         /// The group entries (each a `FieldMap`).
         entries: Vec<FieldMap>,
+        /// NEW-22 (feature 009): the count declared on the wire, if decoded from one and it
+        /// didn't match `entries.len()` — see `Group::declared_count`'s doc.
+        declared_count: Option<i64>,
     },
 }
 
@@ -62,8 +65,12 @@ impl FieldMap {
 
     /// Append a repeating group.
     pub fn add_group(&mut self, group: Group) {
-        let (count_tag, entries) = group.into_parts();
-        self.members.push(Member::Group { count_tag, entries });
+        let (count_tag, entries, declared_count) = group.into_parts();
+        self.members.push(Member::Group {
+            count_tag,
+            entries,
+            declared_count,
+        });
     }
 
     /// Get the entries of the first group with `count_tag`.
@@ -72,6 +79,7 @@ impl FieldMap {
             Member::Group {
                 count_tag: ct,
                 entries,
+                ..
             } if *ct == count_tag => Some(entries.as_slice()),
             _ => None,
         })
@@ -89,6 +97,7 @@ impl FieldMap {
         if let Some(Member::Group {
             count_tag: ct,
             entries,
+            ..
         }) = self
             .members
             .iter_mut()
@@ -108,6 +117,7 @@ impl FieldMap {
         if let Some(Member::Group {
             count_tag: ct,
             entries,
+            declared_count,
         }) = self
             .members
             .iter_mut()
@@ -116,6 +126,10 @@ impl FieldMap {
             debug_assert_eq!(*ct, count_tag);
             if index < entries.len() {
                 entries.remove(index);
+                // NEW-22 (feature 009): the entry count just changed -- a stale wire-declared
+                // count would otherwise be re-encoded verbatim, now genuinely wrong rather than
+                // preserving fidelity to anything real.
+                *declared_count = None;
             }
         }
     }

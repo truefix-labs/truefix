@@ -64,6 +64,20 @@ pub fn is_header(tag: u32) -> bool {
             | 628
             | 629
             | 630
+            // NEW-55 (feature 009): FIXT 1.1 transport-layer header tags -- ApplVerID(1128),
+            // ApplReportID(1129), LastApplVerID(1130), ApplExtID(1156), and the NoApplIDs(1351)
+            // group and its members (1352-1355). Without these, a FIX 5.x message carrying
+            // ApplVerID routed to `message.body` instead of `message.header`, breaking FIXT
+            // application-dictionary resolution downstream.
+            | 1128
+            | 1129
+            | 1130
+            | 1156
+            | 1351
+            | 1352
+            | 1353
+            | 1354
+            | 1355
     )
 }
 

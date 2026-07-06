@@ -382,6 +382,28 @@ fn dictionary_failure_disconnect_sends_logout(v: &str) -> Scenario {
     )
 }
 
+/// NEW-63 (feature 009): a dictionary-invalid Logon (missing the required EncryptMethod(98)
+/// field) sends a Logout and disconnects even with `DisconnectOnError=N` -- previously that
+/// config left only a bare session Reject sent, stranding the session in `AwaitingLogon`.
+fn dict_invalid_logon_disconnects_without_disconnect_on_error(v: &str) -> Scenario {
+    let mut bad_logon = client_message(v, "A", 1);
+    bad_logon.body.set(Field::int(108, 30)); // HeartBtInt present, EncryptMethod(98) deliberately absent
+    scenario_with(
+        "NEW63_DictInvalidLogonDisconnectsWithoutDisconnectOnError",
+        v,
+        vec![
+            Step::Send(bad_logon),
+            Step::Expect(ExpectMsg::of("3")), // session Reject (dictionary-validation failure)
+            Step::Expect(ExpectMsg::of("5")), // Logout, not left stranded in AwaitingLogon
+            Step::ExpectDisconnect,
+        ],
+        SessionTweaks {
+            disconnect_on_error: false,
+            ..SessionTweaks::default()
+        },
+    )
+}
+
 /// B7 (006/US1) — an inbound message (here, the Logon itself) with an unparseable SendingTime
 /// fails the CheckLatency check, instead of silently bypassing it, and is aborted like any other
 /// latency failure (Logout + disconnect).
@@ -586,23 +608,24 @@ fn resend_request_not_duplicated(v: &str) -> Scenario {
     )
 }
 
-/// 2_begin0 — a ResendRequest with BeginSeqNo=0 is ignored (no SequenceReset emitted).
-fn resend_request_begin_zero_ignored(v: &str) -> Scenario {
+/// 2_begin0 — `NEW-02` (feature 009): a ResendRequest with `BeginSeqNo=0` is treated as "from
+/// sequence 1" and answered (here, with only the admin Logon sent, that collapses to a GapFill
+/// covering seq 1), not silently dropped. Previously this scenario asserted the (buggy) opposite
+/// -- that `BeginSeqNo=0` was ignored -- locking in `NEW-02`'s defect as "correct" until this fix.
+fn resend_request_begin_zero_treated_as_one(v: &str) -> Scenario {
     let mut rr = client_message(v, "2", 2);
-    rr.body.set(Field::int(7, 0)); // BeginSeqNo=0
+    rr.body.set(Field::int(7, 0)); // BeginSeqNo=0 -> treated as 1
     rr.body.set(Field::int(16, 0));
-    let mut tr = client_message(v, "1", 3); // ResendRequest consumed seq 2
-    tr.body.set(Field::string(112, "ZERO-OK"));
     scenario(
-        "2_ResendRequestBeginZeroIgnored",
+        "2_ResendRequestBeginZeroTreatedAsOne",
         v,
         vec![
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(rr),
-            Step::Send(tr),
-            // A Heartbeat (not a SequenceReset) proves the begin=0 request was ignored.
-            Step::Expect(ExpectMsg::of("0").field(112, "ZERO-OK")),
+            // Only the admin Logon was sent, so the resend collapses to a GapFill -- same
+            // response `resend_request_gap_fill`'s explicit BeginSeqNo=1 case gets.
+            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
         ],
     )
 }
@@ -1444,13 +1467,18 @@ fn resend_request_chunk_size(v: &str) -> Scenario {
 /// full known gap immediately draws the next chunk's `ResendRequest` from TrueFix itself, since a
 /// well-behaved reference-engine counterparty never re-requests the remainder unprompted.
 fn chunked_resend_auto_continues(v: &str) -> Scenario {
+    // NEW-84 (feature 009): each chunk's GapFill now must carry its OWN MsgSeqNum matching the
+    // start of the gap segment it fills (2, 5, 8) -- previously (before NEW-84's fix made a
+    // gap-fill's own MsgSeqNum meaningful) this scenario used sequentially-incrementing but
+    // protocol-incorrect values (2, 3, 4), which happened to "work" only because the prior code
+    // never checked a gap-fill's own MsgSeqNum against `next_in_seq` at all.
     let mut gf1 = client_message(v, "4", 2);
     gf1.body.set(Field::string(123, "Y")); // GapFillFlag
     gf1.body.set(Field::int(36, 5)); // NewSeqNo: closes chunk 1 (2..4)
-    let mut gf2 = client_message(v, "4", 3);
+    let mut gf2 = client_message(v, "4", 5);
     gf2.body.set(Field::string(123, "Y"));
     gf2.body.set(Field::int(36, 8)); // closes chunk 2 (5..7)
-    let mut gf3 = client_message(v, "4", 4);
+    let mut gf3 = client_message(v, "4", 8);
     gf3.body.set(Field::string(123, "Y"));
     gf3.body.set(Field::int(36, 11)); // closes chunk 3 (8..10); the full gap (target=10) is done
     let mut tr = client_message(v, "1", 11); // matches next_in_seq after gf3's NewSeqNo=11
@@ -1951,7 +1979,7 @@ pub fn resynch_suite() -> Vec<Scenario> {
         resend_request_gap_fill("FIX.4.4"),
         resend_request_bounded_end("FIX.4.4"),
         resend_request_not_duplicated("FIX.4.4"),
-        resend_request_begin_zero_ignored("FIX.4.4"),
+        resend_request_begin_zero_treated_as_one("FIX.4.4"),
         resend_request_nothing_to_resend("FIX.4.4"),
         out_of_order_queued_then_drained("FIX.4.4"),
         sequence_reset_reset("FIX.4.4"),
@@ -1981,7 +2009,7 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(resend_request_bounded_end(v));
         out.push(resend_request_too_high_answered_immediately(v));
         out.push(resend_request_not_duplicated(v));
-        out.push(resend_request_begin_zero_ignored(v));
+        out.push(resend_request_begin_zero_treated_as_one(v));
         out.push(out_of_order_queued_then_drained(v));
         out.push(sequence_reset_reset(v));
         out.push(sequence_reset_gap_fill_advances(v));
@@ -2065,6 +2093,7 @@ pub fn server_suite() -> Vec<Scenario> {
     // 006 US1: dictionary/tweak-dependent session protocol-correctness fixes (T021).
     out.push(gap_fill_drained_message_is_validated("FIX.4.4"));
     out.push(dictionary_failure_disconnect_sends_logout("FIX.4.4"));
+    out.push(dict_invalid_logon_disconnects_without_disconnect_on_error("FIX.4.4"));
     out.push(unparseable_sending_time_fails_latency("FIX.4.4"));
     // 006 US9 (T084): MinQty (tag 110) is a recognized, accepted field (BUG-17 MinQty follow-up).
     out.push(min_qty_field_accepted_44());

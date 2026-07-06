@@ -197,11 +197,15 @@ fn parse_proxy_header(buf: &[u8]) -> Option<(SocketAddr, usize)> {
 const PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// GAP-53/B15 (feature 006, per docs/todo/003.md's audit numbering — the PROXY v2 buffer-sizing
-/// item): large enough to comfortably hold a realistic PROXY v2 header's TLV set (spec maximum is
-/// 64 KiB, but that's far beyond anything this codebase's own trusted-proxy use actually attaches)
-/// without truncating it mid-TLV, which previously could cause the remaining PROXY-protocol bytes
-/// to be misread as FIX message data.
+/// item): the initial peek buffer size, grown (see `peek_proxy_header`, NEW-12) up to
+/// [`PROXY_HEADER_MAX_LEN`] when a header doesn't fit.
 const PROXY_HEADER_PEEK_BUF: usize = 4096;
+
+/// NEW-12 (feature 009): the PROXY protocol spec's own maximum header size (v2's 16-bit length
+/// field caps the address block at 65535 bytes, plus the 16-byte fixed header) — the peek buffer
+/// grows up to this bound rather than stopping at the original fixed 4096 bytes, which could not
+/// accommodate a spec-legal (if unusually large) v2 header.
+const PROXY_HEADER_MAX_LEN: usize = 65536 + 16;
 
 pub(crate) async fn strip_trusted_proxy_header(
     stream: &mut TcpStream,
@@ -217,9 +221,17 @@ pub(crate) async fn strip_trusted_proxy_header(
     }
 }
 
+/// NEW-12/NEW-13 (feature 009): loops until the caller's outer `tokio::time::timeout`
+/// (`PROXY_HEADER_TIMEOUT`, in `strip_trusted_proxy_header`) cancels this future, rather than a
+/// fixed 10-iteration/~50ms budget -- a trusted proxy delivering its header slowly (across many
+/// small segments) previously had that budget exhausted long before the real timeout, abandoning
+/// a partial header to be misread as FIX data. Also grows the peek buffer up to
+/// `PROXY_HEADER_MAX_LEN` (the spec's own maximum) instead of stopping at a fixed 4096 bytes,
+/// which couldn't accommodate a larger, still spec-legal v2 header.
 async fn peek_proxy_header(stream: &mut TcpStream, peer: SocketAddr) -> SocketAddr {
-    let mut buf = vec![0u8; PROXY_HEADER_PEEK_BUF];
-    for _ in 0..10 {
+    let mut buf_len = PROXY_HEADER_PEEK_BUF;
+    loop {
+        let mut buf = vec![0u8; buf_len];
         let n = match stream.peek(&mut buf).await {
             Ok(n) => n,
             Err(_) => return peer,
@@ -236,12 +248,19 @@ async fn peek_proxy_header(stream: &mut TcpStream, peer: SocketAddr) -> SocketAd
                 return addr;
             }
             None => {
-                if n >= buf.len() {
-                    return peer; // a full peek's worth of bytes, still no valid header
+                if n < buf_len {
+                    // The buffer isn't full -- no valid header yet because more bytes haven't
+                    // arrived, not because the buffer's too small. Wait for more.
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                } else if buf_len < PROXY_HEADER_MAX_LEN {
+                    // A full peek's worth of bytes, still no valid header -- grow and retry
+                    // immediately (more data may already be available without waiting).
+                    buf_len = (buf_len * 2).min(PROXY_HEADER_MAX_LEN);
+                } else {
+                    // Already at the spec's own maximum size and still no valid header.
+                    return peer;
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }
     }
-    peer
 }

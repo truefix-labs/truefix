@@ -242,6 +242,10 @@ async fn connect_mssql_log(
         event_table: spec.event_table.clone(),
         include_heartbeats: spec.include_heartbeats,
         session_id: session_id.to_owned(),
+        // NEW-90 (feature 009): no `.cfg` key wires this yet (out of this fix's scope, which only
+        // adds the config option at the Rust API level per FR-020's literal wording) -- preserves
+        // today's unconditional `trust_cert()` behavior for every `.cfg`-driven deployment.
+        trust_server_certificate: true,
     })
     .await
     .map_err(|e| EngineError::Log(e.to_string()))?;
@@ -444,6 +448,10 @@ impl Engine {
                             );
                         (dicts, opts)
                     }),
+                    // NEW-96 (feature 009): was permanently `false` via `Services::default()` --
+                    // no `.cfg` -> `Services` path existed for this key at all.
+                    log_message_when_session_not_found: primary
+                        .log_message_when_session_not_found,
                     ..Services::default()
                 };
 
@@ -597,6 +605,10 @@ impl Engine {
                         );
                         (dicts, opts)
                     }),
+                    // NEW-96 (feature 009): threaded through for consistency with the grouped
+                    // acceptor path, though only `route_and_run` (the multi-session routing path)
+                    // actually consumes it -- inert for a single-session `Acceptor`/initiator.
+                    log_message_when_session_not_found: rs.log_message_when_session_not_found,
                     ..Services::default()
                 };
                 match rs.connection {

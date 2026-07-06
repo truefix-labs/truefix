@@ -827,6 +827,16 @@ pub fn emit_version(code: &mut String, name: &str, bytes: &[u8]) -> Result<(), C
         "    if message.begin_string() != Some({:?}) {{ return false; }}",
         version_begin_string(name)
     );
+    // NEW-06 (feature 009): FIX 5.0/SP1/SP2 all carry BeginString=FIXT.1.1 on the wire and are
+    // distinguished only by ApplVerID(1128) -- without this extra guard, a FIX 5.0SP2 message
+    // would match `crack_fix50` (and every other FIX-5.x `crack_*`) since they all share the same
+    // BeginString check above.
+    if let Some(appl_ver_id) = version_appl_ver_id(name) {
+        let _ = writeln!(
+            code,
+            "    if message.header.get(1128).and_then(|f| f.as_str().ok()) != Some({appl_ver_id:?}) {{ return false; }}"
+        );
+    }
     let _ = writeln!(code, "    match message.msg_type() {{");
     for m in &dict.messages {
         let method = format!("on_{}", snake_case(&m.name));
@@ -842,6 +852,19 @@ pub fn emit_version(code: &mut String, name: &str, bytes: &[u8]) -> Result<(), C
 
     let _ = writeln!(code, "}}"); // close module
     Ok(())
+}
+
+/// NEW-06 (feature 009): the `ApplVerID(1128)` value distinguishing FIX 5.0/SP1/SP2 -- all three
+/// carry the same `BeginString=FIXT.1.1` (see `version_begin_string` below), so a `crack_*`
+/// dispatcher for one of these three versions must also check this value; every other version is
+/// unambiguously identified by `BeginString` alone (`None`).
+fn version_appl_ver_id(name: &str) -> Option<&'static str> {
+    match name {
+        "FIX50" => Some("7"),
+        "FIX50SP1" => Some("8"),
+        "FIX50SP2" => Some("9"),
+        _ => None,
+    }
 }
 
 /// The BeginString a version's messages carry (FIXT.1.1-transported FIX 5.0.x app messages still

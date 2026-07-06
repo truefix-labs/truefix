@@ -140,6 +140,12 @@ fn logged_on_session_is_disconnected_once_the_schedule_window_elapses() {
          window, not left logged on indefinitely"
     );
     assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
+    // NEW-62 (feature 009): a Logout must be sent before the disconnect, not an abrupt TCP drop.
+    let out = sends(&actions);
+    assert!(
+        out.iter().any(|m| m.msg_type() == Some("5")),
+        "expected a Logout among the schedule-exit actions, got {out:?}"
+    );
 }
 
 // --- T044/T045: ForceResendWhenCorruptedStore also governs admin-vs-gap-fill during resend ---

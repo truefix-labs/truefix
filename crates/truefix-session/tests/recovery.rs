@@ -286,7 +286,10 @@ fn multi_chunk_inbound_resend_auto_continues_without_an_external_resend_request(
 
     // Peer gap-fills chunk 2 (5..7) -> NewSeqNo=8. The full gap (target=10) isn't closed yet
     // (8 <= 10), so a third chunk must auto-issue too, capped by the known target.
-    let sr2 = with(with(msg("4", 3), 123, "Y"), 36, "8");
+    // NEW-84 (feature 009): the gap-fill's own MsgSeqNum must match the start of the chunk it
+    // fills (5) now that a gap-fill's own MsgSeqNum is checked against `next_in_seq`, not the
+    // previously-used (protocol-incorrect) sequentially-incrementing placeholder (3).
+    let sr2 = with(with(msg("4", 5), 123, "Y"), 36, "8");
     let actions = s.handle(Event::Received(sr2));
     assert_eq!(s.next_in_seq(), 8);
     let out = sends(&actions);
@@ -299,7 +302,8 @@ fn multi_chunk_inbound_resend_auto_continues_without_an_external_resend_request(
 
     // Peer gap-fills the final chunk (8..10) -> NewSeqNo=11, past the target: the gap is now
     // fully closed, so no further ResendRequest should be auto-issued.
-    let sr3 = with(with(msg("4", 4), 123, "Y"), 36, "11");
+    // NEW-84 (feature 009): own MsgSeqNum matches the chunk start (8), see the note above.
+    let sr3 = with(with(msg("4", 8), 123, "Y"), 36, "11");
     let actions = s.handle(Event::Received(sr3));
     assert_eq!(s.next_in_seq(), 11);
     let out = sends(&actions);

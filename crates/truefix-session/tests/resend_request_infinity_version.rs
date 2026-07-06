@@ -14,6 +14,11 @@ fn cfg(begin_string: &str) -> SessionConfig {
     let mut c = SessionConfig::new(begin_string, "ME", "YOU", Role::Acceptor);
     c.heartbeat_interval = 30;
     c.check_latency = false;
+    // This test is about the EndSeqNo=999999 infinity convention with pre-existing sent
+    // sequence state, not NEW-03's acceptor ResetOnLogon fix -- disable it explicitly so the
+    // seeded sequences survive the Logon handshake below (SessionConfig::new's default is
+    // `true`).
+    c.reset_on_logon = false;
     c
 }
 

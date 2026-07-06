@@ -88,11 +88,27 @@ fn render_members_ordered(map: &FieldMap, order: &[u32], out: &mut Vec<u8>) {
     }
 }
 
+/// NEW-22 (feature 009): the count to emit for a group's `NoXxx` field — its wire-declared count
+/// if one was recorded (preserving fidelity to a decoded message even when that declaration
+/// didn't match the actual entry count), otherwise `entries.len()` (today's behavior, unchanged
+/// for any group not decoded from the wire).
+fn group_count_to_emit(entries: &[FieldMap], declared_count: Option<i64>) -> String {
+    declared_count.map_or_else(|| entries.len().to_string(), |n| n.to_string())
+}
+
 fn render_one_member(member: &Member, out: &mut Vec<u8>) {
     match member {
         Member::Field(f) => render_raw(f.tag(), f.value_bytes(), out),
-        Member::Group { count_tag, entries } => {
-            render_raw(*count_tag, entries.len().to_string().as_bytes(), out);
+        Member::Group {
+            count_tag,
+            entries,
+            declared_count,
+        } => {
+            render_raw(
+                *count_tag,
+                group_count_to_emit(entries, *declared_count).as_bytes(),
+                out,
+            );
             for entry in entries {
                 render_members(entry, &[], out);
             }
@@ -108,8 +124,16 @@ fn render_members(map: &FieldMap, skip: &[u32], out: &mut Vec<u8>) {
                     render_raw(f.tag(), f.value_bytes(), out);
                 }
             }
-            Member::Group { count_tag, entries } => {
-                render_raw(*count_tag, entries.len().to_string().as_bytes(), out);
+            Member::Group {
+                count_tag,
+                entries,
+                declared_count,
+            } => {
+                render_raw(
+                    *count_tag,
+                    group_count_to_emit(entries, *declared_count).as_bytes(),
+                    out,
+                );
                 for entry in entries {
                     render_members(entry, &[], out);
                 }

@@ -53,12 +53,34 @@ fn logon_time_reset_seq_num_flag_signals_a_store_reset() {
 
 #[test]
 fn ordinary_logon_without_reset_flag_does_not_reset_the_store() {
-    let mut s = Session::new(acc_cfg());
+    // NEW-03 (feature 009): an acceptor's own `reset_on_logon=true` (the default) now forces a
+    // reset on any Logon regardless of the inbound flag -- explicitly disabled here so this test
+    // continues to isolate "absent inbound flag, absent local config" as the no-reset case it's
+    // actually about.
+    let mut cfg = acc_cfg();
+    cfg.reset_on_logon = false;
+    let mut s = Session::new(cfg);
     s.handle(Event::Connected);
     let actions = s.handle(Event::Received(logon(1, false)));
     assert!(
         !has_reset_store(&actions),
-        "a logon without ResetSeqNumFlag must not clear the durable store, got {actions:?}"
+        "a logon without ResetSeqNumFlag, and without the acceptor's own ResetOnLogon config, \
+         must not clear the durable store, got {actions:?}"
+    );
+}
+
+#[test]
+fn acceptor_reset_on_logon_signals_a_store_reset_even_without_inbound_reset_flag() {
+    // NEW-03 (feature 009): the complementary case to the test above -- with
+    // `reset_on_logon=true` (the default), an ordinary Logon *without* the inbound flag still
+    // triggers a store reset, because the acceptor's own config demands it.
+    let mut s = Session::new(acc_cfg());
+    s.handle(Event::Connected);
+    let actions = s.handle(Event::Received(logon(1, false)));
+    assert!(
+        has_reset_store(&actions),
+        "an acceptor with ResetOnLogon=true (the default) must reset the store on any Logon, \
+         even one without ResetSeqNumFlag, got {actions:?}"
     );
 }
 

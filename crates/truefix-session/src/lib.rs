@@ -33,4 +33,4 @@ pub use schedule_reset::{
     ScheduleAction, decide as decide_schedule_action, decide_recurring_reset,
 };
 pub use session_id::SessionId;
-pub use state::{Action, Event, Session, SessionState, SessionStatus};
+pub use state::{Action, DisconnectReason, Event, Session, SessionState, SessionStatus};

@@ -87,6 +87,34 @@ fn user_defined_field_skipped_unless_validated() {
     assert!(dict().validate(&m, &strict).is_err());
 }
 
+// T043/T044 (US1, feature 009, NEW-17): `validate_user_defined_fields=false` must fully skip
+// UDFs -- the short-circuit previously ran only inside the "unknown tag" arm, so an empty-valued
+// or repeated UDF was still rejected by the earlier empty-value/repeated-tag checks even with the
+// option off.
+
+#[test]
+fn empty_valued_udf_is_skipped_when_validate_user_defined_fields_is_off() {
+    let mut m = nos();
+    m.body.set(Field::string(6001, "")); // UDF, empty value
+    assert!(
+        dict().validate(&m, &ValidationOptions::default()).is_ok(),
+        "an empty-valued UDF must be skipped entirely when validate_user_defined_fields=false \
+         (NEW-17)"
+    );
+}
+
+#[test]
+fn repeated_udf_is_skipped_when_validate_user_defined_fields_is_off() {
+    let mut m = nos();
+    m.body.add_field(Field::string(6001, "a"));
+    m.body.add_field(Field::string(6001, "b")); // same UDF tag repeated
+    assert!(
+        dict().validate(&m, &ValidationOptions::default()).is_ok(),
+        "a repeated UDF must be skipped entirely when validate_user_defined_fields=false \
+         (NEW-17)"
+    );
+}
+
 #[test]
 fn bad_enum_value_is_incorrect() {
     let mut m = nos();

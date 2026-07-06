@@ -104,6 +104,15 @@ impl DataDictionary {
         {
             let tag = field.tag();
 
+            // NEW-17 (feature 009): the UDF short-circuit must run before *every* other check in
+            // this loop (repeated-tag, empty-value, unknown-tag, type/enum) so
+            // `ValidateUserDefinedFields=N` fully skips UDFs, matching QFJ -- previously this
+            // check lived only inside the `self.field(tag) == None` arm further down, so an empty
+            // or repeated UDF was still rejected by the earlier checks even with the option off.
+            if tag >= UDF_START && !opts.validate_user_defined_fields {
+                continue;
+            }
+
             // Tags that are members of a repeating group legitimately repeat once per entry; only
             // flag a repeat for tags that are not part of any group in this message.
             if opts.check_repeated_tags
@@ -137,10 +146,6 @@ impl DataDictionary {
 
             match self.field(tag) {
                 None => {
-                    let is_udf = tag >= UDF_START;
-                    if is_udf && !opts.validate_user_defined_fields {
-                        continue;
-                    }
                     if opts.allow_unknown_msg_fields {
                         continue;
                     }
@@ -235,9 +240,27 @@ impl DataDictionary {
         // can combine directly). `FieldMap::fields()` (the flat walk below) skips `Member::Group`
         // entirely, so without this, such a message's group entries would never be validated at
         // all — not even a structural/count check, let alone type/enum or required-field checks.
+        // NEW-19 (feature 009): the standard header can itself declare a repeating group (e.g.
+        // NoHops(627) — `header ... 627` / `group 627 NoHops ...` in every bundled dictionary) --
+        // previously only `message.body` was scanned here, so a header-level group's structure
+        // (count/delimiter/order) was never checked at all, unlike the identical body-level case.
         for &count_tag in self.groups.keys() {
+            if let Some(entries) = message.header.group(count_tag) {
+                self.validate_structured_group(entries, count_tag, opts)?;
+            }
             if let Some(entries) = message.body.group(count_tag) {
                 self.validate_structured_group(entries, count_tag, opts)?;
+            }
+        }
+
+        let header: Vec<&Field> = message.header.fields().collect();
+        let mut hpos = 0usize;
+        while let Some(f) = header.get(hpos) {
+            let tag = f.tag();
+            if self.groups.contains_key(&tag) {
+                self.validate_group(&header, &mut hpos, tag, opts)?;
+            } else {
+                hpos += 1;
             }
         }
 

@@ -126,6 +126,36 @@ fn all_five_validation_option_toggles_map_from_settings() {
     assert!(opts.requires_orig_sending_time);
 }
 
+// --- T036/T037 (US1, feature 009, NEW-10): 5 more validation keys registered as `Impl` but
+// previously never wired in resolve_validator ---
+
+#[test]
+fn the_five_new_validation_option_toggles_map_from_settings() {
+    let rs = resolved(&base(
+        "UseDataDictionary=Y\nDataDictionary=FIX.4.4\n\
+         ValidateFieldsHaveValues=N\nValidateUnorderedGroupFields=N\n\
+         ValidateUserDefinedFields=Y\nAllowUnknownMsgFields=Y\n\
+         FirstFieldInGroupIsDelimiter=N\n",
+    ));
+    let (_, opts) = rs.validator.expect("validator wired");
+    assert!(!opts.validate_fields_have_values);
+    assert!(!opts.validate_unordered_group_fields);
+    assert!(opts.validate_user_defined_fields);
+    assert!(opts.allow_unknown_msg_fields);
+    assert!(!opts.first_field_in_group_is_delimiter);
+}
+
+#[test]
+fn the_five_new_validation_option_toggles_default_correctly_when_unset() {
+    let rs = resolved(&base("UseDataDictionary=Y\nDataDictionary=FIX.4.4\n"));
+    let (_, opts) = rs.validator.expect("validator wired");
+    assert!(opts.validate_fields_have_values);
+    assert!(opts.validate_unordered_group_fields);
+    assert!(!opts.validate_user_defined_fields);
+    assert!(!opts.allow_unknown_msg_fields);
+    assert!(opts.first_field_in_group_is_delimiter);
+}
+
 // --- T079 (US8, feature 006): real FIXT transport/application dictionary split, and the
 // transport-priority fix to `.validator`'s single-dict fallback (GAP-18c part 2) ---
 

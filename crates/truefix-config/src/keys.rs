@@ -61,14 +61,20 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("ValidateUnorderedGroupFields", "validation", Impl),
     k("ValidateUserDefinedFields", "validation", Impl),
     k("ValidateIncomingMessage", "validation", Impl),
-    k("ValidateSequenceNumbers", "validation", Impl),
+    // NEW-10 (feature 009): downgraded from `Impl` -- no `ValidationOptions` field exists for
+    // this key and none is added (per /speckit-clarify's decision), so it's accepted/parsed but
+    // not enforced, matching `Recognized`'s definition exactly rather than falsely claiming full
+    // implementation.
+    k("ValidateSequenceNumbers", "validation", Rec),
     k("ValidateChecksum", "validation", Impl),
     k("AllowUnknownMsgFields", "validation", Impl),
     k("CheckLatency", "validation", Impl),
     k("MaxLatency", "validation", Impl),
     k("CheckCompID", "validation", Impl),
     k("RejectGarbledMessage", "validation", Impl),
-    k("RejectInvalidMessage", "validation", Impl),
+    // NEW-10 (feature 009): downgraded from `Impl` -- see the identical note on
+    // `ValidateSequenceNumbers` above.
+    k("RejectInvalidMessage", "validation", Rec),
     k(
         "RejectMessageOnUnhandledException",
         "validation",

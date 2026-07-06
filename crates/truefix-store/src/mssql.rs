@@ -99,7 +99,6 @@ fn parse_url(url: &str) -> Result<Config, StoreError> {
         percent_decode(user),
         percent_decode(password),
     ));
-    config.trust_cert();
     Ok(config)
 }
 
@@ -202,7 +201,6 @@ fn parse_semicolon_form(rest: &str) -> Result<Config, StoreError> {
         percent_decode(&user),
         percent_decode(&password),
     ));
-    config.trust_cert();
     Ok(config)
 }
 
@@ -232,6 +230,10 @@ pub struct MssqlStoreConfig {
     pub messages_table: String,
     /// The composite session key discriminating rows when several sessions share one table pair.
     pub session_id: String,
+    /// NEW-90 (feature 009): whether to skip TLS server-certificate-chain validation
+    /// (`tiberius::Config::trust_cert()`). Defaults to `true` (today's unconditional behavior,
+    /// preserved for backward compatibility) — set to `false` to enable real validation.
+    pub trust_server_certificate: bool,
 }
 
 impl MssqlStoreConfig {
@@ -243,6 +245,7 @@ impl MssqlStoreConfig {
             sessions_table: "seqnums".to_owned(),
             messages_table: "messages".to_owned(),
             session_id: "default".to_owned(),
+            trust_server_certificate: true,
         }
     }
 }
@@ -273,7 +276,13 @@ impl MssqlStore {
         // clean, typed configuration error.
         valid_identifier(&config.sessions_table)?;
         valid_identifier(&config.messages_table)?;
-        let tiberius_config = parse_url(&config.url)?;
+        let mut tiberius_config = parse_url(&config.url)?;
+        // NEW-90 (feature 009): `trust_cert()` unconditionally skipped TLS server-certificate-
+        // chain validation with no way to opt back into it -- now gated on `trust_server_
+        // certificate`, defaulting to `true` (today's behavior, backward compatible).
+        if config.trust_server_certificate {
+            tiberius_config.trust_cert();
+        }
         let client = connect_client(tiberius_config).await?;
         let store = Self {
             client: Mutex::new(client),

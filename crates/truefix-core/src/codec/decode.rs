@@ -130,6 +130,14 @@ fn build_group(
     delimiter: u32,
     members: &[u32],
 ) -> Group {
+    // NEW-22 (feature 009): capture the wire-declared count before consuming its token, so a
+    // re-encode preserves it verbatim even when it doesn't match the actual entry count found
+    // below (previously silently "corrected" to `entries.len()` on encode, discarding the wire's
+    // own — possibly malformed — declaration).
+    let declared: Option<i64> = tokens
+        .get(*pos)
+        .and_then(|tok| core::str::from_utf8(&tok.1).ok())
+        .and_then(|s| s.parse().ok());
     *pos += 1; // consume the NoXxx count field
     let mut group = Group::new(count_tag);
     while let Some(tok) = tokens.get(*pos) {
@@ -153,6 +161,9 @@ fn build_group(
             }
         }
         group.add_entry(entry);
+    }
+    if let Some(n) = declared {
+        group.set_declared_count(n);
     }
     group
 }
@@ -245,6 +256,13 @@ fn tokenize(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
         })?;
         let tag_bytes = rest.get(..eq_rel).unwrap_or(&[]);
         let tag = parse_u32(tag_bytes).ok_or(DecodeError::InvalidTag { offset: start })?;
+        // NEW-21 (feature 009): tag 0 is not a valid FIX tag number (tags are strictly positive) --
+        // checked here rather than inside `parse_u32` itself, since that helper is shared with
+        // CheckSum(10) parsing, where a computed checksum of exactly `0` legitimately encodes as
+        // the string `"000"`.
+        if tag == 0 {
+            return Err(DecodeError::InvalidTag { offset: start });
+        }
         let val_start = pos + eq_rel + 1;
 
         let data_len = match pending_data.take() {

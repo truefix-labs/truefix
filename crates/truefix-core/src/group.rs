@@ -19,6 +19,13 @@ pub trait GroupSpec {
 pub struct Group {
     count_tag: u32,
     entries: Vec<FieldMap>,
+    /// NEW-22 (feature 009): the count this group's `NoXxx` field declared on the wire, when
+    /// decoded from one — `None` for a group built fresh (e.g. by application code constructing
+    /// an outbound message), which always encodes `entries.len()`, same as before this field
+    /// existed. Preserves round-trip fidelity for a decoded group whose declared count didn't
+    /// match its actual entry count (previously silently "corrected" to `entries.len()` on
+    /// re-encode, discarding the wire's own original — possibly malformed — declaration).
+    declared_count: Option<i64>,
 }
 
 impl Group {
@@ -27,6 +34,7 @@ impl Group {
         Self {
             count_tag,
             entries: Vec::new(),
+            declared_count: None,
         }
     }
 
@@ -51,8 +59,14 @@ impl Group {
         self.entries.is_empty()
     }
 
-    /// Consume the group into `(count_tag, entries)`.
-    pub(crate) fn into_parts(self) -> (u32, Vec<FieldMap>) {
-        (self.count_tag, self.entries)
+    /// NEW-22 (feature 009): record the count actually declared on the wire (set by the decoder;
+    /// not exposed for outbound-only construction, which has no such thing to preserve).
+    pub(crate) fn set_declared_count(&mut self, n: i64) {
+        self.declared_count = Some(n);
+    }
+
+    /// Consume the group into `(count_tag, entries, declared_count)`.
+    pub(crate) fn into_parts(self) -> (u32, Vec<FieldMap>, Option<i64>) {
+        (self.count_tag, self.entries, self.declared_count)
     }
 }

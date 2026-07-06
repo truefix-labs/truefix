@@ -10,6 +10,11 @@ fn cfg() -> SessionConfig {
     let mut c = SessionConfig::new("FIX.4.4", "ME", "YOU", Role::Acceptor);
     c.heartbeat_interval = 30;
     c.check_latency = false;
+    // This test's reconnect scenario is explicitly about *no* sequence reset happening (see the
+    // comment below) -- NEW-03 (feature 009) made the acceptor honor `reset_on_logon` (which
+    // `SessionConfig::new` defaults to `true`), so it must be disabled explicitly now to match
+    // this test's stated intent, rather than relying on the (formerly inert) default.
+    c.reset_on_logon = false;
     c
 }
 

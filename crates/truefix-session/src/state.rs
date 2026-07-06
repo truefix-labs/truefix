@@ -54,7 +54,29 @@ pub enum Event {
     /// `ResetOnDisconnect`/`ResetOnLogout` exactly as any other path into `enter_disconnected()`
     /// does, so an unexpected drop resets sequence numbers when configured to, the same as a
     /// Logout-driven disconnect would.
-    Disconnected,
+    ///
+    /// NEW-56 (feature 009): carries the reason so `enter_disconnected` can consult only the
+    /// applicable flag (`reset_on_logout` for a completed graceful Logout exchange,
+    /// `reset_on_disconnect` for everything else), rather than `||`-combining both regardless of
+    /// cause. The transport dispatches this event exactly once per connection teardown
+    /// (`truefix-transport::run_connection`'s unconditional final dispatch) using whichever
+    /// reason [`Session::last_disconnect_reason`] already recorded (if an internal handler like
+    /// `on_logout_msg`/a schedule-or-heartbeat-timeout in `on_tick` already ran), or
+    /// [`DisconnectReason::Other`] otherwise (a raw TCP drop, or an error-driven path that sets
+    /// `state` directly and uses the separate `reset_on_error` mechanism instead).
+    Disconnected(DisconnectReason),
+}
+
+/// Why a session is tearing down (NEW-56, feature 009) — determines which of
+/// `reset_on_logout`/`reset_on_disconnect` `enter_disconnected` consults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisconnectReason {
+    /// A graceful Logout exchange completed (this session sent or received a Logout while
+    /// `LoggedOn`/`AwaitingLogout`).
+    GracefulLogout,
+    /// Anything else: a raw TCP drop, a timeout (logon/logout/heartbeat), or a schedule-window
+    /// exit.
+    Other,
 }
 
 /// A point-in-time snapshot of a session, for monitoring (FR-L1).
@@ -136,6 +158,13 @@ pub struct Session {
     /// or its own `MsgSeqNum == 1`) or the connection ends. While set, a response Logon that does
     /// neither is a handshake failure.
     reset_on_logon_pending: bool,
+    /// NEW-56 (feature 009): the reason `enter_disconnected` was last called with, if any, since
+    /// the current connection began (`on_connected` clears it). Lets the transport layer's
+    /// unconditional final `Event::Disconnected` dispatch (which runs for *every* teardown,
+    /// including ones an internal handler like `on_logout_msg`/`on_tick` already fully processed)
+    /// re-pass the same reason rather than guessing — making that redundant second call
+    /// idempotent instead of potentially consulting the wrong flag.
+    last_disconnect_reason: Option<DisconnectReason>,
 }
 
 impl Session {
@@ -163,6 +192,7 @@ impl Session {
             fixt_validator: None,
             negotiated_appl_ver_id: None,
             reset_on_logon_pending: false,
+            last_disconnect_reason: None,
         }
     }
 
@@ -235,6 +265,16 @@ impl Session {
     /// FR-029, feature 007), regardless of whether it was later accepted or rejected.
     pub fn logon_received(&self) -> bool {
         self.logon_received
+    }
+
+    /// The reason `enter_disconnected` was last called with on the current connection, if any
+    /// (NEW-56, feature 009). `None` until some internal path (a completed graceful Logout
+    /// exchange, or a logon/logout/heartbeat timeout) has torn the session down; the transport
+    /// layer's unconditional final `Event::Disconnected` dispatch uses this to re-pass the same
+    /// reason (making that dispatch idempotent) rather than guessing when it runs after an
+    /// internal handler already processed the teardown.
+    pub fn last_disconnect_reason(&self) -> Option<DisconnectReason> {
+        self.last_disconnect_reason
     }
 
     /// The next outbound sequence number that will be used.
@@ -466,7 +506,7 @@ impl Session {
             Event::Tick => self.on_tick(),
             Event::StartLogout => self.on_start_logout(),
             Event::Garbled => self.on_garbled(),
-            Event::Disconnected => self.enter_disconnected().into_iter().collect(),
+            Event::Disconnected(reason) => self.enter_disconnected(reason).into_iter().collect(),
         }
     }
 
@@ -628,6 +668,9 @@ impl Session {
         self.resend_target = None;
         self.resend_chunk_end = None;
         self.reset_on_logon_pending = false;
+        // NEW-56 (feature 009): a fresh connection has no teardown reason of its own yet -- avoid
+        // the transport layer's final-dispatch fallback re-using a *prior* connection's reason.
+        self.last_disconnect_reason = None;
         // BUG-93/FR-029 (feature 007): a fresh connection has neither sent nor received a Logon
         // yet (`logon_sent` gets set again below/in `on_logon` as this connection actually
         // progresses).
@@ -742,9 +785,6 @@ impl Session {
         if mt.as_deref() == Some("A") {
             return self.on_logon(msg);
         }
-        if mt.as_deref() == Some("4") {
-            return self.on_sequence_reset(&msg);
-        }
 
         let seq = match msg
             .header
@@ -777,6 +817,64 @@ impl Session {
         // case from here on.
         if poss_dup && let Some(reject) = self.poss_dup_falsification_check(&msg) {
             return self.reject_logon(&reject);
+        }
+
+        if mt.as_deref() == Some("4") {
+            let gap_fill =
+                msg.body.get(GAP_FILL_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
+            if !gap_fill {
+                // A plain SequenceReset-Reset's own MsgSeqNum is intentionally not checked
+                // against `next_in_seq` (QFJ ignores it for Reset mode) -- unchanged from before
+                // this fix.
+                return self.on_sequence_reset(&msg);
+            }
+            // NEW-84 (feature 009): a gap-fill SequenceReset must go through the same too-high/
+            // too-low dispatch every other message type gets (QFJ's `verify(sequenceReset,
+            // isGapFill, isGapFill)` conditions both checks on `isGapFill`) -- previously it was
+            // routed here unconditionally, applying `NewSeqNo` immediately regardless of its own
+            // position in the stream, which could silently and permanently discard queued
+            // messages a too-high/out-of-order gap-fill jumped past.
+            return match seq.cmp(&self.next_in_seq) {
+                Ordering::Equal => self.on_sequence_reset(&msg),
+                Ordering::Greater => {
+                    // Mirror the generic `Ordering::Greater` handling below: queue it and request
+                    // a resend, rather than applying its `NewSeqNo` unconditionally.
+                    let mut actions = Vec::new();
+                    self.queue.insert(seq, msg);
+                    if self.config.resend_request_chunk_size > 0 {
+                        self.resend_target = Some(self.resend_target.map_or(seq, |t| t.max(seq)));
+                    }
+                    // NEW-18 (feature 009): no ResendRequests before logon -- a too-high pre-logon
+                    // gap-fill SequenceReset must not trigger one either, matching the generic
+                    // Ordering::Greater arm's identical guard below.
+                    let pre_logon = self.state != SessionState::LoggedOn;
+                    if !pre_logon
+                        && (!self.resend_requested || self.config.send_redundant_resend_requests)
+                    {
+                        self.resend_requested = true;
+                        let begin = self.next_in_seq;
+                        actions.push(self.request_resend(begin));
+                    }
+                    actions
+                }
+                Ordering::Less => {
+                    // Mirror the generic `Ordering::Less` handling below.
+                    if poss_dup {
+                        match self.poss_dup_anti_replay_violation(&msg) {
+                            Some(reject) => self.reject_logon(&reject),
+                            None => Vec::new(),
+                        }
+                    } else {
+                        let s = self.next_seq();
+                        let lo = admin::logout(&self.config, s, Some("MsgSeqNum too low"));
+                        self.state = SessionState::Disconnected;
+                        let mut actions = vec![self.send_stored(lo)];
+                        actions.extend(self.reset_on_error());
+                        actions.push(Action::Disconnect);
+                        actions
+                    }
+                }
+            };
         }
 
         match seq.cmp(&self.next_in_seq) {
@@ -827,7 +925,14 @@ impl Session {
                 if self.config.resend_request_chunk_size > 0 {
                     self.resend_target = Some(self.resend_target.map_or(seq, |t| t.max(seq)));
                 }
-                if self.resend_requested && !self.config.send_redundant_resend_requests {
+                // NEW-18 (feature 009): residual issue from BUG-42's own fix -- `validLogonState`
+                // lets pre-logon Logout(5)/Reject(3) admin messages through (alongside Logon and
+                // gap-fill SequenceReset), but a too-high one of these still reached this arm and
+                // emitted a ResendRequest, contradicting "no ResendRequests before logon".
+                let pre_logon = self.state != SessionState::LoggedOn;
+                if pre_logon {
+                    // nothing further to add -- queued above, no resend request before logon
+                } else if self.resend_requested && !self.config.send_redundant_resend_requests {
                     // nothing further to add
                 } else {
                     self.resend_requested = true;
@@ -955,6 +1060,22 @@ impl Session {
     fn drain_queue(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
         while let Some(msg) = self.queue.remove(&self.next_in_seq) {
+            // NEW-84 (feature 009): a previously-queued too-high gap-fill `SequenceReset` (see
+            // `on_received`) applies its own `NewSeqNo` jump once it's reached in order, rather
+            // than the uniform "+1" advance every other queued message type gets below --
+            // mirrors the fresh in-order case (`on_sequence_reset`), including skipping
+            // `validate_app` (SequenceReset has never gone through dictionary validation here,
+            // consistent with the pre-existing direct-dispatch behavior for a fresh gap-fill).
+            if msg.msg_type() == Some("4") {
+                let new_seq = msg
+                    .body
+                    .get(NEW_SEQ_NO)
+                    .and_then(|f| f.as_int().ok())
+                    .filter(|&n| n > 0)
+                    .map(|n| n as u64);
+                self.apply_gap_fill_new_seq(new_seq);
+                continue;
+            }
             // B3/FR-006 (feature 006): a message drained from the out-of-order queue must be
             // validated exactly like an in-order message (mirroring `on_received`'s `Equal` branch)
             // — bypassing `validate_app` here would let an invalid message enqueued behind a
@@ -1056,12 +1177,16 @@ impl Session {
             }
         }
 
+        // NEW-02 (feature 009): `BeginSeqNo=0` is a protocol-valid value meaning "from the
+        // beginning" (sequence 1) -- QFJ/QFGo both treat it this way. A negative value is still
+        // invalid (maps to the same `0` sentinel `begin == 0` below treats as "nothing to do"), but
+        // a present `0` must map to `1`, not share that sentinel.
         let begin = msg
             .body
             .get(crate::tags::BEGIN_SEQ_NO)
             .and_then(|f| f.as_int().ok())
-            .filter(|&s| s > 0)
-            .map_or(0, |s| s as u64);
+            .filter(|&s| s >= 0)
+            .map_or(0, |s| if s == 0 { 1 } else { s as u64 });
         let end_req = msg
             .body
             .get(crate::tags::END_SEQ_NO)
@@ -1188,19 +1313,25 @@ impl Session {
             return self.drain_queue();
         }
 
+        self.apply_gap_fill_new_seq(new_seq);
+        self.drain_queue()
+    }
+
+    /// Apply a gap-fill `SequenceReset`'s `NewSeqNo` (a no-op if absent or decreasing) and
+    /// discard any queued out-of-order messages it skips over (BUG-96/FR-027, matching QFJ's
+    /// `dequeueMessagesUpTo(newSequence)`) — a queued message whose sequence falls below the
+    /// jump's target would otherwise never match `next_in_seq` again and stay in the queue
+    /// forever. Extracted so both the fresh in-order case (`on_sequence_reset`, above) and a
+    /// previously-queued-then-dequeued gap-fill (`drain_queue`, NEW-84) share one implementation.
+    /// Does not itself drain the queue — callers are responsible for that (directly, or via the
+    /// natural continuation of an already-running `drain_queue` loop).
+    fn apply_gap_fill_new_seq(&mut self, new_seq: Option<u64>) {
         if let Some(ns) = new_seq
             && ns >= self.next_in_seq
         {
             self.next_in_seq = ns;
-            // BUG-96/FR-027 (feature 007): a gap-fill jump discards any queued out-of-order
-            // messages it skips over (matching QFJ's `dequeueMessagesUpTo(newSequence)`) --
-            // `drain_queue` below only ever removes an entry exactly matching the *current*
-            // `next_in_seq`, so a queued message whose sequence falls below this jump's target
-            // (but isn't part of the contiguous run `drain_queue` walks) would otherwise never
-            // match `next_in_seq` again and stay in the queue forever.
             self.queue.retain(|&seq, _| seq >= ns);
         }
-        self.drain_queue()
     }
 
     fn on_logon(&mut self, msg: Message) -> Vec<Action> {
@@ -1258,8 +1389,16 @@ impl Session {
             .get(RESET_SEQ_NUM_FLAG)
             .and_then(|f| f.as_str().ok())
             == Some("Y");
+        // NEW-03 (feature 009): an acceptor configured with `ResetOnLogon=Y` resets its sequence
+        // numbers on *any* inbound Logon, independent of that Logon's own `ResetSeqNumFlag` — so
+        // this exemption must apply here too, not only for `requests_reset`/`poss_dup`, or a
+        // realistic trigger (peer reconnects with a fresh seq=1 Logon after our own sequences had
+        // already advanced) would be rejected as "too low" before the reset logic further below
+        // ever runs.
+        let acceptor_forces_reset = self.config.role == Role::Acceptor && self.config.reset_on_logon;
         if !poss_dup
             && !requests_reset
+            && !acceptor_forces_reset
             && logon_seq_early.is_some_and(|s| s.cmp(&self.next_in_seq) == Ordering::Less)
         {
             return self.reject_logon(&truefix_core::Reject {
@@ -1344,17 +1483,16 @@ impl Session {
             if logon_seq_early.is_some_and(|s| s == self.next_in_seq) {
                 self.next_in_seq = self.next_in_seq.saturating_add(1);
             }
-            if self.config.disconnect_on_error {
-                let seq = self.next_seq();
-                let lo = admin::logout(
-                    &self.config,
-                    seq,
-                    Some("Logon failed dictionary validation"),
-                );
-                actions.push(self.send_stored(lo));
-                self.state = SessionState::Disconnected;
-                actions.push(Action::Disconnect);
-            }
+            // NEW-63 (feature 009): a dictionary-invalid Logon must always be followed by a
+            // Logout + disconnect, matching every other Logon-rejection path in this function
+            // (all routed through `reject_logon`) -- previously this was gated on
+            // `disconnect_on_error`, so `disconnect_on_error=false` left only a bare session
+            // Reject sent and the session stranded in `AwaitingLogon` instead of torn down.
+            let seq = self.next_seq();
+            let lo = admin::logout(&self.config, seq, Some("Logon failed dictionary validation"));
+            actions.push(self.send_stored(lo));
+            self.state = SessionState::Disconnected;
+            actions.push(Action::Disconnect);
             return actions;
         }
 
@@ -1383,7 +1521,12 @@ impl Session {
             .and_then(|f| f.as_str().ok())
             == Some("Y");
         let mut store_reset = false;
-        if inbound_reset_flag {
+        // NEW-03 (feature 009): reset on `inbound_reset_flag` (what the peer requested) OR the
+        // acceptor's own `ResetOnLogon` config (independent of what the peer requested) — the
+        // response's own `ResetSeqNumFlag` echo further below is intentionally left keyed only to
+        // `inbound_reset_flag` (BUG-28's fix), not `acceptor_forces_reset` — these are distinct
+        // mechanisms per the audit's own note.
+        if inbound_reset_flag || acceptor_forces_reset {
             let full = !self.logon_sent;
             self.reset_sequences(full);
             store_reset = full;
@@ -1502,7 +1645,7 @@ impl Session {
 
     fn on_logout_msg(&mut self) -> Vec<Action> {
         if self.state == SessionState::AwaitingLogout {
-            let reset = self.enter_disconnected();
+            let reset = self.enter_disconnected(DisconnectReason::GracefulLogout);
             let mut actions: Vec<Action> = reset.into_iter().collect();
             actions.push(Action::Disconnect);
             actions
@@ -1510,7 +1653,7 @@ impl Session {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, None);
             let send = self.send_stored(lo);
-            let reset = self.enter_disconnected();
+            let reset = self.enter_disconnected(DisconnectReason::GracefulLogout);
             let mut actions = vec![send];
             actions.extend(reset);
             actions.push(Action::Disconnect);
@@ -1530,12 +1673,19 @@ impl Session {
         }
     }
 
-    /// Transition to `Disconnected`, honoring `ResetOnDisconnect`/`ResetOnLogout`. Returns
+    /// Transition to `Disconnected`, honoring `ResetOnLogout` (a completed graceful Logout
+    /// exchange) or `ResetOnDisconnect` (everything else) depending on `reason` (NEW-56, feature
+    /// 009 — previously both flags were `||`-combined regardless of cause). Returns
     /// `Some(Action::ResetStore)` when a full reset happened, so the caller can include it in the
     /// actions it returns (FR-004) — the durable store is otherwise unaware this reset occurred.
-    fn enter_disconnected(&mut self) -> Option<Action> {
+    fn enter_disconnected(&mut self, reason: DisconnectReason) -> Option<Action> {
         self.state = SessionState::Disconnected;
-        if self.config.reset_on_disconnect || self.config.reset_on_logout {
+        self.last_disconnect_reason = Some(reason);
+        let should_reset = match reason {
+            DisconnectReason::GracefulLogout => self.config.reset_on_logout,
+            DisconnectReason::Other => self.config.reset_on_disconnect,
+        };
+        if should_reset {
             self.reset_sequences(true);
             self.logon_sent = false;
             Some(Action::ResetStore)
@@ -1554,7 +1704,7 @@ impl Session {
             SessionState::AwaitingLogon
                 if self.ticks_awaiting >= self.config.logon_timeout.max(1) =>
             {
-                let reset = self.enter_disconnected();
+                let reset = self.enter_disconnected(DisconnectReason::Other);
                 let mut actions: Vec<Action> = reset.into_iter().collect();
                 actions.push(Action::Disconnect);
                 return actions;
@@ -1569,8 +1719,19 @@ impl Session {
                 // BUG-87/FR-015 (feature 007): an already-`LoggedOn` session is disconnected once
                 // the current time crosses outside its configured schedule window, rather than
                 // being left connected indefinitely past the window's end.
-                let reset = self.enter_disconnected();
-                let mut actions: Vec<Action> = reset.into_iter().collect();
+                // NEW-62 (feature 009): send a Logout before disconnecting, matching QFJ's own
+                // session-end behavior -- previously this was an abrupt TCP drop with no Logout,
+                // leaving the counterparty to observe an ungraceful disconnect.
+                let seq = self.next_seq();
+                let lo = admin::logout(
+                    &self.config,
+                    seq,
+                    Some("session schedule window closed"),
+                );
+                let send = self.send_stored(lo);
+                let reset = self.enter_disconnected(DisconnectReason::Other);
+                let mut actions = vec![send];
+                actions.extend(reset);
                 actions.push(Action::Disconnect);
                 return actions;
             }
@@ -1584,7 +1745,7 @@ impl Session {
                 let timeout_ticks =
                     f64::from(hb) * self.config.heartbeat_timeout_multiplier.max(1.0) + 2.0;
                 if (self.ticks_since_recv as f64) >= timeout_ticks {
-                    let reset = self.enter_disconnected();
+                    let reset = self.enter_disconnected(DisconnectReason::Other);
                     let mut actions: Vec<Action> = reset.into_iter().collect();
                     actions.push(Action::Disconnect);
                     return actions;
@@ -1616,7 +1777,7 @@ impl Session {
             SessionState::AwaitingLogout
                 if self.ticks_awaiting >= self.config.logout_timeout.max(1) =>
             {
-                let reset = self.enter_disconnected();
+                let reset = self.enter_disconnected(DisconnectReason::Other);
                 let mut actions: Vec<Action> = reset.into_iter().collect();
                 actions.push(Action::Disconnect);
                 return actions;

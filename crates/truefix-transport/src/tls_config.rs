@@ -213,11 +213,28 @@ pub fn build_server_config(spec: &TlsSpec) -> Result<Arc<ServerConfig>, TlsConfi
     Ok(Arc::new(config))
 }
 
+/// NEW-11 (feature 009): the OS-native trust store, used as `build_client_config`'s fallback when
+/// no explicit `SocketTrustStore`/`SocketTrustStoreBytes` is configured — matches QuickFIX/J's own
+/// fallback to the JVM's default (OS-integrated) trust store, rather than an empty `RootCertStore`
+/// that rejects every server certificate. Per-certificate load failures are silently skipped here
+/// (consistent with `load_root_store`'s existing best-effort style; NEW-95 tracks adding load
+/// diagnostics to both).
+fn native_root_store() -> RootCertStore {
+    let mut roots = RootCertStore::empty();
+    for cert in rustls_native_certs::load_native_certs().certs {
+        let _ = roots.add(cert);
+    }
+    roots
+}
+
 /// Build a client-side (initiator) TLS configuration from `spec` (FR-017). When
 /// `need_client_auth` is set, the initiator also presents the key store as its own client
 /// certificate (mTLS).
 pub fn build_client_config(spec: &TlsSpec) -> Result<Arc<ClientConfig>, TlsConfigError> {
-    let roots = trust_store(spec)?.unwrap_or_else(RootCertStore::empty);
+    let roots = match trust_store(spec)? {
+        Some(store) => store,
+        None => native_root_store(),
+    };
     let provider = crypto_provider(&spec.cipher_suites)?;
     let builder = ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(protocol_versions(spec.min_version))?
@@ -241,5 +258,50 @@ fn key_store_label(spec: &TlsSpec) -> String {
             .as_deref()
             .map(|p| p.display().to_string())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod native_trust_store_tests {
+    use super::*;
+
+    // T026/T027 (US1, feature 009, `NEW-11`): `build_client_config` fell back to an empty
+    // `RootCertStore` when no explicit `SocketTrustStore`/`SocketTrustStoreBytes` was configured,
+    // making TLS unusable without one -- unlike QuickFIX/J, which falls back to the JVM's default
+    // (OS-integrated) trust store. A full end-to-end handshake test against a real
+    // publicly-trusted-CA-signed certificate isn't possible in this environment (no outbound
+    // network access, and a locally-minted test CA is deliberately absent from the OS trust
+    // store, so it can't stand in for one) -- this test instead verifies the core mechanism the
+    // fix relies on directly: `native_root_store()` actually loads certificates from this
+    // machine's OS-native trust store.
+    #[test]
+    fn native_root_store_loads_at_least_one_certificate() {
+        let roots = native_root_store();
+        assert!(
+            !roots.is_empty(),
+            "native_root_store() must load at least one certificate from the OS trust store on \
+             any normally-configured machine -- an empty result means the NEW-11 fallback is not \
+             actually providing usable trust anchors"
+        );
+    }
+
+    #[test]
+    fn build_client_config_with_no_explicit_trust_store_still_builds_successfully() {
+        // `rustls::ClientConfig` doesn't expose a public way to introspect its root store's
+        // contents, so this only confirms `build_client_config` still succeeds when falling back
+        // to the native store (it also "succeeded" before this fix, producing an unusable empty
+        // store -- `native_root_store_loads_at_least_one_certificate` above is the test that
+        // actually proves the fallback is non-empty).
+        let spec = TlsSpec {
+            key_store_path: None,
+            trust_store_path: None,
+            key_store_bytes: None,
+            trust_store_bytes: None,
+            need_client_auth: false,
+            min_version: None,
+            server_name: None,
+            cipher_suites: Vec::new(),
+        };
+        build_client_config(&spec).expect("client config should build using the native fallback");
     }
 }

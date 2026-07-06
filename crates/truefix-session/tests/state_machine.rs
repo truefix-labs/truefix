@@ -105,7 +105,13 @@ fn acceptor_logon_reports_seq_state_after_consuming_logon() {
 
 #[test]
 fn logon_with_seq_below_expected_and_no_possdup_is_rejected() {
-    let mut s = Session::new(cfg(Role::Acceptor));
+    // NEW-03 (feature 009): with the default `reset_on_logon=true`, an acceptor now exempts
+    // *any* Logon from the too-low-seq rejection (it resets to 1 regardless) -- explicitly
+    // disabled here so this test continues to isolate BUG-05/FR-001's too-low-seq rejection,
+    // which this test is actually about.
+    let mut c = cfg(Role::Acceptor);
+    c.reset_on_logon = false;
+    let mut s = Session::new(c);
     s.seed_sequences(1, 5); // expect next inbound seq = 5
     s.handle(Event::Connected);
     assert_eq!(s.state(), SessionState::AwaitingLogon);

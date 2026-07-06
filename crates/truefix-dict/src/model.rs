@@ -142,6 +142,13 @@ impl FieldType {
             Self::UtcDate => field.as_utc_date_only().is_ok(),
             Self::Currency => field.as_str().is_ok_and(is_alpha_len(3)),
             Self::Country => field.as_str().is_ok_and(is_alpha_len(2)),
+            // NEW-20 (feature 009): `MonthYear`/`LocalMktDate` previously fell into the `_ => true`
+            // catch-all below, letting a garbled value silently pass (same class of gap BUG-12
+            // already fixed for UtcTimeOnly/UtcDate). `LocalMktDate` is exactly `YYYYMMDD`, the
+            // same shape `as_utc_date_only` already validates; `MonthYear` is `YYYYMM`, optionally
+            // followed by either a day (`DD`) or a week descriptor (`w1`-`w5`).
+            Self::LocalMktDate => field.as_utc_date_only().is_ok(),
+            Self::MonthYear => field.as_str().is_ok_and(is_valid_month_year),
             Self::Exchange => field.as_str().is_ok_and(|s| {
                 (1..=4).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric())
             }),
@@ -156,6 +163,36 @@ impl FieldType {
 /// `s` is `len` ASCII uppercase letters exactly (ISO 4217/3166-style fixed alpha codes).
 fn is_alpha_len(len: usize) -> impl Fn(&str) -> bool {
     move |s: &str| s.len() == len && s.chars().all(|c| c.is_ascii_uppercase())
+}
+
+/// NEW-20 (feature 009): `MonthYear` (`YYYYMM`, optionally followed by a day `DD` or a week
+/// descriptor `w1`-`w5`) — FIX's own `MonthYear` data-type definition.
+fn is_valid_month_year(s: &str) -> bool {
+    if s.len() != 6 && s.len() != 8 {
+        return false;
+    }
+    let Some(yyyymm) = s.get(..6) else {
+        return false;
+    };
+    if !yyyymm.bytes().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let month: u32 = s.get(4..6).and_then(|m| m.parse().ok()).unwrap_or(0);
+    if !(1..=12).contains(&month) {
+        return false;
+    }
+    if s.len() == 6 {
+        return true;
+    }
+    let Some(rest) = s.get(6..8) else {
+        return false;
+    };
+    if let Some(week) = rest.strip_prefix('w') {
+        matches!(week, "1" | "2" | "3" | "4" | "5")
+    } else {
+        rest.bytes().all(|c| c.is_ascii_digit())
+            && (1..=31).contains(&rest.parse().unwrap_or(0))
+    }
 }
 
 /// A field definition.
@@ -191,7 +228,14 @@ impl FieldDef {
             return true;
         }
         match self.field_type {
-            FieldType::MultipleValueString | FieldType::MultipleStringValue => value
+            // NEW-07 (feature 009): `MultipleCharValue` is space-delimited single characters, per
+            // FIX spec, just like `MultipleValueString`/`MultipleStringValue` -- previously it
+            // fell into the `_` whole-string-match arm, so a valid multi-token wire value (e.g.
+            // `"A B"`) was incorrectly rejected. `value_ok` already splits it per-token; this
+            // brings `allows()` into consistency with that.
+            FieldType::MultipleValueString
+            | FieldType::MultipleStringValue
+            | FieldType::MultipleCharValue => value
                 .split(' ')
                 .all(|tok| self.values.iter().any(|v| v == tok)),
             _ => self.values.iter().any(|v| v == value),
@@ -334,8 +378,31 @@ impl DataDictionary {
     }
 
     /// Whether `tag` is a header field.
+    ///
+    /// NEW-19 (feature 009): also true for a member of a header-level repeating group (e.g.
+    /// `HopCompID(628)`, a member of `NoHops(627)`) -- `self.header` only lists the group's own
+    /// count tag (627), never its members, mirroring how the source `.fixdict`'s `header ...`
+    /// line only names the count tag. Without this, a header group's member fields fail the
+    /// `validate()` "belongs to this message" check with `TagNotDefinedForMessageType`, unlike
+    /// the identical body-level case (`MessageDef::member_tags`, computed transitively for
+    /// exactly this reason).
     pub fn is_header(&self, tag: u32) -> bool {
         self.header.contains(&tag)
+            || self
+                .header
+                .iter()
+                .any(|&h| self.group_contains_member_transitively(h, tag))
+    }
+
+    fn group_contains_member_transitively(&self, count_tag: u32, tag: u32) -> bool {
+        let Some(gdef) = self.groups.get(&count_tag) else {
+            return false;
+        };
+        gdef.members.contains(&tag)
+            || gdef
+                .members
+                .iter()
+                .any(|&m| self.group_contains_member_transitively(m, tag))
     }
 
     /// Whether `tag` is a trailer field.
