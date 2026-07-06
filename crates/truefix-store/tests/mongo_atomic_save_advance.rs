@@ -3,10 +3,11 @@
 //! transaction, but Mongo fell back to the trait's default two-call implementation (`save()` then
 //! `set_next_sender_seq()`), leaving the crash window the trait doc warns about. This test
 //! requires a reachable MongoDB instance supporting multi-document transactions (a replica-set or
-//! sharded deployment -- a standalone `mongod` does not support transactions); CI provides one via
-//! a service container (see `.github/workflows/ci.yml`'s `mongo` job, matching
-//! `mongo_backend.rs`'s existing pattern). Skips (not fails) when `DATABASE_URL_MONGO` isn't set,
-//! since no such instance was available in this development environment to verify interactively.
+//! sharded deployment -- a standalone `mongod` does not support transactions); CI provides one by
+//! starting `mongod --replSet rs0` and running `rs.initiate()` before the test step (see
+//! `.github/workflows/ci.yml`'s `mongo` job). Skips (not fails) when `DATABASE_URL_MONGO` isn't
+//! set, since no such instance was available in this development environment to verify
+//! interactively.
 
 #![cfg(feature = "mongodb")]
 

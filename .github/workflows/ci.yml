@@ -113,21 +113,31 @@ jobs:
   mongo:
     name: MongoDB backend (mongodb feature)
     runs-on: ubuntu-latest
-    services:
-      mongo:
-        image: mongo:7
-        ports: ["27017:27017"]
-        options: >-
-          --health-cmd "mongosh --eval 'db.runCommand({ping:1})' || mongo --eval 'db.runCommand({ping:1})'"
-          --health-interval=10s --health-timeout=5s --health-retries=10 --health-start-period=10s
     env:
       # US6, feature 004: the MongoDB tests read this and skip if absent, so dev boxes without the
       # service still pass; CI always sets it.
-      DATABASE_URL_MONGO: mongodb://localhost:27017
+      # T024/T025, feature 009 (NEW-08): directConnection=true bypasses replica-set topology
+      # discovery (which would otherwise require the primary's advertised host to match
+      # "localhost:27017"), since save_and_advance_sender's multi-document transaction needs a
+      # replica-set/sharded deployment -- a standalone mongod (the previous setup here) rejects
+      # transactions with IllegalOperation.
+      DATABASE_URL_MONGO: mongodb://localhost:27017/?directConnection=true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Start MongoDB (single-node replica set, needed for transactions)
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:7 --replSet rs0
+          for i in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1})' && break
+            sleep 1
+          done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
+          for i in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true && break
+            sleep 1
+          done
       - name: Test (mongodb feature)
         run: cargo test -p truefix-store -p truefix-log --features mongodb
 
