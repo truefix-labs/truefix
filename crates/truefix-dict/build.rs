@@ -14,6 +14,7 @@ use std::path::Path;
 mod codegen;
 
 fn main() {
+    println!("cargo:rerun-if-changed=src/codegen.rs");
     let manifest = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR");
     let mut code = String::new();

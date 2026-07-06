@@ -9,6 +9,7 @@ description = "FIX logging (screen/file/tracing/composite)."
 publish = false
 
 [dependencies]
+async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 time.workspace = true

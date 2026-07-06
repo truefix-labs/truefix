@@ -512,7 +512,9 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.check_latency = bool_key(map, "CheckLatency", true);
     cfg.max_latency = u32_key(map, "MaxLatency", &session, 120)?;
     cfg.logon_timeout = u32_key(map, "LogonTimeout", &session, 10)?;
-    cfg.logout_timeout = u32_key(map, "LogoutTimeout", &session, 10)?;
+    // NEW-89 (feature 009): matches QuickFIX/J's own 2-second default; the previous 10-second
+    // default was real `.cfg`-driven deployment behavior, not a test-only value.
+    cfg.logout_timeout = u32_key(map, "LogoutTimeout", &session, 2)?;
     let (reconnect_interval, reconnect_interval_steps) = resolve_reconnect_interval(map, &session)?;
     cfg.reconnect_interval = reconnect_interval;
     cfg.reconnect_interval_steps = reconnect_interval_steps;

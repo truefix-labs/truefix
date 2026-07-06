@@ -622,7 +622,15 @@ pub fn convert(src: &RepositorySource<'_>, version: &str) -> Result<String, FixR
             let Some(count_tag) = group_count_tag(id, &msg_contents, &fields_by_tag) else {
                 continue;
             };
-            let members: Vec<Member> = resolved.into_iter().map(|(m, _)| m).collect();
+            // A repeating component's indent-0 entry is its NoXxx count field. The normalized
+            // `group` directive already carries that tag separately, so including it in members
+            // makes the group self-referential and incorrectly selects the count tag itself as
+            // the delimiter.
+            let members: Vec<Member> = resolved
+                .into_iter()
+                .map(|(m, _)| m)
+                .filter(|m| !matches!(m, Member::Field(tag) if *tag == count_tag))
+                .collect();
             let delimiter = members
                 .iter()
                 .find_map(|m| match m {

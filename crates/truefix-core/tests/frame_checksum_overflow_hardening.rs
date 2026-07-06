@@ -81,21 +81,29 @@ fn encode_checksum_does_not_overflow_or_panic_for_a_very_large_message() {
 }
 
 /// BUG-24/FR-032: `Message::decode`'s checksum verification (`decode.rs`) has the identical
-/// overflow-prone sum, fixed the same way for parity -- verified by round-tripping the same large
-/// message through `encode()` then `decode()` and confirming it decodes successfully (a failing
-/// checksum comparison, or a panic, would surface here).
+/// overflow-prone sum, fixed the same way for parity. Previously verified by round-tripping a
+/// ~17,000,000-byte message through `encode()` then `decode()` -- deliberately exceeding
+/// `MAX_BODY_LEN` (16,777,216), since `decode()` had no cap of its own to bump into. T168/T169
+/// (feature 009, NEW-04) closed exactly that gap: `decode()` now rejects any declared BodyLength
+/// beyond `MAX_BODY_LEN` before ever reaching the checksum sum, so a message large enough to
+/// overflow `u32` (needs ~16,909,321 bytes at value 0xFE) can no longer reach `decode()`'s
+/// checksum computation at all -- the overflow-prone sum is now doubly unreachable via any real,
+/// allocatable input. Converted to a source-level check (mirroring
+/// `frame_length_uses_checked_add_not_bare_addition` above, established for this exact
+/// situation) confirming the `u64` accumulator fix is still present as defense-in-depth for
+/// direct internal callers of the checksum-computing code.
 #[test]
-fn decode_checksum_does_not_overflow_or_panic_for_a_very_large_message() {
-    let mut msg = Message::new();
-    msg.header.set(Field::string(8, "FIX.4.4"));
-    msg.header.set(Field::string(35, "0"));
-    let huge = vec![0xFEu8; 17_000_000];
-    msg.body.set(Field::bytes(96, &huge));
+fn decode_checksum_sum_still_uses_a_u64_accumulator() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/codec/decode.rs"))
+        .expect("read codec/decode.rs");
+    let fn_start = src
+        .find("fn tokenize_validated")
+        .expect("tokenize_validated function present");
+    let fn_src = &src[fn_start..];
 
-    let encoded = msg.encode();
-    let decoded = Message::decode(&encoded).expect(
-        "a very large, correctly-checksummed message \
-        must decode successfully rather than panicking or reporting a checksum mismatch",
+    assert!(
+        fn_src.contains("u64::from(b)"),
+        "tokenize_validated's checksum sum must accumulate in u64, not a narrower type prone to \
+         overflow (BUG-24/FR-032), got:\n{fn_src}"
     );
-    assert_eq!(decoded.body.get(96).unwrap().as_bytes(), huge.as_slice());
 }

@@ -53,6 +53,14 @@ pub enum TlsConfigError {
     /// process-default provider.
     #[error("CipherSuites contains unrecognized cipher suites: {0:?}")]
     UnrecognizedCipherSuites(Vec<String>),
+    /// T166/T167 (feature 009, NEW-95): a configured trust store (`SocketTrustStore`/
+    /// `SocketTrustStoreBytes`) produced zero usable trust anchors — every certificate present
+    /// either failed to parse/add, or the source had none at all. Previously silent (`let _ =
+    /// roots.add(cert);`), so a fully-broken trust-store file produced an empty, non-functional
+    /// `RootCertStore` with no diagnostic; every subsequent handshake would then fail with no clue
+    /// why.
+    #[error("trust store {0:?} produced no usable certificates")]
+    EmptyTrustStore(String),
 }
 
 fn pem_err(path: &Path, source: rustls::pki_types::pem::Error) -> TlsConfigError {
@@ -113,22 +121,42 @@ fn key_store_private_key(spec: &TlsSpec) -> Result<PrivateKeyDer<'static>, TlsCo
     }
 }
 
+/// T166/T167 (feature 009, NEW-95): count `RootCertStore::add` failures (a malformed cert,
+/// unsupported key type, etc. — each individually best-effort-skipped, matching the pre-existing
+/// per-cert tolerance) and warn when any occurred, so a partially-broken trust store is at least
+/// visible instead of silently thinner than configured.
+fn add_certs_tracking_failures(roots: &mut RootCertStore, certs: Vec<CertificateDer<'static>>) {
+    let mut failed = 0usize;
+    for cert in certs {
+        if roots.add(cert).is_err() {
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        tracing::warn!(
+            failed,
+            "trust store: {failed} certificate(s) failed to load"
+        );
+    }
+}
+
 fn load_root_store(path: &Path) -> Result<RootCertStore, TlsConfigError> {
     let mut roots = RootCertStore::empty();
-    for cert in load_certs(path)? {
-        // Best-effort: a malformed/duplicate root is skipped rather than aborting the whole store.
-        let _ = roots.add(cert);
+    add_certs_tracking_failures(&mut roots, load_certs(path)?);
+    if roots.is_empty() {
+        return Err(TlsConfigError::EmptyTrustStore(path.display().to_string()));
     }
     Ok(roots)
 }
 
 fn load_root_store_bytes(bytes: &[u8]) -> Result<RootCertStore, TlsConfigError> {
     let mut roots = RootCertStore::empty();
-    for cert in CertificateDer::pem_slice_iter(bytes)
+    let certs = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(TlsConfigError::PemBytes)?
-    {
-        let _ = roots.add(cert);
+        .map_err(TlsConfigError::PemBytes)?;
+    add_certs_tracking_failures(&mut roots, certs);
+    if roots.is_empty() {
+        return Err(TlsConfigError::EmptyTrustStore("<inline bytes>".to_owned()));
     }
     Ok(roots)
 }

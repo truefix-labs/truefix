@@ -71,12 +71,41 @@ impl SessionId {
     }
 }
 
+/// Append `/sub_id` and `/location_id` when present (T170/T171, feature 009, NEW-39) — two
+/// sessions sharing the same BeginString/CompIDs but differing only by SubID/LocationID
+/// previously rendered identically via `Display`, making them indistinguishable in logs/error
+/// messages/anywhere else this is the only identifying text shown.
+fn write_comp_id_with_qualifiers(
+    f: &mut fmt::Formatter<'_>,
+    comp_id: &str,
+    sub_id: Option<&str>,
+    location_id: Option<&str>,
+) -> fmt::Result {
+    write!(f, "{comp_id}")?;
+    if let Some(sub) = sub_id {
+        write!(f, "/{sub}")?;
+    }
+    if let Some(loc) = location_id {
+        write!(f, "/{loc}")?;
+    }
+    Ok(())
+}
+
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
+        write!(f, "{}:", self.begin_string)?;
+        write_comp_id_with_qualifiers(
             f,
-            "{}:{}->{}",
-            self.begin_string, self.sender_comp_id, self.target_comp_id
+            &self.sender_comp_id,
+            self.sender_sub_id.as_deref(),
+            self.sender_location_id.as_deref(),
+        )?;
+        write!(f, "->")?;
+        write_comp_id_with_qualifiers(
+            f,
+            &self.target_comp_id,
+            self.target_sub_id.as_deref(),
+            self.target_location_id.as_deref(),
         )?;
         if let Some(q) = &self.session_qualifier {
             write!(f, ":{q}")?;

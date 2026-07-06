@@ -104,8 +104,16 @@ pub(crate) async fn connect_through_proxy(
     }
 }
 
+/// The initial peek buffer size for a CONNECT response, grown (see `connect_http`) up to
+/// [`HTTP_CONNECT_RESPONSE_MAX_LEN`] when the response headers don't fit.
+const HTTP_CONNECT_RESPONSE_PEEK_BUF: usize = 512;
+
+/// NEW-49 (feature 009): a bound on CONNECT response headers, matching the previous
+/// byte-at-a-time reader's own 8KiB cutoff.
+const HTTP_CONNECT_RESPONSE_MAX_LEN: usize = 8192;
+
 /// Hand-rolled HTTP CONNECT: a request line + a `Host` header, terminated by a blank line;
-/// success is any `2xx` status on the response's status line.
+/// success is a well-formed, numeric `2xx` status code on the response's status line.
 async fn connect_http(
     proxy_addr: SocketAddr,
     target_host: &str,
@@ -117,31 +125,51 @@ async fn connect_http(
     );
     stream.write_all(request.as_bytes()).await?;
 
-    let mut buf = Vec::new();
-    let mut byte = [0u8; 1];
-    loop {
-        let n = stream.read(&mut byte).await?;
+    // NEW-49 (feature 009): previously read one byte at a time via repeated single-byte `read`
+    // syscalls. `peek` (mirroring `peek_proxy_header`'s own established pattern in this file)
+    // finds the header/body boundary without consuming past it, so a single `read_exact` for
+    // exactly that many bytes replaces the whole byte-at-a-time loop, leaving any bytes the proxy
+    // sent immediately after the blank line (there shouldn't be any before the client speaks, but
+    // nothing here assumes so) untouched in the socket for the tunneled connection to read.
+    let mut buf_len = HTTP_CONNECT_RESPONSE_PEEK_BUF;
+    let header_len = loop {
+        let mut peek_buf = vec![0u8; buf_len];
+        let n = stream.peek(&mut peek_buf).await?;
         if n == 0 {
             return Err(ProxyError::HttpConnect(
                 "proxy closed the connection before completing the CONNECT response".to_owned(),
             ));
         }
-        buf.push(byte[0]);
-        if buf.ends_with(b"\r\n\r\n") {
-            break;
+        let peeked = peek_buf.get(..n).unwrap_or(&[]);
+        if let Some(pos) = peeked.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
         }
-        if buf.len() > 8192 {
+        if n < buf_len {
+            // A short peek with no terminator yet just means more bytes haven't arrived — wait
+            // briefly rather than busy-spinning on `peek` (mirroring `peek_proxy_header`).
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            continue;
+        }
+        if buf_len >= HTTP_CONNECT_RESPONSE_MAX_LEN {
             return Err(ProxyError::HttpConnect(
                 "CONNECT response headers exceeded 8KiB".to_owned(),
             ));
         }
-    }
+        buf_len = (buf_len * 2).min(HTTP_CONNECT_RESPONSE_MAX_LEN);
+    };
+    let mut buf = vec![0u8; header_len];
+    stream.read_exact(&mut buf).await?;
+
     let response = String::from_utf8_lossy(&buf);
     let status_line = response.lines().next().unwrap_or("");
+    // NEW-49 (feature 009): `starts_with('2')` previously accepted any status token merely
+    // beginning with the character '2' (e.g. a malformed `"2xx"` or `"2"` alone), not just a
+    // genuine numeric 2xx status code.
     let status_ok = status_line
         .split_whitespace()
         .nth(1)
-        .is_some_and(|code| code.starts_with('2'));
+        .and_then(|code| code.parse::<u16>().ok())
+        .is_some_and(|code| (200..300).contains(&code));
     if !status_ok {
         return Err(ProxyError::HttpConnect(format!(
             "CONNECT failed: {status_line:?}"

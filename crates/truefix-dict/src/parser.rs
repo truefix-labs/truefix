@@ -31,6 +31,16 @@ pub enum ParseError {
         /// The offending token.
         token: String,
     },
+    /// A definition would overwrite an earlier entry with the same identity.
+    #[error("line {line}: duplicate {kind} {key:?}")]
+    DuplicateDefinition {
+        /// 1-based line number of the duplicate definition.
+        line: usize,
+        /// Identity namespace (`field tag`, `field name`, or `message type`).
+        kind: &'static str,
+        /// The duplicated tag, name, or message type.
+        key: String,
+    },
     /// A `component:<Name>` token names a component that was never defined.
     #[error("unknown component {name:?}")]
     UnknownComponent {
@@ -158,6 +168,20 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                         None => values.push(t.to_owned()),
                     }
                 }
+                if fields.contains_key(&tag) {
+                    return Err(ParseError::DuplicateDefinition {
+                        line: line_no,
+                        kind: "field tag",
+                        key: tag.to_string(),
+                    });
+                }
+                if field_by_name.contains_key(name) {
+                    return Err(ParseError::DuplicateDefinition {
+                        line: line_no,
+                        kind: "field name",
+                        key: name.to_owned(),
+                    });
+                }
                 fields.insert(
                     tag,
                     FieldDef {
@@ -201,6 +225,13 @@ pub fn parse(input: &str) -> Result<DataDictionary, ParseError> {
                     } else if let Some(list) = token.strip_prefix("opt:") {
                         optional = parse_member_list(list, line_no)?;
                     }
+                }
+                if messages_raw.contains_key(msg_type) {
+                    return Err(ParseError::DuplicateDefinition {
+                        line: line_no,
+                        kind: "message type",
+                        key: msg_type.to_owned(),
+                    });
                 }
                 messages_raw.insert(
                     msg_type.to_owned(),
@@ -476,7 +507,7 @@ fn expand_members(
 }
 
 /// Add `count_tag`'s group members (and nested groups' members, transitively) to `out`.
-fn collect_group_members(
+pub(crate) fn collect_group_members(
     groups: &BTreeMap<u32, GroupDef>,
     count_tag: u32,
     out: &mut BTreeSet<u32>,
@@ -490,8 +521,16 @@ fn collect_group_members(
     }
 }
 
+/// NEW-44 (feature 009): a `#` only starts a comment at the start of the line or when preceded by
+/// whitespace — a bare `#` inside a token (e.g. a STRING-typed enum value literal like `SYM#BOL`)
+/// is not a comment marker and must survive untruncated.
 fn strip_comment(line: &str) -> &str {
-    match line.find('#') {
+    let bytes = line.as_bytes();
+    let comment_start = line
+        .char_indices()
+        .find(|&(i, ch)| ch == '#' && (i == 0 || matches!(bytes.get(i - 1), Some(b' ' | b'\t'))))
+        .map(|(i, _)| i);
+    match comment_start {
         Some(idx) => line.get(..idx).unwrap_or(""),
         None => line,
     }

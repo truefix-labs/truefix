@@ -46,6 +46,11 @@ tiberius = { version = "0.12", default-features = false, features = ["rustls", "
 tokio-util = { version = "0.7", features = ["compat"] }
 redb = "4"
 mongodb = "3"
+# T177/T178 (feature 009, NEW-35/36): already present transitively (see Cargo.lock) — promoted to
+# a direct `truefix-core` dependency to replace hand-rolled `.iter().position()` byte-scanning in
+# the decode/framing hot path with a SIMD-accelerated search. Unlicense OR MIT (permissive,
+# Apache-2.0/MIT-compatible — Constitution Principle III).
+memchr = "2"
 truefix-core = { path = "crates/truefix-core" }
 truefix-dict = { path = "crates/truefix-dict" }
 truefix-session = { path = "crates/truefix-session" }

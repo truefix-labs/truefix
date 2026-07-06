@@ -48,6 +48,15 @@ pub enum ConfigError {
         /// The variable name.
         name: String,
     },
+    /// NEW-46 (feature 009): a `${var}` reference resolves back to itself, directly or
+    /// transitively, instead of ever bottoming out at a literal value.
+    #[error("line {line}: circular variable reference ${{{name}}}")]
+    CircularVariableReference {
+        /// 1-based line number of the key whose value transitively references itself.
+        line: usize,
+        /// The variable name at which the cycle was detected.
+        name: String,
+    },
     /// A required configuration key is missing for a session (FR-015).
     #[error("session {session}: missing required key `{key}`")]
     MissingRequired {
@@ -124,12 +133,15 @@ pub struct SessionSettings {
 impl SessionSettings {
     /// Parse a settings document.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
-        // `current` accumulates the raw key/values of the section being read.
-        let mut default: BTreeMap<String, String> = BTreeMap::new();
-        let mut sessions: Vec<BTreeMap<String, String>> = Vec::new();
+        // `current` accumulates the raw key/(value, source line) pairs of the section being read.
+        // NEW-47 (feature 009): the line number travels alongside each value all the way through
+        // default/session merging so an `UnresolvedVariable`/`CircularVariableReference` error can
+        // report the original source line instead of always reporting `line: 0`.
+        let mut default: RawSection = BTreeMap::new();
+        let mut sessions: Vec<RawSection> = Vec::new();
         // None = no section yet; Some(true) = DEFAULT; Some(false) = a SESSION.
         let mut in_default: Option<bool> = None;
-        let mut current: BTreeMap<String, String> = BTreeMap::new();
+        let mut current: RawSection = BTreeMap::new();
 
         for (idx, raw) in input.lines().enumerate() {
             let line_no = idx + 1;
@@ -149,7 +161,7 @@ impl SessionSettings {
                 line: line_no,
                 text: line.to_owned(),
             })?;
-            current.insert(key.trim().to_owned(), value.trim().to_owned());
+            current.insert(key.trim().to_owned(), (value.trim().to_owned(), line_no));
         }
         flush_section(in_default, &mut current, &mut default, &mut sessions);
 
@@ -165,8 +177,8 @@ impl SessionSettings {
         }
 
         Ok(Self {
-            default,
-            sessions: resolved_sessions,
+            default: strip_lines(default),
+            sessions: resolved_sessions.into_iter().map(strip_lines).collect(),
         })
     }
 
@@ -181,11 +193,20 @@ impl SessionSettings {
     }
 }
 
+/// A section's raw key/value pairs, each tagged with the 1-based source line it was declared on
+/// (NEW-47/FR-081) — carried through parsing, default/session merging, and interpolation so a
+/// resolution error can report where the offending `${var}` reference actually appeared.
+type RawSection = BTreeMap<String, (String, usize)>;
+
+fn strip_lines(map: RawSection) -> BTreeMap<String, String> {
+    map.into_iter().map(|(k, (v, _))| (k, v)).collect()
+}
+
 fn flush_section(
     in_default: Option<bool>,
-    current: &mut BTreeMap<String, String>,
-    default: &mut BTreeMap<String, String>,
-    sessions: &mut Vec<BTreeMap<String, String>>,
+    current: &mut RawSection,
+    default: &mut RawSection,
+    sessions: &mut Vec<RawSection>,
 ) {
     match in_default {
         Some(true) => {
@@ -230,20 +251,29 @@ fn section_header(line: &str) -> Option<&str> {
 }
 
 /// Interpolate `${name}` occurrences in every value of `map`, looking names up in `lookup`.
-fn interpolate_map(
-    map: &BTreeMap<String, String>,
-    lookup: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, ConfigError> {
+fn interpolate_map(map: &RawSection, lookup: &RawSection) -> Result<RawSection, ConfigError> {
     let mut out = BTreeMap::new();
-    for (k, v) in map {
-        out.insert(k.clone(), interpolate_value(v, lookup)?);
+    for (k, (v, line)) in map {
+        let resolved = interpolate_value(v, *line, lookup, &mut Vec::new())?;
+        out.insert(k.clone(), (resolved, *line));
     }
     Ok(out)
 }
 
+/// Resolves `${name}` occurrences in `value`, transitively following a chain of variable
+/// references (e.g. `A=${B}`, `B=literal`) rather than only substituting one level. `line` is the
+/// source line of the top-level key being resolved — attributed to any error raised while
+/// resolving it, however many hops deep the reference chain that triggered it goes.
+///
+/// `resolving` is the set of variable names already being expanded on the current call stack
+/// (NEW-46/FR-069): encountering one of them again means the reference chain loops back on
+/// itself without ever bottoming out at a literal value, which is reported as a
+/// `CircularVariableReference` rather than silently emitting the literal, still-templated text.
 fn interpolate_value(
     value: &str,
-    lookup: &BTreeMap<String, String>,
+    line: usize,
+    lookup: &RawSection,
+    resolving: &mut Vec<String>,
 ) -> Result<String, ConfigError> {
     let mut result = String::with_capacity(value.len());
     let mut rest = value;
@@ -254,16 +284,27 @@ fn interpolate_value(
         let end = after
             .find('}')
             .ok_or_else(|| ConfigError::UnresolvedVariable {
-                line: 0,
+                line,
                 name: after.to_owned(),
             })?;
         let name = after.get(..end).unwrap_or("");
+        if resolving.iter().any(|n| n == name) {
+            return Err(ConfigError::CircularVariableReference {
+                line,
+                name: name.to_owned(),
+            });
+        }
         // GAP-44/FR-041 (feature 006): fall back to an environment variable when `name` isn't in
         // the settings map itself — previously `${var}` only ever resolved against `lookup`.
         let replacement = match lookup.get(name) {
-            Some(v) => v.clone(),
+            Some((raw, _)) => {
+                resolving.push(name.to_owned());
+                let resolved = interpolate_value(raw, line, lookup, resolving);
+                resolving.pop();
+                resolved?
+            }
             None => std::env::var(name).map_err(|_| ConfigError::UnresolvedVariable {
-                line: 0,
+                line,
                 name: name.to_owned(),
             })?,
         };

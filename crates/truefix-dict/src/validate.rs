@@ -24,7 +24,8 @@ impl DataDictionary {
     /// directive that, as of this writing, *no* bundled dictionary actually declares — relying on
     /// it here would make this check silently inert for every real dictionary shipped today).
     fn is_legacy_char_lenient(&self) -> bool {
-        parse_fix_begin_string(&self.version).is_some_and(|(major, minor)| major == 4 && minor <= 1)
+        parse_fix_begin_string(&self.version)
+            .is_some_and(|(major, minor, _, _)| major == 4 && minor <= 1)
     }
 
     /// Validate `message` against this dictionary using `opts`.
@@ -47,8 +48,11 @@ impl DataDictionary {
         // see `fixt.rs` — not this per-message BeginString check).
         if let Some(vm) = self.version_meta
             && let Some(bs) = message.header.get(8).and_then(|f| f.as_str().ok())
-            && let Some((major, minor)) = parse_fix_begin_string(bs)
-            && (major != vm.major || minor != vm.minor)
+            && let Some((major, minor, service_pack, extension_pack)) = parse_fix_begin_string(bs)
+            && (major != vm.major
+                || minor != vm.minor
+                || service_pack != vm.service_pack
+                || extension_pack != vm.extension_pack)
         {
             return Err(ValidationError::session(
                 RejectReason::ValueIsIncorrect,
@@ -502,20 +506,34 @@ impl DataDictionary {
     }
 }
 
-/// Parse a plain `"FIX.<major>.<minor>[SP<n>][EP<n>]"` BeginString into `(major, minor)`. Returns
-/// `None` for shapes this doesn't recognize (e.g. `"FIXT.1.1"`), matching FR-029's own
-/// no-op-when-not-applicable framing (see this function's caller).
-fn parse_fix_begin_string(bs: &str) -> Option<(u8, u8)> {
+/// Parse `"FIX.<major>.<minor>[SP<n>][EP<n>]"` into its four version components.
+fn parse_fix_begin_string(bs: &str) -> Option<(u8, u8, Option<u8>, Option<u8>)> {
     let rest = bs.strip_prefix("FIX.")?;
     let mut parts = rest.splitn(2, '.');
     let major: u8 = parts.next()?.parse().ok()?;
     let minor_token = parts.next()?;
-    let minor_digits: String = minor_token
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    let minor: u8 = minor_digits.parse().ok()?;
-    Some((major, minor))
+    let minor_len = minor_token.bytes().take_while(u8::is_ascii_digit).count();
+    let minor: u8 = minor_token.get(..minor_len)?.parse().ok()?;
+    let mut suffix = minor_token.get(minor_len..)?;
+    let service_pack = parse_version_suffix(&mut suffix, "SP")?;
+    let extension_pack = parse_version_suffix(&mut suffix, "EP")?;
+    if !suffix.is_empty() {
+        return None;
+    }
+    Some((major, minor, service_pack, extension_pack))
+}
+
+fn parse_version_suffix(suffix: &mut &str, marker: &str) -> Option<Option<u8>> {
+    let Some(rest) = suffix.strip_prefix(marker) else {
+        return Some(None);
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let value = rest.get(..digits)?.parse().ok()?;
+    *suffix = rest.get(digits..)?;
+    Some(Some(value))
 }
 
 fn present(message: &Message, tag: u32) -> bool {

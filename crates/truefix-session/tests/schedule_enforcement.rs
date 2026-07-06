@@ -148,6 +148,46 @@ fn logged_on_session_is_disconnected_once_the_schedule_window_elapses() {
     );
 }
 
+/// T183 (feature 009, Constitution Principle VI): the schedule-exit arm of `on_tick`
+/// (`state.rs`'s `SessionState::LoggedOn if ... !s.is_in_session(...)` match arm, where NEW-62's
+/// Logout-before-disconnect fix landed) has no `role` check at all — it applies identically to
+/// both roles — but this exact scenario had only ever been exercised for `Role::Acceptor` above.
+/// Confirms the initiator side of the identical code path independently, rather than relying on
+/// code-symmetry alone to imply test coverage.
+#[test]
+fn logged_on_initiator_session_is_disconnected_once_the_schedule_window_elapses() {
+    let now = OffsetDateTime::now_utc();
+    let mut c = cfg(Role::Initiator);
+    c.heartbeat_interval = 30; // long enough that heartbeat-timeout doesn't also fire
+    let end = (now + time::Duration::seconds(1)).time();
+    let start = (now - time::Duration::minutes(5)).time();
+    c.schedule = Some(Schedule::daily(start, end));
+    let mut s = Session::new(c);
+    s.handle(Event::Connected); // sends our own Logon
+    s.handle(Event::Received(logon(1))); // the acceptor's Logon ack
+    assert_eq!(
+        s.state(),
+        SessionState::LoggedOn,
+        "should log on inside the window"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    let actions = s.handle(Event::Tick);
+    assert_eq!(
+        s.state(),
+        SessionState::Disconnected,
+        "an initiator session must be disconnected once the current time crosses outside its \
+         schedule window too, not left logged on indefinitely"
+    );
+    assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
+    let out = sends(&actions);
+    assert!(
+        out.iter().any(|m| m.msg_type() == Some("5")),
+        "expected a Logout among the schedule-exit actions, got {out:?}"
+    );
+}
+
 // --- T044/T045: ForceResendWhenCorruptedStore also governs admin-vs-gap-fill during resend ---
 
 fn logged_on_acceptor_with_force_resend() -> Session {

@@ -136,16 +136,23 @@ impl BodyLog {
         Ok(())
     }
 
+    /// Read one message's body at an already-known `(offset, len)`, from an already-open handle
+    /// (T174/T175/T176, feature 009, NEW-41) — shared by [`Self::read`] (opens its own handle) and
+    /// [`Self::range`] (opens one handle for the whole range, rather than one per message).
+    fn read_body_at(f: &mut File, offset: u64, len: u32) -> Result<Vec<u8>, StoreError> {
+        f.seek(SeekFrom::Start(offset + 12)).map_err(io_err)?;
+        let mut buf = vec![0u8; len as usize];
+        f.read_exact(&mut buf).map_err(io_err)?;
+        Ok(buf)
+    }
+
     fn read(&self, seq: u64) -> Result<Option<Vec<u8>>, StoreError> {
         let entry = self.lock()?.get(&seq).copied();
         let Some((offset, len)) = entry else {
             return Ok(None);
         };
         let mut f = File::open(&self.path).map_err(io_err)?;
-        f.seek(SeekFrom::Start(offset + 12)).map_err(io_err)?;
-        let mut buf = vec![0u8; len as usize];
-        f.read_exact(&mut buf).map_err(io_err)?;
-        Ok(Some(buf))
+        Self::read_body_at(&mut f, offset, len).map(Some)
     }
 
     /// The sequence numbers indexed within `[begin, end]`, in order (no disk read).
@@ -153,13 +160,26 @@ impl BodyLog {
         Ok(self.lock()?.range(begin..=end).map(|(s, _)| *s).collect())
     }
 
+    /// T174/T175/T176 (feature 009, NEW-41): a multi-message resend previously opened (and
+    /// `seek`ed) a fresh file handle per message via `read()` — one syscall-heavy open per
+    /// message in what's often a tight loop over a whole resend range. Now resolves every
+    /// `(offset, len)` entry up front (one lock acquisition), then reuses a single open handle
+    /// across the whole range.
     fn range(&self, begin: u64, end: u64) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
         let seqs = self.seqs_in_range(begin, end)?;
-        let mut out = Vec::with_capacity(seqs.len());
-        for seq in seqs {
-            if let Some(bytes) = self.read(seq)? {
-                out.push((seq, bytes));
-            }
+        if seqs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let entries: Vec<(u64, (u64, u32))> = {
+            let guard = self.lock()?;
+            seqs.into_iter()
+                .filter_map(|s| guard.get(&s).copied().map(|e| (s, e)))
+                .collect()
+        };
+        let mut f = File::open(&self.path).map_err(io_err)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for (seq, (offset, len)) in entries {
+            out.push((seq, Self::read_body_at(&mut f, offset, len)?));
         }
         Ok(out)
     }

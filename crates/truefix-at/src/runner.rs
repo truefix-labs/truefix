@@ -24,7 +24,32 @@ pub struct ExpectMsg {
     /// Tags that must be absent entirely (T015, feature 007 — e.g. confirming a Logon response
     /// does NOT echo `ResetSeqNumFlag` when the inbound Logon never carried it).
     pub fields_absent: Vec<u32>,
+    /// T136/T137 (feature 009, NEW-50): when set, `check_match` additionally fails if the actual
+    /// message carries any tag beyond `fields` and [`ALWAYS_ALLOWED_TAGS`] — i.e. an unexpected
+    /// extra field. Opt-in (default `false`, via [`ExpectMsg::exact`]) rather than the default for
+    /// every `ExpectMsg`: most of this suite's ~90 existing scenarios only assert the handful of
+    /// fields they actually care about, deliberately leaving every other legitimate field (e.g. a
+    /// Logon response's own `EncryptMethod`/`HeartBtInt`) unlisted — checking exhaustively by
+    /// default would require rewriting all of them, not just this one item's fix.
+    pub exact: bool,
 }
+
+/// Header/trailer bookkeeping and session-identity fields present on essentially every FIX
+/// message, which [`ExpectMsg::exact`] never flags as "extra" even when unlisted — matches the
+/// doc comment above `ExpectMsg` calling out `SendingTime`/`BodyLength`/`CheckSum` as always
+/// unmatched, plus the other framing/identity fields every message legitimately carries.
+pub const ALWAYS_ALLOWED_TAGS: &[u32] = &[
+    8,   // BeginString
+    9,   // BodyLength
+    35,  // MsgType
+    34,  // MsgSeqNum
+    49,  // SenderCompID
+    56,  // TargetCompID
+    52,  // SendingTime
+    43,  // PossDupFlag
+    122, // OrigSendingTime
+    10,  // CheckSum
+];
 
 impl ExpectMsg {
     /// Expect a message of `msg_type` with no specific field requirements.
@@ -33,6 +58,7 @@ impl ExpectMsg {
             msg_type: msg_type.to_owned(),
             fields: Vec::new(),
             fields_absent: Vec::new(),
+            exact: false,
         }
     }
 
@@ -47,6 +73,14 @@ impl ExpectMsg {
     #[must_use]
     pub fn without_field(mut self, tag: u32) -> Self {
         self.fields_absent.push(tag);
+        self
+    }
+
+    /// Additionally fail if the actual message carries any tag beyond the ones already required
+    /// via [`ExpectMsg::field`] and [`ALWAYS_ALLOWED_TAGS`] (T136/T137, NEW-50).
+    #[must_use]
+    pub fn exact(mut self) -> Self {
+        self.exact = true;
         self
     }
 }
@@ -84,6 +118,12 @@ pub struct SessionTweaks {
     /// Disconnect (in addition to rejecting) on an inbound dictionary-validation failure
     /// (006/US1, B5/FR-008).
     pub disconnect_on_error: bool,
+    /// T133/T134/T135 (feature 009, NEW-83): when set, `run_report` starts this scenario's
+    /// acceptor via [`start_fixed_identity_acceptor`] (fixed `SenderCompID`/`TargetCompID`,
+    /// `(server, client)`) instead of [`start_acceptor`]'s dynamic-template mode — required to
+    /// exercise an inbound Logon whose identity doesn't match a pre-existing session at all,
+    /// which the dynamic template has nothing to "mismatch" against.
+    pub fixed_identity: Option<(String, String)>,
 }
 
 /// A scripted acceptance-test scenario.
@@ -108,6 +148,53 @@ pub struct ScenarioResult {
     pub version: String,
     /// `Ok` on pass, `Err(reason)` on failure.
     pub outcome: Result<(), String>,
+}
+
+/// A one-line-per-run PASS/FAIL report (T139/T140, feature 009, NEW-52) — distinct from a single
+/// all-or-nothing boolean: a caller (or a human reading test output) can see every scenario's own
+/// result, not just whether *something* in the whole suite failed, without re-running anything.
+#[must_use]
+pub fn per_scenario_report(results: &[ScenarioResult]) -> String {
+    results
+        .iter()
+        .map(|r| match &r.outcome {
+            Ok(()) => format!("PASS  {} [{}]", r.name, r.version),
+            Err(reason) => format!("FAIL  {} [{}]: {reason}", r.name, r.version),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The bundled dictionary matching a `SUITE_VERSIONS` entry, for the acceptor's field validator
+/// (T128/T129, feature 009) — previously only `FIX.4.2`/`FIX.4.4` had one, so a field-validation
+/// scenario against any other pre-FIXT version silently ran with no dictionary checks at all.
+///
+/// Deliberately `None` for `FIX.5.0`/`SP1`/`SP2`/`FIX.Latest`: those versions split admin messages
+/// (Logon, Heartbeat, ...) into the separate FIXT 1.1 transport dictionary, so the bundled
+/// `FIX50*`/`FIXLATEST` sources are application-message-only. `Services::validator` applies its one
+/// dictionary to *every* inbound message, admin included (`Session::validate_app`'s flat-dictionary
+/// branch, unlike its `fixt_validator`/`FixtDictionaries` branch, has no admin/app split) — handing
+/// it an app-only dictionary would make a plain Logon fail as an unregistered MsgType, breaking
+/// every scenario for that version. A merge attempt (`DataDictionary::extend`, folding FIXT11's
+/// admin definitions into the app dict) was tried and rejected: tag 35 (MsgType)'s enum differs
+/// between the transport and application dictionaries, so `extend` correctly reports a field
+/// conflict rather than silently picking one side. Properly supporting these four versions needs
+/// `start_acceptor` to wire a real `FixtDictionaries` dual-dictionary instead of the flat
+/// `validator` field — the same "substantial harness-level work" already deferred at
+/// T019/T022/T029/T054/T159, not attempted here.
+/// The `SUITE_VERSIONS` subset [`dictionary_for_version`] returns `Some` for.
+pub const FLAT_DICTIONARY_VERSIONS: &[&str] =
+    &["FIX.4.0", "FIX.4.1", "FIX.4.2", "FIX.4.3", "FIX.4.4"];
+
+pub fn dictionary_for_version(version: &str) -> Option<truefix_dict::DataDictionary> {
+    match version {
+        "FIX.4.0" => truefix_dict::load_fix40().ok(),
+        "FIX.4.1" => truefix_dict::load_fix41().ok(),
+        "FIX.4.2" => truefix_dict::load_fix42().ok(),
+        "FIX.4.3" => truefix_dict::load_fix43().ok(),
+        "FIX.4.4" => truefix_dict::load_fix44().ok(),
+        _ => None,
+    }
 }
 
 /// Start a black-box acceptor that serves any session via a dynamic template for `version`.
@@ -184,12 +271,7 @@ pub async fn start_acceptor(
         validate_fields_out_of_order: tweaks.validate_fields_out_of_order,
         ..truefix_dict::ValidationOptions::default()
     };
-    let validator = match version {
-        "FIX.4.2" => truefix_dict::load_fix42().ok(),
-        "FIX.4.4" => truefix_dict::load_fix44().ok(),
-        _ => None,
-    }
-    .map(|dict| (dict, validation_opts));
+    let validator = dictionary_for_version(version).map(|dict| (dict, validation_opts));
     let monitor = tweaks.executor_app.then(truefix_transport::Monitor::new);
     let services = truefix_transport::Services {
         validator,
@@ -203,6 +285,57 @@ pub async fn start_acceptor(
     )
     .await?
     .with_dynamic_template(template)
+    .with_services(services);
+    let addr = acceptor.local_addr()?;
+    let handle = acceptor.serve();
+    Ok((addr, handle))
+}
+
+/// Start a black-box acceptor with a fixed session identity (T133/T134, feature 009, NEW-83) —
+/// additive alongside [`start_acceptor`]'s dynamic-template mode, which adopts whatever identity
+/// the first Logon claims and so has nothing to "mismatch" against (see the note above
+/// `logon_response_carries_reset_flag` on why `1c_InvalidSenderCompID`/`1c_InvalidTargetCompID`/a
+/// wrong-`BeginString` Logon couldn't be represented until now). A Logon whose SenderCompID/
+/// TargetCompID/BeginString doesn't match `sender`/`target`/`version` never resolves to a
+/// registered session (`route_and_run`'s `registry.sessions.get(&sid)` lookup, no template
+/// fallback here) — the connection is simply dropped, not answered with a Reject/Logout.
+pub async fn start_fixed_identity_acceptor(
+    version: &str,
+    sender: &str,
+    target: &str,
+    tweaks: &SessionTweaks,
+) -> std::io::Result<(SocketAddr, JoinHandle<()>)> {
+    struct FixedIdentityApp;
+    #[async_trait::async_trait]
+    impl Application for FixedIdentityApp {
+        async fn on_logon(&self, _s: &SessionId) {}
+    }
+
+    let mut config = SessionConfig::new(wire_begin_string(version), sender, target, Role::Acceptor);
+    config.heartbeat_interval = 30;
+    config.check_latency = tweaks.check_latency;
+    config.enable_next_expected_msg_seq_num = tweaks.enable_next_expected;
+    config.enable_last_msg_seq_num_processed = tweaks.enable_last_processed;
+    config.resend_request_chunk_size = tweaks.resend_chunk_size;
+    config.reject_garbled_message = tweaks.reject_garbled;
+    config.disconnect_on_error = tweaks.disconnect_on_error;
+
+    let validation_opts = truefix_dict::ValidationOptions {
+        validate_fields_out_of_order: tweaks.validate_fields_out_of_order,
+        ..truefix_dict::ValidationOptions::default()
+    };
+    let validator = dictionary_for_version(version).map(|dict| (dict, validation_opts));
+    let services = truefix_transport::Services {
+        validator,
+        ..truefix_transport::Services::default()
+    };
+
+    let acceptor = AcceptorBuilder::bind(
+        "127.0.0.1:0".parse().unwrap_or_else(|_| unreachable_addr()),
+        Arc::new(FixedIdentityApp),
+    )
+    .await?
+    .with_session(config)
     .with_services(services);
     let addr = acceptor.local_addr()?;
     let handle = acceptor.serve();
@@ -253,24 +386,71 @@ pub async fn run_scenario(scenario: &Scenario, addr: SocketAddr) -> Result<(), S
             }
             Step::Expect(expect) => {
                 // 3s tolerates the 1s tick granularity used by timer-driven scenarios.
-                let msg = read_message(&mut stream, &mut buf, Duration::from_secs(3))
-                    .await
-                    .ok_or_else(|| {
-                        format!("step {i}: expected {} but got nothing", expect.msg_type)
-                    })?;
+                let msg = match read_message(&mut stream, &mut buf, Duration::from_secs(3)).await {
+                    ReadMessageOutcome::Message(msg) => msg,
+                    ReadMessageOutcome::TimedOut => {
+                        return Err(format!(
+                            "step {i}: expected {} but timed out",
+                            expect.msg_type
+                        ));
+                    }
+                    ReadMessageOutcome::DecodeFailed(error) => {
+                        return Err(format!(
+                            "step {i}: expected {} but got an undecodable message: {error}",
+                            expect.msg_type
+                        ));
+                    }
+                    ReadMessageOutcome::CleanEof => {
+                        return Err(format!(
+                            "step {i}: expected {} but the peer disconnected",
+                            expect.msg_type
+                        ));
+                    }
+                    ReadMessageOutcome::ReadFailed(error) => {
+                        return Err(format!("step {i}: read failed: {error}"));
+                    }
+                };
                 check_match(&msg, expect).map_err(|e| format!("step {i}: {e}"))?;
             }
             Step::ExpectDisconnect => {
-                if read_message(&mut stream, &mut buf, Duration::from_secs(3))
-                    .await
-                    .is_some()
-                {
-                    return Err(format!("step {i}: expected disconnect but got a message"));
+                match read_message(&mut stream, &mut buf, Duration::from_secs(3)).await {
+                    ReadMessageOutcome::CleanEof => {}
+                    ReadMessageOutcome::Message(_) => {
+                        return Err(format!("step {i}: expected disconnect but got a message"));
+                    }
+                    ReadMessageOutcome::TimedOut => {
+                        return Err(format!("step {i}: expected disconnect but timed out"));
+                    }
+                    ReadMessageOutcome::DecodeFailed(error) => {
+                        return Err(format!(
+                            "step {i}: expected disconnect but got an undecodable message: {error}"
+                        ));
+                    }
+                    ReadMessageOutcome::ReadFailed(error) => {
+                        return Err(format!(
+                            "step {i}: expected disconnect but read failed: {error}"
+                        ));
+                    }
                 }
             }
         }
     }
-    Ok(())
+    // T131/T132 (feature 009, NEW-30): a scenario that only checks its own scripted steps can
+    // silently pass even when the server sent something extra it never asked about (e.g. a
+    // spurious duplicate response) — a short grace wait for anything left over (already-buffered
+    // or arriving shortly after the last step) catches that instead of leaving it unnoticed.
+    match read_message(&mut stream, &mut buf, Duration::from_millis(25)).await {
+        ReadMessageOutcome::TimedOut | ReadMessageOutcome::CleanEof => Ok(()),
+        ReadMessageOutcome::Message(msg) => Err(format!(
+            "scenario complete but an extra, unrequested message arrived: {msg:?}"
+        )),
+        ReadMessageOutcome::DecodeFailed(error) => Err(format!(
+            "scenario complete but extra, undecodable bytes arrived: {error}"
+        )),
+        ReadMessageOutcome::ReadFailed(error) => Err(format!(
+            "scenario complete but the trailing read failed: {error}"
+        )),
+    }
 }
 
 /// Run the full matrix (each scenario against each of its target versions), starting a fresh
@@ -281,7 +461,13 @@ pub async fn run_report(scenarios: &[Scenario]) -> Vec<ScenarioResult> {
     // request its own acceptor feature toggles.
     for s in scenarios {
         for version in &s.versions {
-            let outcome = match start_acceptor(version, &s.tweaks).await {
+            let started = match &s.tweaks.fixed_identity {
+                Some((sender, target)) => {
+                    start_fixed_identity_acceptor(version, sender, target, &s.tweaks).await
+                }
+                None => start_acceptor(version, &s.tweaks).await,
+            };
+            let outcome = match started {
                 Ok((addr, handle)) => {
                     let outcome = run_scenario(s, addr).await;
                     handle.abort();
@@ -318,6 +504,25 @@ fn check_match(msg: &Message, expect: &ExpectMsg) -> Result<(), String> {
             return Err(format!("tag {tag}: expected absent, got {got:?}"));
         }
     }
+    if expect.exact {
+        let allowed = |tag: u32| {
+            ALWAYS_ALLOWED_TAGS.contains(&tag) || expect.fields.iter().any(|(t, _)| *t == tag)
+        };
+        for field in msg
+            .header
+            .fields()
+            .chain(msg.body.fields())
+            .chain(msg.trailer.fields())
+        {
+            if !allowed(field.tag()) {
+                return Err(format!(
+                    "unexpected extra tag {}: {:?}",
+                    field.tag(),
+                    field.as_str().ok()
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -330,19 +535,40 @@ fn field_value(msg: &Message, tag: u32) -> Option<String> {
     field.as_str().ok().map(str::to_owned)
 }
 
-async fn read_message(
+/// Result of reading one message in the acceptance-test harness.
+#[derive(Debug)]
+pub enum ReadMessageOutcome {
+    /// A complete, decoded FIX message.
+    Message(Message),
+    /// No bytes arrived before the requested wait elapsed.
+    TimedOut,
+    /// A complete frame arrived but failed FIX decoding.
+    DecodeFailed(truefix_core::DecodeError),
+    /// The peer cleanly closed the stream.
+    CleanEof,
+    /// The socket read itself failed.
+    ReadFailed(std::io::Error),
+}
+
+/// Read one framed message from `stream`, retaining incomplete bytes in `buf`.
+pub async fn read_message(
     stream: &mut TcpStream,
     buf: &mut Vec<u8>,
     wait: Duration,
-) -> Option<Message> {
+) -> ReadMessageOutcome {
     loop {
         if let Ok(Some(total)) = frame_length(buf) {
             let raw: Vec<u8> = buf.drain(..total).collect();
-            return decode(&raw).ok();
+            return match decode(&raw) {
+                Ok(message) => ReadMessageOutcome::Message(message),
+                Err(error) => ReadMessageOutcome::DecodeFailed(error),
+            };
         }
         let mut chunk = [0u8; 4096];
         match timeout(wait, stream.read(&mut chunk)).await {
-            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return None,
+            Ok(Ok(0)) => return ReadMessageOutcome::CleanEof,
+            Ok(Err(error)) => return ReadMessageOutcome::ReadFailed(error),
+            Err(_) => return ReadMessageOutcome::TimedOut,
             Ok(Ok(n)) => {
                 if let Some(slice) = chunk.get(..n) {
                     buf.extend_from_slice(slice);

@@ -156,7 +156,7 @@ fn generate_code(args: &[String]) -> Result<(), String> {
             .collect::<String>()
             .to_uppercase(),
     };
-    let code = truefix_dict::codegen::generate(&name, &bytes)
+    let code = truefix_dict::codegen::generate(&name, text.as_bytes())
         .map_err(|e| format!("generating code for {dict_path}: {e}"))?;
     std::fs::write(out, &code).map_err(|e| format!("writing {out}: {e}"))?;
     println!("wrote {out} ({} bytes) for module {name}", code.len());

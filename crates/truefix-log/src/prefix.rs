@@ -20,6 +20,7 @@ impl<L: Log> SessionPrefixLog<L> {
     }
 }
 
+#[async_trait::async_trait]
 impl<L: Log> Log for SessionPrefixLog<L> {
     fn on_incoming(&self, message: &str) {
         self.inner
@@ -32,5 +33,8 @@ impl<L: Log> Log for SessionPrefixLog<L> {
     fn on_event(&self, text: &str) {
         self.inner
             .on_event(&format!("[{}] {text}", self.session_id));
+    }
+    async fn shutdown(&self) {
+        self.inner.shutdown().await;
     }
 }

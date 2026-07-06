@@ -151,8 +151,29 @@ fn render_members(map: &FieldMap, skip: &[u32], out: &mut Vec<u8>) {
 }
 
 fn render_raw(tag: u32, value: &[u8], out: &mut Vec<u8>) {
-    out.extend_from_slice(tag.to_string().as_bytes());
+    write_tag(tag, out);
     out.push(b'=');
     out.extend_from_slice(value);
     out.push(SOH);
+}
+
+/// T177/T178 (feature 009, NEW-35): write `tag`'s decimal digits directly into `out`, avoiding
+/// the per-field heap allocation `tag.to_string()` made on every rendered field.
+fn write_tag(tag: u32, out: &mut Vec<u8>) {
+    let mut buf = [0u8; 10]; // u32::MAX ("4294967295") is 10 digits
+    let mut i = buf.len();
+    let mut n = tag;
+    loop {
+        i -= 1;
+        if let Some(slot) = buf.get_mut(i) {
+            *slot = b'0' + (n % 10) as u8;
+        }
+        n /= 10;
+        if n == 0 || i == 0 {
+            break;
+        }
+    }
+    if let Some(digits) = buf.get(i..) {
+        out.extend_from_slice(digits);
+    }
 }

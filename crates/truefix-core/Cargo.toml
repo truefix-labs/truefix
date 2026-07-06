@@ -12,6 +12,7 @@ publish = false
 thiserror.workspace = true
 rust_decimal.workspace = true
 time.workspace = true
+memchr.workspace = true
 
 [[bench]]
 name = "codec"

@@ -963,279 +963,609 @@ allocation/complexity-hygiene items, rather than tracking them only (spec.md's U
 
 ### `fix_repository.rs` converter fix (FR-052, `NEW-05`)
 
-- [ ] T115 [P] [US3] Add a failing test: `convert()`'s emitted `group` line for `NoPartyIDs` matches
+- [X] T115 [P] [US3] Add a failing test: `convert()`'s emitted `group` line for `NoPartyIDs` matches
   the shipped `FIX44.fixdict`'s `group 453 NoPartyIDs 448 448,447,452,802` (delimiter 448, count tag
   excluded), in `crates/truefix-dict/tests/fix_repository_group_converter_fix.rs` (new,
-  `dict-tooling` feature).
-- [ ] T116 [US3] Fix `convert()` in `crates/truefix-dict/src/fix_repository.rs` (~L430-445) to
-  exclude the count field from members — makes T115 pass (depends on T115).
+  `dict-tooling` feature). — **complete**: a minimal repository fixture confirmed the old output
+  incorrectly used and repeated count tag 453.
+- [X] T116 [US3] Fix `convert()` in `crates/truefix-dict/src/fix_repository.rs` (~L430-445) to
+  exclude the count field from members — makes T115 pass (depends on T115). — **complete**:
+  resolved members exclude the count tag before delimiter selection; generated output also parses
+  through the runtime loader. Targeted test and all-feature clippy pass.
 
 ### `orchestra.rs` type-mapping parity (FR-053, `NEW-60`)
 
-- [ ] T117 [P] [US3] Add a failing test: `orchestra::map_type` converts every type token
+- [X] T117 [P] [US3] Add a failing test: `orchestra::map_type` converts every type token
   `fix_repository::map_type` already handles (`PRICEOFFSET`, `TIME`, `UTCDATE`, `DAYOFMONTH`,
   `CURRENCY`, `EXCHANGE`, `MULTIPLEVALUESTRING`, `MULTIPLESTRINGVALUE`, `MULTIPLECHARVALUE`,
   `COUNTRY`), in `crates/truefix-dict/tests/orchestra_map_type_parity.rs` (new, `dict-tooling`).
-- [ ] T118 [US3] Port the missing type tokens (and the `localmktdate` mapping) into
+  — **complete**: real Orchestra XML conversion covers every mapped token and caught PRICEOFFSET
+  as the first previously-unknown type.
+- [X] T118 [US3] Port the missing type tokens (and the `localmktdate` mapping) into
   `orchestra::map_type` (`crates/truefix-dict/src/orchestra.rs` ~L443) — makes T117 pass (depends on
-  T117).
+  T117). — **complete**: mappings now match repository conversion, including distinct
+  LOCALMKTDATE and supported aliases. New/existing Orchestra tests and all-feature clippy pass.
 
 ### `build.rs` rerun-if-changed (FR-054, `NEW-61`)
 
-- [ ] T119 [US3] Add `println!("cargo:rerun-if-changed=src/codegen.rs");` to
+- [X] T119 [US3] Add `println!("cargo:rerun-if-changed=src/codegen.rs");` to
   `crates/truefix-dict/build.rs`; verify manually by editing `codegen.rs` without touching a
   `.fixdict` and confirming a rebuild regenerates `OUT_DIR/generated.rs` — combined task (trivial,
   one-line fix with a manual verification step, no automated test needed for a build-script
-  directive).
+  directive). — **complete**: touching only `src/codegen.rs` made Cargo report `truefix-dict`
+  dirty, rerun the build script, emit the new directive, and rebuild the generated library.
 
 ### `codegen.rs::parse_dict` error consistency (FR-055, `NEW-78`)
 
-- [ ] T120 [P] [US3] Add a failing test: `codegen.rs::parse_dict` errors on the same malformed/
+- [X] T120 [P] [US3] Add a failing test: `codegen.rs::parse_dict` errors on the same malformed/
   unknown-directive input the runtime `parser::parse` already errors on, in
-  `crates/truefix-dict/tests/codegen_parse_dict_errors.rs` (new, `dict-tooling`).
-- [ ] T121 [US3] Fix `parse_dict` in `crates/truefix-dict/src/codegen.rs` to error instead of
-  silently skipping — makes T120 pass (depends on T120, sequenced after T046).
+  `crates/truefix-dict/tests/codegen_parse_dict_errors.rs` (new, `dict-tooling`). — **complete**: 2
+  tests (unknown directive; malformed field missing tokens), both verified against the fixed code.
+- [X] T121 [US3] Fix `parse_dict` in `crates/truefix-dict/src/codegen.rs` to error instead of
+  silently skipping — makes T120 pass (depends on T120, sequenced after T046). — **complete**:
+  every `let Some(...) else { continue }`/`_ => {}` silent-skip arm now returns a typed
+  `CodegenError::Malformed { line, reason }`, including a new `version`/`header`/`trailer`
+  grammar check and a catch-all `unknown directive` arm, mirroring `parser::parse`'s own error
+  shape. `cargo test -p truefix-dict --features dict-tooling`, `cargo clippy -p truefix-dict
+  --all-targets --all-features -- -D warnings`: both clean.
 
 ### Codegen enum-variant dedup (FR-056, `NEW-79`)
 
-- [ ] T122 [P] [US3] Add a failing test: two dictionary enum values whose sanitized identifiers
+- [X] T122 [P] [US3] Add a failing test: two dictionary enum values whose sanitized identifiers
   collide produce deduplicated (not duplicate) variants, in
-  `crates/truefix-dict/tests/codegen_enum_dedup.rs` (new, `dict-tooling`).
-- [ ] T123 [US3] Fix `sanitize_variant` in `crates/truefix-dict/src/codegen.rs` to deduplicate —
-  makes T122 pass (depends on T122, sequenced after T121).
+  `crates/truefix-dict/tests/codegen_enum_dedup.rs` (new, `dict-tooling`). — **complete**: 1 test
+  confirming colliding sanitized labels produce distinct, numbered variant identifiers.
+- [X] T123 [US3] Fix `sanitize_variant` in `crates/truefix-dict/src/codegen.rs` to deduplicate —
+  makes T122 pass (depends on T122, sequenced after T121). — **complete**: `sanitize_variant` now
+  normalizes non-alphanumeric characters to `_` (not just the leading-digit/keyword cases) and
+  takes a `used: &mut BTreeMap<String, usize>` tracking map, appending a stable `_N` numeric
+  suffix to every collision after the first. `cargo test -p truefix-dict --features dict-tooling`,
+  `cargo clippy -p truefix-dict --all-targets --all-features -- -D warnings`: both clean.
 
 ### `generate_code` hash consistency (FR-057, `NEW-82`)
 
-- [ ] T124 [P] [US3] Add a failing test: a non-UTF-8 dictionary file produces matching runtime-parse
+- [X] T124 [P] [US3] Add a failing test: a non-UTF-8 dictionary file produces matching runtime-parse
   and codegen hashes, in `crates/truefix-dict/tests/generate_code_hash_consistency.rs` (new,
-  `dict-tooling`).
-- [ ] T125 [US3] Fix byte-handling consistency in `crates/truefix-dict/src/bin/truefix-dict.rs` —
-  makes T124 pass (depends on T124).
+  `dict-tooling`). — **complete**: the CLI is exercised with an invalid UTF-8 byte in a dictionary
+  comment and its generated hash is compared to the runtime lossy parse.
+- [X] T125 [US3] Fix byte-handling consistency in `crates/truefix-dict/src/bin/truefix-dict.rs` —
+  makes T124 pass (depends on T124). — **complete**: codegen now hashes the same lossy UTF-8 bytes
+  that runtime parsing consumed. Targeted test and all-feature clippy pass.
 
 ### AT `read_message` three-outcome distinction (FR-058, `NEW-15`, `NEW-16`)
 
-- [ ] T126 [P] [US3] Add a failing test: `read_message` distinguishes timeout, decode failure, and
+- [X] T126 [P] [US3] Add a failing test: `read_message` distinguishes timeout, decode failure, and
   clean disconnect/EOF as three outcomes, in
-  `crates/truefix-at/tests/read_message_three_outcomes.rs` (new).
-- [ ] T127 [US3] Change `read_message`'s return type and fix `ExpectDisconnect`'s handling in
-  `crates/truefix-at/src/runner.rs` (~L234, ~L247-263) — makes T126 pass (depends on T126).
+  `crates/truefix-at/tests/read_message_three_outcomes.rs` (new). — **complete**: 1 test exercising
+  all three outcomes plus decode-failure against a single connection pair.
+- [X] T127 [US3] Change `read_message`'s return type and fix `ExpectDisconnect`'s handling in
+  `crates/truefix-at/src/runner.rs` (~L234, ~L247-263) — makes T126 pass (depends on T126). —
+  **complete**: `ReadMessageOutcome` now has `Message`/`TimedOut`/`DecodeFailed`/`CleanEof`/
+  `ReadFailed` variants; `run_scenario`'s `Expect`/`ExpectDisconnect` arms match on all five.
+  `cargo test -p truefix-at --test read_message_three_outcomes`: passing.
 
 ### All-version dictionary validators in AT harness (FR-059, `NEW-28`)
 
-- [ ] T128 [P] [US3] Add a failing test: `start_acceptor` provides a validator for all 9 FIX
+- [X] T128 [P] [US3] Add a failing test: `start_acceptor` provides a validator for all 9 FIX
   versions (not just 4.2/4.4), in `crates/truefix-at/tests/all_versions_have_validators.rs` (new).
-- [ ] T129 [US3] Fix `start_acceptor` in `crates/truefix-at/src/runner.rs` (~L142-150) — makes T128
+  — **complete, with scope narrowed after an empirical finding**: 2 tests. Attempted "all 9" first
+  via `DataDictionary::extend`, merging FIXT11's admin definitions into each FIX50+ app dictionary
+  — `extend` correctly rejected the merge (`DictMergeConflict{kind:"field", key:"35"}`: the
+  transport and application dictionaries define MsgType(35)'s enum differently). Handing a FIX50+
+  app-only dictionary to `Services::validator` unmerged makes every Logon fail as an unregistered
+  MsgType (confirmed empirically: it broke all 456 server-suite runs for FIX.5.0/SP1/SP2/Latest).
+  Narrowed to `FLAT_DICTIONARY_VERSIONS` (`FIX.4.0`-`FIX.4.4`, the 5 versions whose bundled
+  dictionary already combines admin+app in one file) — properly supporting FIX50+ needs
+  `start_acceptor` to wire a real `FixtDictionaries` dual-dictionary, the same "substantial
+  harness-level work" already deferred at T019/T022/T029/T054/T159.
+- [X] T129 [US3] Fix `start_acceptor` in `crates/truefix-at/src/runner.rs` (~L142-150) — makes T128
   pass (depends on T128, sequenced after T127); extend field-validation scenarios in
   `crates/truefix-at/src/scenarios.rs` to all 9 versions — this raises the AT scenario-run floor
-  above 424 (per `contracts/README.md`'s AT-impact table).
+  above 424 (per `contracts/README.md`'s AT-impact table). — **complete, extended to
+  `FLAT_DICTIONARY_VERSIONS` per T128's narrowed scope, not literally all 9**: extracted
+  `dictionary_for_version`/`FLAT_DICTIONARY_VERSIONS` (pub, shared by `start_acceptor` and the new
+  test); `unregistered_msg_type`, `admin_message_dictionary_invalid_is_rejected`, and
+  `dict_invalid_logon_disconnects_without_disconnect_on_error` (each already `v`-parametrized, none
+  depending on the FIX.4.4-hardcoded `new_order_single` helper) now loop over
+  `FLAT_DICTIONARY_VERSIONS` instead of a single hardcoded `"FIX.4.4"`. **Ripple effect found and
+  fixed**: FIX.4.0 predates `ResetSeqNumFlag`(141) (added in FIX.4.1) entirely — the shared `logon()`
+  helper (used by nearly every scenario) unconditionally set it, so wiring FIX.4.0's now-real
+  validator broke all 42 FIX.4.0 server-suite runs with `TagNotDefinedForMessage`; fixed `logon()`
+  to skip tag 141 for FIX.4.0, and `logon_response_carries_reset_flag`'s FIX.4.0 case to expect the
+  field absent (correctly echoing nothing, per BUG-28/FR-005's echo-only-what-was-sent rule) rather
+  than asserting a fabricated `Y`. `cargo test -p truefix-at --test conformance --test coverage
+  --test all_versions_have_validators`: all passing (server-suite floor: 424 → 456; the 3 new
+  loops add 5 versions × 3 scenarios = 15 runs each newly-covered version/scenario pair beyond the
+  pre-existing FIX.4.4-only single run, net +32 over the prior 424, plus this feature's earlier
+  additions already counted in that 424 baseline).
 
 ### Latency scenario reject-reason assertions (FR-060, `NEW-29`)
 
-- [ ] T130 [US3] Strengthen `check_latency_timestamps`, `invalid_logon_bad_sending_time`,
+- [X] T130 [US3] Strengthen `check_latency_timestamps`, `invalid_logon_bad_sending_time`,
   `sending_time_value_out_of_range`, `unparseable_sending_time_fails_latency` in
   `crates/truefix-at/src/scenarios.rs` to assert on `Text(58)`/reject-reason, not just "a Logout
   occurred" — no separate test task; this task directly strengthens existing scenario assertions
-  (no new scenario runs).
+  (no new scenario runs). — **complete**: all four now assert `.field(58, "SendingTime accuracy
+  problem")` on their Logout; `sending_time_value_out_of_range` additionally asserts
+  `SessionRejectReason(373)="10"` on its preceding Reject, version-filtered for FIX.4.0/4.1 (which
+  omit tag 373 entirely per BUG-59/FR-023, feature 007) — matches `reject_field_correctness.rs`'s
+  existing unit coverage of that same version rule. `cargo test -p truefix-at --test conformance
+  --test coverage`: all passing (456/456 scenario runs, floor unchanged).
 
 ### Buffer-empty-at-end assertion (FR-061, `NEW-30`)
 
-- [ ] T131 [P] [US3] Add a failing test: `run_scenario` fails if a spurious extra message remains
+- [X] T131 [P] [US3] Add a failing test: `run_scenario` fails if a spurious extra message remains
   buffered after all steps complete, in
-  `crates/truefix-at/tests/buffer_empty_at_scenario_end.rs` (new).
-- [ ] T132 [US3] Add the buffer-empty assertion to `run_scenario` in
+  `crates/truefix-at/tests/buffer_empty_at_scenario_end.rs` (new). — **complete**: a hand-rolled
+  fake TCP server (no production acceptor needed) answers a Logon then sends one extra,
+  unrequested Heartbeat; confirmed the pre-fix `run_scenario` returned `Ok(())` regardless.
+- [X] T132 [US3] Add the buffer-empty assertion to `run_scenario` in
   `crates/truefix-at/src/runner.rs` — makes T131 pass (depends on T131, sequenced after T127/T129).
+  — **complete**: after the step loop, one more `read_message` call with a short (25ms) grace
+  window — long enough for a same-host loopback straggler, short enough not to dominate suite
+  runtime — must resolve `TimedOut`/`CleanEof`; `Message`/`DecodeFailed`/`ReadFailed` all fail the
+  scenario. Chose 25ms after measuring: 100ms added ~39s to the 456-run server suite (12s → 51s);
+  25ms keeps it at ~27s. `cargo test -p truefix-at --test conformance --test coverage --test
+  buffer_empty_at_scenario_end`: all passing, no regressions from the new trailing check.
 
 ### Fixed-identity AT acceptor mode (FR-062, `NEW-83`; see data-model.md, Clarifications)
 
-- [ ] T133 [P] [US3] Add a failing test: `start_fixed_identity_acceptor` rejects a Logon whose
+- [X] T133 [P] [US3] Add a failing test: `start_fixed_identity_acceptor` rejects a Logon whose
   SenderCompID/TargetCompID/BeginString don't match the configured fixed identity, in
-  `crates/truefix-at/tests/fixed_identity_acceptor_scenarios.rs` (new).
-- [ ] T134 [US3] Implement `start_fixed_identity_acceptor` in `crates/truefix-at/src/runner.rs`,
+  `crates/truefix-at/tests/fixed_identity_acceptor_scenarios.rs` (new). — **complete**: 4 tests
+  (matching identity accepted as a control; wrong SenderCompID/TargetCompID/BeginString each
+  refused — connection dropped with no reply, confirmed via `read_message`'s `CleanEof` outcome).
+- [X] T134 [US3] Implement `start_fixed_identity_acceptor` in `crates/truefix-at/src/runner.rs`,
   additive alongside the existing `start_acceptor` (per Clarifications — no existing scenario setup
-  changes) — makes T133 pass (depends on T133, sequenced after T129/T132).
-- [ ] T135 [US3] Add the `1c_InvalidSenderCompID`/`1c_InvalidTargetCompID`/wrong-`BeginString`
+  changes) — makes T133 pass (depends on T133, sequenced after T129/T132). — **complete**: mirrors
+  `start_acceptor`'s tweaks/validator wiring but calls `AcceptorBuilder::with_session` (a fixed
+  `SessionConfig` keyed by its own `SessionId`) instead of `with_dynamic_template` — `route_and_run`
+  already refuses (silently drops) any inbound Logon whose BeginString/CompIDs don't resolve to a
+  registered static session and there's no template fallback, so no transport-layer change was
+  needed, only this new harness-side constructor.
+- [X] T135 [US3] Add the `1c_InvalidSenderCompID`/`1c_InvalidTargetCompID`/wrong-`BeginString`
   scenarios in `crates/truefix-at/src/scenarios.rs` using the new mode — raises the AT scenario-run
-  floor (depends on T134).
+  floor (depends on T134). — **complete**: added `SessionTweaks::fixed_identity: Option<(String,
+  String)>` so `run_report` can start either acceptor mode per-scenario without a parallel
+  `Scenario`-running path; 3 new scenarios (`1c_InvalidSenderCompID`, `1c_InvalidTargetCompID`,
+  `1d_InvalidLogonWrongBeginString`) run across all 9 `SUITE_VERSIONS`. `cargo test -p truefix-at
+  --test conformance --test coverage --test fixed_identity_acceptor_scenarios`: all passing
+  (server-suite floor: 456 → 483, +27 = 9 versions × 3 new scenarios).
 
 ### `check_match` flags extra fields (FR-063, `NEW-50`)
 
-- [ ] T136 [P] [US3] Add a failing test: `check_match` flags an unexpected extra field in an actual
-  message, in `crates/truefix-at/tests/check_match_flags_extra_fields.rs` (new).
-- [ ] T137 [US3] Fix `check_match` in `crates/truefix-at/src/runner.rs` (~L216-228) — makes T136
-  pass (depends on T136, sequenced after T132/T134).
+- [X] T136 [P] [US3] Add a failing test: `check_match` flags an unexpected extra field in an actual
+  message, in `crates/truefix-at/tests/check_match_flags_extra_fields.rs` (new). — **complete**: 3
+  tests (an extra field fails an exact match; the same extra field is ignored without `.exact()`,
+  preserving today's default behavior; an exact match with no extra field passes as a control).
+- [X] T137 [US3] Fix `check_match` in `crates/truefix-at/src/runner.rs` (~L216-228) — makes T136
+  pass (depends on T136, sequenced after T132/T134). — **complete, as an opt-in `ExpectMsg::exact()`
+  rather than the new default**: made exhaustive-field checking opt-in because this suite's ~90
+  existing scenarios deliberately list only the fields they care about (e.g. `ExpectMsg::of("A")`
+  for a Logon ack, never enumerating its own `EncryptMethod`/`HeartBtInt`) — checking exhaustively
+  by default would require rewriting every one of them, well beyond this single item's scope. Added
+  `ExpectMsg::exact`/`ALWAYS_ALLOWED_TAGS` (the always-legitimate framing/identity/volatile fields:
+  BeginString/BodyLength/MsgType/MsgSeqNum/Sender+TargetCompID/SendingTime/PossDupFlag/
+  OrigSendingTime/CheckSum); `check_match` iterates header+body+trailer when `expect.exact` is set
+  and fails on any tag outside `fields` ∪ `ALWAYS_ALLOWED_TAGS`. `cargo test -p truefix-at --test
+  conformance --test coverage --test check_match_flags_extra_fields`: all passing, no regressions
+  (every existing scenario stays non-exact, so behavior for them is unchanged).
 
 ### Outbound `MsgSeqNum` ordering assertions (FR-064, `NEW-51`)
 
-- [ ] T138 [US3] Add outbound `MsgSeqNum(34)` ordering assertions to server-sent-sequence scenarios
+- [X] T138 [US3] Add outbound `MsgSeqNum(34)` ordering assertions to server-sent-sequence scenarios
   in `crates/truefix-at/src/scenarios.rs` that currently lack them — strengthens existing scenarios,
-  no new runs (depends on T135).
+  no new runs (depends on T135). — **complete, scoped to the resend/gap-fill/sequence-reset
+  scenario group** (the ones NEW-51 names as "server-sent-sequence scenarios") rather than all ~90
+  scenarios in the file — exhaustively asserting `MsgSeqNum` on every `Step::Expect` across the
+  whole suite is a much larger, unrelated undertaking; added it to `resend_request_gap_fill`,
+  `sequence_reset_reset`, `sequence_reset_reset_missing_new_seq_no_rejected`,
+  `sequence_reset_gap_fill_missing_new_seq_no_rejected`, `resend_request_missing_begin_seq_no_rejected`,
+  `resend_request_missing_end_seq_no_rejected`, `gap_fill_drained_message_is_validated`,
+  `resend_request_not_duplicated`, `resend_request_begin_zero_treated_as_one`,
+  `resend_request_bounded_end`, `resend_request_too_high_answered_immediately`,
+  `sequence_reset_gap_fill_advances`, `sequence_reset_gap_fill_backward_ignored`,
+  `resend_request_nothing_to_resend`, `resend_request_chunk_size`, `chunked_resend_auto_continues`,
+  `msgseqnum_correct`, `poss_dup_not_received`, `seq_reset_new_seq_no_equal`,
+  `seq_reset_new_seq_no_less`, `seq_reset_gap_fill_new_seq_no_equal` (21 functions). **Real
+  correctness finding made while wiring this up**: a GapFill sent in direct response to a
+  `ResendRequest` (e.g. `resend_request_gap_fill`'s reply) carries the `MsgSeqNum` of the historical
+  slot it fills (here, `1` — the Logon's own outbound slot), not a freshly-incremented live
+  sequence number — resending/gap-filling replays a historical position rather than consuming a new
+  one. First guessed `2` (treating it like any other new outbound message) and 4 scenario runs
+  failed immediately; corrected to `1` for the 4 affected scenarios
+  (`resend_request_gap_fill`/`resend_request_bounded_end`/`resend_request_begin_zero_treated_as_one`'s
+  sole GapFill, and `BUG29_ResendRequestTooHighAnsweredImmediately`'s first GapFill — its
+  *own subsequent* ResendRequest and Heartbeat correctly stayed on the live counter, `2` then `3`).
+  `cargo test -p truefix-at --test conformance --test coverage`: all passing, 483/483 (floor
+  unchanged — no new scenario runs, per this task's own note).
 
 ### Per-scenario suite reporting (FR-065, `NEW-52`)
 
-- [ ] T139 [P] [US3] Add a failing test: `server_acceptance_suite_passes` reports per-scenario pass/
+- [X] T139 [P] [US3] Add a failing test: `server_acceptance_suite_passes` reports per-scenario pass/
   fail rather than one all-or-nothing result, in
-  `crates/truefix-at/tests/per_scenario_reporting.rs` (new).
-- [ ] T140 [US3] Restructure `server_acceptance_suite_passes` in
-  `crates/truefix-at/tests/conformance.rs` — makes T139 pass (depends on T139).
+  `crates/truefix-at/tests/per_scenario_reporting.rs` (new). — **complete**: added
+  `runner::per_scenario_report(&[ScenarioResult]) -> String` (one `PASS`/`FAIL` line per run,
+  including the failure reason); 2 unit tests against fabricated result sets confirm every run gets
+  its own line (a single boolean would collapse a mixed pass/fail set down to just "failed") and
+  an all-passing set has no `FAIL` lines.
+- [X] T140 [US3] Restructure `server_acceptance_suite_passes` in
+  `crates/truefix-at/tests/conformance.rs` — makes T139 pass (depends on T139). — **complete**:
+  replaced the old "eprintln each failure, then assert on a bare count" shape with
+  `eprintln!("{}", per_scenario_report(&results))` (every run, not just failures) followed by the
+  same pass-count summary and a count-based assert (libtest doesn't support dynamically generating
+  one `#[test]` per runtime-discovered scenario, so the itemized report — shown in full on failure
+  via captured-output — is the mechanism, not literal sub-tests). `cargo test -p truefix-at --test
+  conformance --test coverage --test per_scenario_reporting`: all passing.
 
 ### Duplicate dictionary definitions (FR-066, `NEW-43`)
 
-- [ ] T141 [P] [US3] Add a failing test: duplicate tag/name/msg_type definitions in a `.fixdict`
-  file error on load, in `crates/truefix-dict/tests/duplicate_dict_definitions_error.rs` (new).
-- [ ] T142 [US3] Fix `parser.rs` (runtime loader) to detect duplicates — makes T141 pass (depends on
-  T141, sequenced after T084).
+- [X] T141 [P] [US3] Add a failing test: duplicate tag/name/msg_type definitions in a `.fixdict`
+  file error on load, in `crates/truefix-dict/tests/duplicate_dict_definitions_error.rs` (new). —
+  **complete**: 3 tests (duplicate field tag, duplicate field name, duplicate message type), all
+  asserting a typed `ParseError::DuplicateDefinition { line, kind, key }`.
+- [X] T142 [US3] Fix `parser.rs` (runtime loader) to detect duplicates — makes T141 pass (depends on
+  T141, sequenced after T084). — **complete**: `parse()` rejects a repeated field tag, a repeated
+  field name (different tag), and a repeated message MsgType, each as a `DuplicateDefinition` error
+  naming the offending line. `cargo test -p truefix-dict --all-features`, `cargo clippy -p
+  truefix-dict --all-targets --all-features -- -D warnings`: both clean.
 
 ### `strip_comment` preserves `#` in STRING values (FR-067, `NEW-44`)
 
-- [ ] T143 [P] [US3] Add a failing test: a STRING enum value containing `#` is not truncated, in
-  `crates/truefix-dict/tests/strip_comment_preserves_hash_in_string.rs` (new).
-- [ ] T144 [US3] Fix `strip_comment()` in `crates/truefix-dict/src/parser.rs` — makes T143 pass
-  (depends on T143, sequenced after T142).
+- [X] T143 [P] [US3] Add a failing test: a STRING enum value containing `#` is not truncated, in
+  `crates/truefix-dict/tests/strip_comment_preserves_hash_in_string.rs` (new). — **complete**: 3
+  tests (a value literal containing `#` survives; a genuine whitespace-preceded trailing comment
+  is still stripped; a full-line comment is still ignored). Confirmed the first test catches the
+  bug via temporary revert.
+- [X] T144 [US3] Fix `strip_comment()` in `crates/truefix-dict/src/parser.rs` — makes T143 pass
+  (depends on T143, sequenced after T142). — **complete, with a dual-track ripple fix**: `#` now
+  only starts a comment at line-start or when preceded by whitespace. `codegen.rs::parse_dict` had
+  an identical inline `raw.find('#')` bug (not sharing `strip_comment`, per the dual-track design)
+  — applied the same corrected rule there too for Principle IV parity, rather than leaving codegen
+  with the old naive behavior. `cargo test -p truefix-dict --all-features`, `cargo clippy -p
+  truefix-dict --all-targets --all-features -- -D warnings`: both clean.
 
 ### FIX 5.0/SP1/SP2 `BeginString` parsing (FR-068, `NEW-45`)
 
-- [ ] T145 [P] [US3] Add a failing test: `parse_fix_begin_string` distinguishes FIX 5.0/SP1/SP2, in
-  `crates/truefix-dict/tests/fix5_subversion_parsing.rs` (new).
-- [ ] T146 [US3] Fix `parse_fix_begin_string` in `crates/truefix-dict/src/validate.rs` (~L265) —
-  makes T145 pass (depends on T145, sequenced after T091).
+- [X] T145 [P] [US3] Add a failing test: `parse_fix_begin_string` distinguishes FIX 5.0/SP1/SP2, in
+  `crates/truefix-dict/tests/fix5_subversion_parsing.rs` (new). — **complete, rewritten from a
+  broken draft**: an existing draft test file only set `BeginString`/`MsgType` on the probe message
+  and used a dictionary with no `field`/`header` definitions at all, so `validate()` failed on an
+  unrelated "tag not defined in dictionary" error before ever reaching the BeginString-match check
+  — rewrote it following `version_meta.rs`'s existing full header/trailer-field pattern so the test
+  actually isolates the SP-mismatch behavior. Confirmed catching the bug via temporary revert.
+- [X] T146 [US3] Fix `parse_fix_begin_string` in `crates/truefix-dict/src/validate.rs` (~L265) —
+  makes T145 pass (depends on T145, sequenced after T091). — **complete**: the function already
+  returned a `(major, minor, service_pack, extension_pack)` 4-tuple and `validate()`'s BeginString
+  match check already compared all four fields — this item's logic was already fixed in a prior
+  pass; T145's own test file was the only remaining gap. `cargo test -p truefix-dict
+  --all-features`, `cargo clippy -p truefix-dict --all-targets --all-features -- -D warnings`:
+  both clean.
 
 ### Circular config variable references (FR-069, `NEW-46`)
 
-- [ ] T147 [P] [US3] Add a failing test: a self-referential/circular `${var}` errors instead of
+- [X] T147 [P] [US3] Add a failing test: a self-referential/circular `${var}` errors instead of
   emitting literal unresolved text, in
-  `crates/truefix-config/tests/circular_var_reference_errors.rs` (new).
-- [ ] T148 [US3] Fix variable resolution in `crates/truefix-config/src/lib.rs` (~L200-240) — makes
-  T147 pass (depends on T147).
+  `crates/truefix-config/tests/circular_var_reference_errors.rs` (new). — **complete**: 3 tests
+  (self-reference; two-hop mutual cycle; a genuinely non-circular transitive chain still resolves
+  fully — this last case doubles as a fix for a pre-existing, more basic bug: interpolation was
+  only ever one level deep, so `A=${B}`/`B=literal` previously left `A` as the literal text
+  `"${B}"` rather than resolving through to `B`'s value). Both new-error tests fail to even
+  *compile* against the pre-fix code (no such variant existed), the strongest possible confirmation
+  the behavior is new.
+- [X] T148 [US3] Fix variable resolution in `crates/truefix-config/src/lib.rs` (~L200-240) — makes
+  T147 pass (depends on T147). — **complete**: `interpolate_value` now recurses through a chain of
+  `${var}` references (fixing the one-level-only limitation above) while tracking the in-progress
+  variable names on a `resolving: &mut Vec<String>` stack; encountering a name already on that
+  stack returns a new `ConfigError::CircularVariableReference { line, name }` instead of emitting
+  the literal unresolved text. `cargo test -p truefix-config`, `cargo clippy -p truefix-config
+  --all-targets --all-features -- -D warnings`: both clean.
 
 ### `Monitor` entry removal on disconnect (FR-070, `NEW-48`)
 
-- [ ] T149 [P] [US3] Add a failing test: a `Monitor` entry is removed when its connection
-  disconnects, in `crates/truefix/tests/monitor_removes_entry_on_disconnect.rs` (new).
-- [ ] T150 [US3] Fix `Monitor`/`MonitorEntry` in `crates/truefix-transport/src/lib.rs` (~L247-270)
+- [X] T149 [P] [US3] Add a failing test: a `Monitor` entry is removed when its connection
+  disconnects, in `crates/truefix/tests/monitor_removes_entry_on_disconnect.rs` (new). —
+  **complete**: 1 test driving a real acceptor/initiator pair through `Monitor`, confirming the
+  session's entry disappears from `monitor.sessions()`/`is_connected()`/`status()` once the
+  initiator's connection is aborted. Confirmed catching the bug via temporary revert.
+- [X] T150 [US3] Fix `Monitor`/`MonitorEntry` in `crates/truefix-transport/src/lib.rs` (~L247-270)
   to remove entries on disconnect — makes T149 pass (depends on T149, sequenced after T042/T078/T099
-  since all touch `lib.rs`).
+  since all touch `lib.rs`). — **complete, with a follow-on simplification**: `mark_disconnected`
+  now removes the entry from the map instead of flipping a `connected: bool` flag — a
+  reconnecting fixed-identity session simply gets re-inserted by its next `register()` call. Since
+  every entry remaining in the map is therefore always connected, the now-redundant `connected`
+  field was removed from `MonitorEntry` and `is_connected` simplified to a plain
+  `contains_key` check. `cargo test -p truefix-transport --all-features`, `cargo test -p truefix`,
+  `cargo clippy -p truefix-transport --all-targets --all-features -- -D warnings`: all clean.
 
 ### HTTP CONNECT proxy response handling (FR-071, `NEW-49`)
 
-- [ ] T151 [P] [US3] Add a failing test: HTTP CONNECT status-token validation rejects a non-numeric
-  token, in `crates/truefix-transport/tests/http_connect_status_validation.rs` (new).
-- [ ] T152 [US3] Fix the CONNECT response reader in `crates/truefix-transport/src/proxy.rs`
+- [X] T151 [P] [US3] Add a failing test: HTTP CONNECT status-token validation rejects a non-numeric
+  token, in `crates/truefix-transport/tests/http_connect_status_validation.rs` (new). —
+  **complete**: 2 tests against a fake fixed-response HTTP CONNECT proxy (a `"2xx"` non-numeric
+  token is rejected; a genuine `"200"` is still accepted). Confirmed the first catches the bug via
+  temporary revert.
+- [X] T152 [US3] Fix the CONNECT response reader in `crates/truefix-transport/src/proxy.rs`
   (~L95-140) to validate the token is numeric and read the response efficiently — makes T151 pass
-  (depends on T151, sequenced after T040/T114).
+  (depends on T151, sequenced after T040/T114). — **complete**: replaced the byte-at-a-time read
+  loop with `peek_proxy_header`'s established peek-then-`read_exact` pattern (grow a peek buffer
+  looking for `\r\n\r\n`, then consume exactly that many bytes) — leaves any bytes the proxy might
+  send immediately after the header untouched in the socket. Status validation now parses the
+  token as `u16` and checks it's in `200..300`, rejecting a merely `'2'`-prefixed non-numeric
+  token. `cargo test -p truefix-transport --all-features`, `cargo clippy -p truefix-transport
+  --all-targets --all-features -- -D warnings`: both clean.
 
 ### `DataDictionary::extend()` collision detection (FR-072, `NEW-53`)
 
-- [ ] T153 [P] [US3] Add a failing test: `extend()` detects a `field_by_name` collision (different
+- [X] T153 [P] [US3] Add a failing test: `extend()` detects a `field_by_name` collision (different
   tag, same name) and recomputes `member_tags` after merge, in
-  `crates/truefix-dict/tests/extend_detects_name_collision.rs` (new).
-- [ ] T154 [US3] Fix `DataDictionary::extend()` in `crates/truefix-dict/src/model.rs` (~L290-360) —
-  makes T153 pass (depends on T153, sequenced after T048/T059/T086).
+  `crates/truefix-dict/tests/extend_detects_name_collision.rs` (new). — **complete**: 2 tests (a
+  colliding field name aborts the merge with a typed `DictMergeConflict{kind:"field name"}`; a
+  merge that newly introduces a group definition updates an already-existing message's
+  `member_tags` to recognize that group's members). Confirmed both catch the bug via temporary
+  revert.
+- [X] T154 [US3] Fix `DataDictionary::extend()` in `crates/truefix-dict/src/model.rs` (~L290-360) —
+  makes T153 pass (depends on T153, sequenced after T048/T059/T086). — **complete**: added a
+  `field_by_name` collision check (same name, different tag) to the existing dry-run conflict pass
+  as a new `DictMergeConflict{kind:"field name"}`; after merging, every message's `member_tags` is
+  recomputed against `self`'s now-merged `groups` map (previously left stale from whichever
+  dictionary's own parse-time `groups` map happened to be smaller). Made `parser::
+  collect_group_members` `pub(crate)` so `model.rs` could reuse it rather than duplicating the
+  recursive-expansion logic. `cargo test -p truefix-dict --all-features`, `cargo clippy -p
+  truefix-dict --all-targets --all-features -- -D warnings`: both clean.
 
 ### Session `Reject` before `Logout` (FR-073, `NEW-87`)
 
-- [ ] T155 [P] [US3] Add a failing test: a non-Logon latency/CompID-mismatch/PossDup-falsification
+- [X] T155 [P] [US3] Add a failing test: a non-Logon latency/CompID-mismatch/PossDup-falsification
   disconnect sends a session `Reject` before the `Logout`, in
-  `crates/truefix-session/tests/reject_before_logout.rs` (new).
-- [ ] T156 [US3] Add an AT scenario for the two-message sequence in
-  `crates/truefix-at/src/scenarios.rs` (`contracts/hardening-and-tooling.md`).
-- [ ] T157 [US3] Fix the latency/identity-failure branches in `on_received`
+  `crates/truefix-session/tests/reject_before_logout.rs` (new). — **complete**: 5 tests (latency
+  failure; CompID mismatch; incorrect-BeginString control staying Logout-only; PossDup
+  falsification; a Logon-specific bad-SendingTime control also staying Logout-only, matching QFJ's
+  own distinct `logoutWithErrorMessage` path for Logon). Confirmed the 3 non-control tests catch
+  the bug via temporary revert.
+- [X] T156 [US3] Add an AT scenario for the two-message sequence in
+  `crates/truefix-at/src/scenarios.rs` (`contracts/hardening-and-tooling.md`). — **complete, via
+  strengthening 3 existing scenarios rather than adding new ones**:
+  `GAP08_PossDupOrigSendingTimeAfterSendingTime`, `2k_CompIDDoesNotMatchProfile`, and
+  `2o_SendingTimeValueOutOfRange` each already exercised one of the three affected failure modes
+  but asserted only the old Logout-only shape — added a `Step::Expect(ExpectMsg::of("3"))`
+  immediately before each's existing Logout expectation (SessionRejectReason itself isn't asserted
+  at this layer, since it's version-filtered per `reject_field_correctness.rs`'s existing unit
+  coverage). No new scenario runs added (floor unchanged at 444); `cargo test -p truefix-at --test
+  conformance --test coverage`: 100% passing (27 failures across 9 versions × 3 scenarios fixed).
+- [X] T157 [US3] Fix the latency/identity-failure branches in `on_received`
   (`crates/truefix-session/src/state.rs` ~L702-721) and `poss_dup_falsification_check`'s caller
   (~L780-784) to send `Reject` then `Logout` — makes T155/T156 pass (depends on T155, T156,
-  sequenced after T112/T096).
+  sequenced after T112/T096). — **complete, with a necessary distinction the task description
+  didn't spell out**: added `build_session_reject` (builds+sends just the wire Reject) and
+  `session_reject_before_logout` (that, plus `reject_logon`'s existing Logout+disconnect) as new
+  helpers; `identity_problem`'s return type changed from a bare `&'static str` to a new
+  `IdentityProblem { BeginString, CompId }` enum, since only the CompID case gets the new
+  two-message treatment — an incorrect BeginString has no QFJ equivalent and stays Logout-only.
+  Also discovered mid-implementation that the check must additionally be skipped for a *Logon*
+  message specifically (computed a new `is_logon` flag up-front in `on_received`): the source
+  audit's own text notes a Logon-specific bad-time/bad-CompID uses QFJ's
+  `logoutWithErrorMessage`(Logout-only) rather than this two-message shape — without the guard,
+  every existing Logon-latency/Logon-CompID test/AT-scenario would have started failing.
+  Additionally applied the same fix to the two `poss_dup_anti_replay_violation` call sites
+  (too-high-gap-fill and generic too-low arms) beyond the single `poss_dup_falsification_check`
+  call site the source document literally named — same PossDup-falsification category, same bug
+  shape. `cargo test -p truefix-session`, `cargo test -p truefix-at --test conformance --test
+  coverage`, `cargo clippy -p truefix-session -p truefix-at --all-targets --all-features -- -D
+  warnings`: all clean.
 
 ### `DefaultApplVerID` validation (FR-074, `NEW-88`)
 
-- [ ] T158 [P] [US3] Add a failing test: an invalid/typo'd `DefaultApplVerID(1137)` on a FIXT 1.1
-  Logon is rejected, in `crates/truefix-session/tests/defaultapplverid_validated.rs` (new).
-- [ ] T159 [US3] Add an AT scenario for this in `crates/truefix-at/src/scenarios.rs`.
-- [ ] T160 [US3] Fix `on_logon` in `crates/truefix-session/src/state.rs` (~L1363-1369) to validate
+- [X] T158 [P] [US3] Add a failing test: an invalid/typo'd `DefaultApplVerID(1137)` on a FIXT 1.1
+  Logon is rejected, in `crates/truefix-session/tests/defaultapplverid_validated.rs` (new). —
+  **complete**: 3 tests (unregistered value rejected; a valid/registered value still logs on; no
+  `FixtDictionaries` configured at all leaves the old unvalidated behavior in place, since there's
+  nothing to validate against). Confirmed the first catches the bug via temporary revert.
+  **Ripple effect found and fixed**: `crates/truefix-session/tests/validation_hook.rs`'s
+  `fixt_dictionaries_with_no_resolvable_appl_ver_id_skips_validation_like_no_dictionary` logged on
+  with an *unregistered* Logon-level DefaultApplVerID and asserted that succeeded — exactly the gap
+  this fix closes. Rewritten (renamed
+  `unresolvable_per_message_appl_ver_id_skips_validation_like_no_dictionary`) to use a valid,
+  registered DefaultApplVerID on Logon and instead exercise the still-intentionally-unvalidated
+  case: a later message's own per-message ApplVerID(1128) resolving to nothing (a `validate_app`
+  dict-selection concern, unrelated to Logon-time `DefaultApplVerID` validation).
+- [X] T159 [US3] Add an AT scenario for this in `crates/truefix-at/src/scenarios.rs`. —
+  **deferred to the unit tests in T158, with reason documented**: confirmed (again)
+  `crates/truefix-at/src/runner.rs` has zero FIXT dual-dictionary (`fixt_dictionaries`) support —
+  same fallback situation as `NEW-58`/T019, `NEW-56`/T022, `NEW-62`/T029, and `NEW-18`/T054.
+- [X] T160 [US3] Fix `on_logon` in `crates/truefix-session/src/state.rs` (~L1363-1369) to validate
   `DefaultApplVerID` against the transport dictionary before accepting — makes T158/T159 pass
-  (depends on T158, T159, sequenced after T157).
+  (depends on T158, T159, sequenced after T157). — **complete**: validates a present, non-empty
+  inbound `DefaultApplVerID(1137)` against `FixtDictionaries::application_for` (reusing its
+  existing lookup rather than adding a new registry-membership API) before storing it into
+  `negotiated_appl_ver_id`; a value that resolves to no registered application dictionary now
+  routes through `reject_logon` with `SessionRejectReason=5`/`RefTagID=1137`, matching QFJ's
+  `nextLogon`. Only applies when a `FixtDictionaries` is actually configured on the session.
+  `cargo test -p truefix-session`, `cargo clippy -p truefix-session --all-targets --all-features
+  -- -D warnings`: both clean.
 
 ### `LogoutTimeout` default (FR-075, `NEW-89`)
 
-- [ ] T161 [US3] Add a test asserting `builder.rs`'s `.cfg`-parsing default for `LogoutTimeout` is
+- [X] T161 [US3] Add a test asserting `builder.rs`'s `.cfg`-parsing default for `LogoutTimeout` is
   `2`, then change `u32_key(map, "LogoutTimeout", &session, 10)` to `2` in
   `crates/truefix-config/src/builder.rs` (~L478), in
   `crates/truefix-config/tests/logout_timeout_default.rs` (new) — combined test+fix task (trivial
   single-value change); **flag prominently in the PR description**: unlike `NEW-73`, this changes
   real `.cfg`-driven deployment behavior (research.md's disclosure) — sequenced after T037/T038/T052/
-  T072 since all touch `builder.rs`.
+  T072 since all touch `builder.rs`. — **complete — flagged: real deployment-behavior change**:
+  an acceptor/initiator that didn't explicitly set `LogoutTimeout` in its `.cfg` will now wait only
+  2 seconds (not 10) for the counterparty's `Logout` reply before disconnecting after sending its
+  own. `SessionConfig::new()`'s own Rust-level default (`truefix-session/src/config.rs`, used when
+  a `SessionConfig` is constructed directly rather than through `.cfg` parsing) is intentionally
+  left at `10` — untouched, since FR-075/NEW-89 only names the `.cfg`-parsing default. 2 tests
+  (unset defaults to 2; still configurable to another value). `cargo test -p truefix-config`,
+  `cargo clippy -p truefix-config --all-targets --all-features -- -D warnings`: both clean.
 
 ### Async log-writer shutdown (FR-076, `NEW-91`; see data-model.md)
 
-- [ ] T162 [P] [US3] Add a failing test: `Engine::shutdown()` flushes/awaits outstanding entries
+- [X] T162 [P] [US3] Add a failing test: `Engine::shutdown()` flushes/awaits outstanding entries
   queued in each async log backend before returning, in
-  `crates/truefix-log/tests/async_writer_flush_on_shutdown.rs` (new).
-- [ ] T163 [US3] Add a `shutdown`/flush method to each async log backend's handle (retaining the
+  `crates/truefix-log/tests/async_writer_flush_on_shutdown.rs` (new). — **complete**: 2 tests
+  (queued entries flushed before `shutdown()` returns; `shutdown()` is idempotent).
+- [X] T163 [US3] Add a `shutdown`/flush method to each async log backend's handle (retaining the
   `JoinHandle`, closing the channel, awaiting drain) in
   `crates/truefix-log/src/{sql,mssql,mongo,redb}.rs`, and call it from `Engine::shutdown()`/`Drop` in
-  `crates/truefix/src/lib.rs` — makes T162 pass (depends on T068, T162).
+  `crates/truefix/src/lib.rs` — makes T162 pass (depends on T068, T162). — **complete, with a
+  deliberate deviation from wiring into `Engine::shutdown()`/`Drop` directly**: added
+  `Log::shutdown()` (default no-op, `async_trait`) to the trait, implemented on all four async
+  backends (`tx`/`task` moved behind `std::sync::Mutex<Option<_>>` so `&self` can `take()` them)
+  plus the `Box<dyn Log>`/`CompositeLog`/`SessionPrefixLog` forwarding impls. `Engine::shutdown()`
+  and `Drop for Engine` intentionally remain synchronous (BUG-21/FR-023, feature 007) — instead
+  added `Engine::logs() -> &[Arc<dyn truefix_log::Log>]`, collecting every log built during
+  `Engine::start`, so a caller wanting a graceful flush can `for log in engine.logs() { log.shutdown().await; }`
+  before calling `shutdown()`, mirroring the existing `initiators()`-then-`.logout().await` pattern.
+  `cargo test -p truefix-log --features mongodb,mssql,sql,redb --test async_writer_flush_on_shutdown`:
+  2/2 passing.
 
 ### Deterministic acceptor-group startup order (FR-077, `NEW-92`)
 
-- [ ] T164 [P] [US3] Add a failing test: `Engine::start` processes multi-session acceptor groups in
+- [X] T164 [P] [US3] Add a failing test: `Engine::start` processes multi-session acceptor groups in
   a stable, sorted order across repeated runs, in
-  `crates/truefix/tests/acceptor_group_start_order_deterministic.rs` (new).
-- [ ] T165 [US3] Sort `acceptor_groups` by `SocketAddr` before iterating in `Engine::start`
-  (`crates/truefix/src/lib.rs` ~L326-339) — makes T164 pass (depends on T163, T164).
+  `crates/truefix/tests/acceptor_group_start_order_deterministic.rs` (new). — **complete, as a
+  `#[cfg(test)]` unit module in `crates/truefix/src/lib.rs` instead of a new integration-test
+  file, with reason documented**: `ResolvedSession` (the acceptor-group `HashMap`'s value type) has
+  no path from an external test to construct the exact grouping `Engine::start` builds internally
+  — same situation as `scheduled_initiator_nonblocking_connect_tests`'s existing precedent in
+  `truefix-transport/src/lib.rs`. Extracted the sort into a small, independently-testable
+  `sorted_by_endpoint<T>(HashMap<SocketEndpoint, T>) -> Vec<(SocketEndpoint, T)>` and added
+  `acceptor_group_start_order_tests::sorted_by_endpoint_is_stable_regardless_of_input_order`:
+  builds the same 3-entry map two ways (forward and reverse insertion order) and confirms both
+  produce the identical, ascending-`(host, port)` output.
+- [X] T165 [US3] Sort `acceptor_groups` by `SocketAddr` before iterating in `Engine::start`
+  (`crates/truefix/src/lib.rs` ~L326-339) — makes T164 pass (depends on T163, T164). —
+  **complete, sorted by `SocketEndpoint`'s `(host, port)` rather than a resolved `SocketAddr`**:
+  `acceptor_groups` is keyed by the pre-resolution `SocketEndpoint` (DNS resolution happens later,
+  per T072/NEW-26's connect-time-resolution fix), so there's no `SocketAddr` available yet at this
+  point to sort by; `(host, port)` gives the same reproducible-across-runs guarantee. `cargo test -p
+  truefix --lib acceptor_group_start_order_tests --test multi_session_acceptor_cfg --test
+  config_start --test continue_on_error`: all passing, no regressions.
 
 ### TLS trust-store load diagnostics (FR-078, `NEW-95`)
 
-- [ ] T166 [P] [US3] Add a failing test: a trust-store file with one or more malformed certificates
+- [X] T166 [P] [US3] Add a failing test: a trust-store file with one or more malformed certificates
   surfaces a warning (or an error if the resulting store is empty), in
-  `crates/truefix-transport/tests/tls_trust_store_load_diagnostics.rs` (new).
-- [ ] T167 [US3] Track and surface per-cert load failures in `load_root_store`/
+  `crates/truefix-transport/tests/tls_trust_store_load_diagnostics.rs` (new). — **complete**: 2
+  tests (empty trust-store bytes now error rather than silently building a non-functional empty
+  store; a trust store with at least one valid certificate still succeeds).
+- [X] T167 [US3] Track and surface per-cert load failures in `load_root_store`/
   `load_root_store_bytes` (`crates/truefix-transport/src/tls_config.rs` ~L117-135) — makes T166 pass
-  (depends on T027, T069, T166).
+  (depends on T027, T069, T166). — **complete, per data-model.md's own sketch**: added
+  `TlsConfigError::EmptyTrustStore` and a shared `add_certs_tracking_failures` helper — counts
+  `RootCertStore::add` failures (still individually best-effort-skipped, unchanged) and emits
+  `tracing::warn!` when any occurred; both loaders now return `EmptyTrustStore` when the resulting
+  store has zero certificates (previously `Ok(RootCertStore::empty())`, functionally identical to
+  NEW-11's no-trust-store-configured failure mode but for an operator who *did* configure one).
+  **Regression found and fixed while running the full `truefix-transport` suite** (pre-existing,
+  from an earlier T160/NEW-88 change, unrelated to this task):
+  `fixt_group_aware_decode.rs`'s test built a `FixtDictionaries` with zero registered application
+  dictionaries, then sent a Logon with `DefaultApplVerID=9` — T160's stricter validation now
+  rejects that as an unresolvable ApplVerID, which this test (about header-group structuring, not
+  ApplVerID validation) didn't anticipate. Fixed by registering a FIX50SP2 application dictionary
+  under key `"9"`. `cargo test -p truefix-transport`: full suite passing.
 
 ### `MAX_BODY_LEN` consistency between `decode` and `frame_length` (FR-079, `NEW-04`)
 
-- [ ] T168 [P] [US3] Add a failing test: `tokenize_validated`/`decode` called directly (bypassing
+- [X] T168 [P] [US3] Add a failing test: `tokenize_validated`/`decode` called directly (bypassing
   `frame_length`) rejects a body length exceeding `MAX_BODY_LEN`, in
-  `crates/truefix-core/tests/decode_max_body_len_consistency.rs` (new).
-- [ ] T169 [US3] Add the `MAX_BODY_LEN` guard to `tokenize_validated` in
+  `crates/truefix-core/tests/decode_max_body_len_consistency.rs` (new). — **complete**: 2 tests (a
+  declared BodyLength of `MAX_BODY_LEN + 1` is rejected with `BodyLengthTooLarge`, matching
+  `frame_length`'s own error shape; a normal, well-formed message still decodes as a control).
+- [X] T169 [US3] Add the `MAX_BODY_LEN` guard to `tokenize_validated` in
   `crates/truefix-core/src/codec/decode.rs` (~L103-129) — makes T168 pass (depends on T168,
-  sequenced after T062/T064).
+  sequenced after T062/T064). — **complete**: added the identical `declared_bl > MAX_BODY_LEN` →
+  `DecodeError::BodyLengthTooLarge` check `frame_length` already had, right after parsing
+  BodyLength (before the MsgType-presence/CheckSum/BodyLength-mismatch checks that follow).
+  **Ripple effect found and fixed**: `frame_checksum_overflow_hardening.rs`'s
+  `decode_checksum_does_not_overflow_or_panic_for_a_very_large_message` deliberately round-tripped
+  a ~17,000,000-byte message through `decode()` specifically *because* `decode()` had no
+  `MAX_BODY_LEN` cap of its own before this fix — now that it does, that message can no longer
+  reach `decode()`'s checksum computation at all (`17,000,000 > MAX_BODY_LEN`'s 16,777,216).
+  Converted to a source-level check (renamed `decode_checksum_sum_still_uses_a_u64_accumulator`,
+  mirroring this same file's existing `frame_length_uses_checked_add_not_bare_addition` pattern for
+  changes whose triggering condition became unreachable via any real, allocatable input) confirming
+  the `u64` accumulator fix is still present as defense-in-depth. `cargo test -p truefix-core`: all
+  passing (28 test binaries, 0 failures).
 
 ### `SessionId::Display` includes `SubID`/`LocationID` (FR-080, `NEW-39`)
 
-- [ ] T170 [P] [US3] Add a failing test: two sessions differing only by `SubID`/`LocationID` render
-  distinguishably, in `crates/truefix-session/tests/sessionid_display_includes_subid.rs` (new).
-- [ ] T171 [US3] Fix `SessionId`'s `Display` impl in `crates/truefix-session/src/session_id.rs`
-  (~L93) — makes T170 pass (depends on T170).
+- [X] T170 [P] [US3] Add a failing test: two sessions differing only by `SubID`/`LocationID` render
+  distinguishably, in `crates/truefix-session/tests/sessionid_display_includes_subid.rs` (new). —
+  **complete**: 3 tests (SubID-only difference; LocationID-only difference; a plain 3-field
+  SessionId still renders exactly as before, as a control against a format-breaking change).
+- [X] T171 [US3] Fix `SessionId`'s `Display` impl in `crates/truefix-session/src/session_id.rs`
+  (~L93) — makes T170 pass (depends on T170). — **complete**: appends `/sub_id` and `/location_id`
+  after each CompID when present (`SERVER/SUB1/LOC1->CLIENT`), via a small shared
+  `write_comp_id_with_qualifiers` helper for the sender/target halves; the no-sub/no-location case
+  is byte-for-byte unchanged (`"FIX.4.4:SERVER->CLIENT"`). `cargo test -p truefix-session`: full
+  suite passing, no regressions from the format change.
 
 ### `UnresolvedVariable` line-number tracking (FR-081, `NEW-47`)
 
-- [ ] T172 [P] [US3] Add a failing test: an `UnresolvedVariable` error after per-session merging
+- [X] T172 [P] [US3] Add a failing test: an `UnresolvedVariable` error after per-session merging
   reports the original source line, not `line: 0`, in
-  `crates/truefix-config/tests/unresolved_variable_line_number.rs` (new).
-- [ ] T173 [US3] Thread line-number tracking through config merging in
-  `crates/truefix-config/src/lib.rs` (~L215-235) — makes T172 pass (depends on T148, T172).
+  `crates/truefix-config/tests/unresolved_variable_line_number.rs` (new). — **complete**: 3 tests
+  (a plain session's own line; a key inherited unchanged from `[DEFAULT]` reports `[DEFAULT]`'s own
+  line; a key overridden per-session reports the session's own line, not the shadowed default's).
+  Confirmed catching the bug via temporary revert (old code always reported `line: 0`).
+- [X] T173 [US3] Thread line-number tracking through config merging in
+  `crates/truefix-config/src/lib.rs` (~L215-235) — makes T172 pass (depends on T148, T172). —
+  **complete**: introduced `RawSection = BTreeMap<String, (String, usize)>`, threading each key's
+  original 1-based source line through parsing, `[DEFAULT]`/`[SESSION]` merging, and interpolation
+  (previously plain `BTreeMap<String, String>`, discarding line info immediately after parsing); a
+  new `strip_lines` helper converts back to the public `BTreeMap<String, String>` contract once
+  interpolation succeeds. `cargo test -p truefix-config`, `cargo clippy -p truefix-config
+  --all-targets --all-features -- -D warnings`: both clean.
 
 ### Store efficiency: single-handle resend, no-collect reset (FR-082, `NEW-41`, `NEW-42`)
 
-- [ ] T174 [P] [US3] Add a failing test/assertion: `BodyLog::read`'s `range()` reuses a single file
+- [X] T174 [P] [US3] Add a failing test/assertion: `BodyLog::read`'s `range()` reuses a single file
   handle across a multi-message resend (not one open per message), in
-  `crates/truefix-store/tests/bodylog_read_single_handle_per_range.rs` (new).
-- [ ] T175 [P] [US3] Add a failing test/assertion: `redb::reset()` does not collect all keys into an
+  `crates/truefix-store/tests/bodylog_read_single_handle_per_range.rs` (new). — **complete**: 2
+  tests (a multi-entry range still returns every message's correct bytes; a source-level check
+  that `range()` contains exactly one `File::open` call, mirroring this codebase's established
+  pattern for internal-shape checks a black-box test can't directly observe).
+- [X] T175 [P] [US3] Add a failing test/assertion: `redb::reset()` does not collect all keys into an
   intermediate `Vec` before removing them, in
-  `crates/truefix-store/tests/redb_reset_no_intermediate_collect.rs` (new).
-- [ ] T176 [US3] Fix `BodyLog::read` in `crates/truefix-store/src/file.rs` and `reset()` in
+  `crates/truefix-store/tests/redb_reset_no_intermediate_collect.rs` (new). — **complete**: 2 tests
+  (`reset()` still clears every stored message and resets both sequence counters, any message
+  count; a source-level check that `reset()` contains no `Vec<` and does use `retain_in`).
+- [X] T176 [US3] Fix `BodyLog::read` in `crates/truefix-store/src/file.rs` and `reset()` in
   `crates/truefix-store/src/redb.rs`, with behavior otherwise unchanged (existing store test suites
-  must still pass) — makes T174/T175 pass (depends on T105, T174, T175).
+  must still pass) — makes T174/T175 pass (depends on T105, T174, T175). — **complete**: extracted
+  `BodyLog::read_body_at(&mut File, offset, len)` (seek + read_exact only) shared by `read()`
+  (opens its own handle, unchanged behavior) and `range()` (resolves every `(offset, len)` entry
+  under one lock acquisition, then opens exactly one handle reused across the whole range).
+  `RedbStore::reset()` now calls `messages.retain_in(session_range, |_, _| false)` directly instead
+  of collecting every key into a `Vec<(String, u64)>` and removing each individually. `cargo test -p
+  truefix-store --all-features`: full suite passing, no regressions.
 
 ### Codec allocation/complexity hygiene (FR-083, `NEW-35`, `NEW-36`, `NEW-37`, `NEW-38`)
 
-- [ ] T177 [US3] Confirm the full existing `truefix-core` codec/framing test suite passes unchanged
-  before starting (behavior-preservation baseline) — no new file, a pre-check step.
-- [ ] T178 [US3] Reduce manual linear byte-scanning in the decode/framing hot path
+- [X] T177 [US3] Confirm the full existing `truefix-core` codec/framing test suite passes unchanged
+  before starting (behavior-preservation baseline) — no new file, a pre-check step. — **complete**:
+  confirmed passing both before and after T178's changes (`cargo test -p truefix-core`).
+- [X] T178 [US3] Reduce manual linear byte-scanning in the decode/framing hot path
   (`crates/truefix-core/src/codec/decode.rs` ~L155, `crates/truefix-core/src/framing.rs` ~L61),
   double/triple allocation of field values on decode (~L38, ~L50), and per-field `tag.to_string()`
   allocation on encode (`crates/truefix-core/src/codec/encode.rs` ~L122) — implement alongside T107
   (`FR-047`'s `render_members_ordered` dedup, same function/file area) — makes T177's baseline still
   pass unchanged (depends on T107, T177); re-run the full `truefix-core` test suite plus any new
-  allocation-count assertions from T107.
+  allocation-count assertions from T107. — **complete, three independent fixes**: (1) promoted the
+  already-transitive `memchr` crate (Unlicense OR MIT) to a direct `truefix-core` dependency and
+  replaced both hand-rolled `.iter().position()` scans (`framing.rs`'s `find`, `decode.rs`'s
+  `memchr`) with `memchr::memchr` — SIMD-accelerated instead of a scalar byte-by-byte loop; (2)
+  `decode()`'s per-field loop now consumes `fields` via `into_iter()` instead of `.iter()` +
+  `.clone()`, moving each value directly into its `Field` rather than allocating a second copy of
+  every field's bytes; (3) `render_raw` no longer allocates a `String` per field via
+  `tag.to_string()` — added `write_tag` (writes decimal digits directly into the output buffer via
+  a small stack scratch array, `clippy::indexing_slicing`-clean via `get`/`get_mut`). `cargo test -p
+  truefix-core` and `cargo clippy -p truefix-core --all-targets -- -D warnings`: both clean; `cargo
+  build --workspace --all-features`: clean.
 
 **Checkpoint**: All user stories should now be independently functional.
 
@@ -1245,25 +1575,86 @@ allocation/complexity-hygiene items, rather than tracking them only (spec.md's U
 
 **Purpose**: Final regression sweep and documentation, spanning all three user stories.
 
-- [ ] T179 [P] Run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets
-  --all-features -- -D warnings`; fix any diffs/warnings introduced by this feature's changes.
-- [ ] T180 Run `cargo test --workspace --all-features` and `cargo test -p truefix-at --features
+- [X] T179 [P] Run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings`; fix any diffs/warnings introduced by this feature's changes. —
+  **complete**: `cargo fmt --all` reformatted the new US3 code (mechanical only, no logic change);
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`: clean across all 9
+  crates.
+- [X] T180 Run `cargo test --workspace --all-features` and `cargo test -p truefix-at --features
   mongodb,mssql --test conformance --test coverage`; confirm the AT scenario-run floor has grown
   above 424 by exactly the count of new scenarios added in T008, T011, T014, T019, T022, T029, T032,
   T054, T090, T093, T111, T129, T135, T156, T159 — record the final number in this task's outcome
-  and update `quickstart.md`'s Prerequisites section with it.
-- [ ] T181 [P] Update `quickstart.md`'s placeholder test-file names with the actual landed file names
+  and update `quickstart.md`'s Prerequisites section with it. — **complete, with a corrected
+  command**: `truefix-at` has no `mongodb`/`mssql` Cargo features (those belong to
+  `truefix-store`/`truefix-log`/`truefix-config`/`truefix`; the AT harness doesn't touch either
+  backend) — ran `cargo test -p truefix-at --test conformance --test coverage` instead.
+  `cargo test --workspace --all-features`: 249 test binaries, 0 failures. AT scenario-run floor:
+  **483** (up from 424 at this feature's Setup baseline) — the growth comes from this feature's
+  own additions across both US1/US2 (T008/T011/T014/T019/T022/T029/T032/T054/T090/T093/T111,
+  landing at 444 per T111's own note) and US3 (T128/T129's `FLAT_DICTIONARY_VERSIONS` extension of
+  3 existing scenarios to 5 versions each, +12 net beyond the original single-FIX.4.4 runs; T135's
+  3 new Logon-identity-mismatch scenarios × 9 versions, +27) — 444 + 12 + 27 = 483, confirmed by
+  `cargo test -p truefix-at --test conformance server_acceptance_suite_passes -- --nocapture`'s
+  `AT report: 483/483 scenario runs passed`. `quickstart.md`'s Prerequisites section updated (see
+  T181).
+- [X] T181 [P] Update `quickstart.md`'s placeholder test-file names with the actual landed file names
   from every task above (the same correction 006's T092 and 007's T118-equivalent Polish task made).
-- [ ] T182 Verify no reference-implementation source-copying occurred across this feature's changes
+  — **complete**: fixed 15 stale/wrong references (verified every remaining `--test <name>`
+  reference resolves to a real file via a script cross-checking the whole document against the
+  repo) — `NEW-54`'s line now notes it was refuted (T003/T004, no file); `NEW-11`/`NEW-14`/`NEW-17`
+  point at their actual `#[cfg(test)]` unit-test-module or existing-file locations instead of
+  never-created integration-test files; `NEW-96`/`NEW-89` corrected from `truefix-transport`/
+  `truefix-session` to their real crate (`truefix-config`); `NEW-85`/`NEW-86` merged into the
+  single `too_high_logout_and_resend_request.rs` file that actually landed; `NEW-62` points at the
+  strengthened `schedule_enforcement.rs` rather than a new file; `NEW-29`/`NEW-51`/`NEW-61`/
+  `NEW-35`-`38` noted as "no new file" (existing scenarios/suite strengthened in place, or a
+  manually-verified one-line build-script directive); `NEW-92` points at its actual
+  `#[cfg(test)]` module in `truefix/src/lib.rs`; added the missing `NEW-52`
+  (`per_scenario_reporting.rs`) entry; corrected the Prerequisites/Final-regression-check sections'
+  424→483 floor and removed the invalid `truefix-at --features mongodb,mssql` (that crate has no
+  such features). Spot-verified a representative sample of the corrected commands actually run.
+- [X] T182 Verify no reference-implementation source-copying occurred across this feature's changes
   (Constitution Principle III) — spot-check the FIXT/dictionary/codegen-heavy tasks (T017, T020,
   T046, T048, T059, T086, T116-T125, T146, T154) in particular, since those areas most closely track
-  QuickFIX/J/Go documented behavior.
-- [ ] T183 Confirm every acceptor-only fix (T006/T009 acceptor role, T012, T030, T078, T150) and
+  QuickFIX/J/Go documented behavior. — **complete**: grepped the whole changed surface
+  (`truefix-dict`/`truefix-core`/`truefix-session`) for copyright notices, QFJ/QFGo source URLs,
+  and Java-isms (`public class`, `@Override`, `import java.`, etc.) that would indicate a verbatim
+  port — zero hits. Read `tags::is_header`'s tag list (T017), `codegen::version_appl_ver_id`/
+  `version_begin_string` (T046), and `model::DataDictionary::extend` (T154) directly: all are
+  idiomatic, original Rust using only the FIX protocol's own public standard tag numbers/enum
+  values (not QFJ/QFGo's proprietary source), matching this feature's established
+  no-source-copying discipline throughout.
+- [X] T183 Confirm every acceptor-only fix (T006/T009 acceptor role, T012, T030, T078, T150) and
   every symmetric session-protocol fix (T009, T015, T023, T033, T055, T080, T094, T112, T157, T160)
   has both acceptor-side and initiator-side test coverage per Constitution Principle VI — file a
-  follow-up task for any gap found rather than closing this task with a gap silently accepted.
-- [ ] T184 Run `quickstart.md`'s full "Final regression check" section end-to-end as the last gate
-  before considering this feature complete.
+  follow-up task for any gap found rather than closing this task with a gap silently accepted. —
+  **complete, one real gap found and fixed**: grepped `state.rs` for every `role ==`/
+  `Role::Acceptor`/`Role::Initiator` branch (only 4 exist in the whole file) and cross-referenced
+  each listed task's fix location against them. T006/T009's pre-logon DoS timeout and T078's
+  `SocketReuseAddress` are genuinely acceptor-only (no initiator equivalent exists — initiators
+  don't accept unauthenticated inbound connections or bind listening sockets); T012's
+  `acceptor_forces_reset` is deliberately acceptor-only by design (the initiator's own `ResetOnLogon`
+  handling is a separate, pre-existing, unmodified code path in `on_connected`); T150's Monitor-entry
+  removal test already drives a real acceptor/initiator pair. T009/T015/T023/T033/T055/T080/T112/
+  T157/T160's fixes all sit outside any role-branch (confirmed by reading the surrounding code:
+  `identity_problem`, `latency_ok`, `validate_app`'s dictionary-invalid-Logon path, the
+  `DefaultApplVerID` check, etc. all execute identically before `on_logon`'s role split), so their
+  single-role (`Role::Acceptor`) unit tests are representative of both, matching this project's own
+  established `initiator_validation.rs` precedent. T094 already had both roles in its own test.
+  **T030 was a genuine gap**: NEW-62's schedule-exit Logout fix (`on_tick`'s `SessionState::LoggedOn`
+  arm) has no role check at all, but `schedule_enforcement.rs` only ever exercised it for
+  `Role::Acceptor`. Added
+  `logged_on_initiator_session_is_disconnected_once_the_schedule_window_elapses`, confirming the
+  identical behavior for an initiator session. `cargo test -p truefix-session --test
+  schedule_enforcement`: 6/6 passing (was 5).
+- [X] T184 Run `quickstart.md`'s full "Final regression check" section end-to-end as the last gate
+  before considering this feature complete. — **complete**: `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings` re-confirmed clean after
+  T183's addition to `schedule_enforcement.rs`. `cargo test --workspace --all-features` (249 test
+  binaries, 0 failures) and the AT suite at 483/483 scenario runs were already confirmed at T180;
+  re-ran only the specifically-touched `cargo test -p truefix-session --test schedule_enforcement`
+  (6/6 passing, was 5) rather than repeating the full workspace run, per user instruction. All of
+  US3 (T115-T178) plus Polish (T179-T184) complete — feature 009 finished.
 
 ---
 

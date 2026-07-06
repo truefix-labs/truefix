@@ -200,25 +200,30 @@ fn fixt_dictionaries_falls_back_to_the_logon_negotiated_default_appl_ver_id() {
 }
 
 #[test]
-fn fixt_dictionaries_with_no_resolvable_appl_ver_id_skips_validation_like_no_dictionary() {
+fn unresolvable_per_message_appl_ver_id_skips_validation_like_no_dictionary() {
+    // NEW-88 (feature 009): this test previously logged on with an *unregistered* Logon-level
+    // DefaultApplVerID("FIX.9.9") and asserted that succeeded -- that was exactly the gap NEW-88
+    // closes (see `default_appl_ver_id_validated.rs`: an invalid/unregistered DefaultApplVerID on
+    // Logon is now rejected). Rewritten to use a valid, registered DefaultApplVerID on Logon, and
+    // instead exercise the still-intentionally-unvalidated case this test's name now reflects: a
+    // later message's own per-message ApplVerID(1128) that doesn't match any registered
+    // application dict (a `validate_app` dict-selection concern, unrelated to Logon-time
+    // DefaultApplVerID validation).
     let mut s = Session::new(cfg());
-    // No `with_default_appl_ver_id`, no per-message 1128, and the Logon's own 1137 doesn't match
-    // any registered application dict -- nothing resolves. (FIXT.1.1's transport dictionary
-    // requires 1137 be *present* on Logon -- BUG-89/FR-011, feature 007: Logon now validates
-    // against the transport dict too -- so this can't omit it entirely the way it used to; using
-    // an unregistered value keeps the "nothing resolves" scenario intact.)
     let dicts = FixtDictionaries::new(load_fixt11().unwrap())
         .with_application("FIX.4.4", load_fix44().unwrap());
     s.set_fixt_dictionaries(dicts, ValidationOptions::default());
     s.handle(Event::Connected);
-    s.handle(Event::Received(logon_with_default_appl_ver_id("FIX.9.9")));
+    s.handle(Event::Received(logon_with_default_appl_ver_id("FIX.4.4")));
     assert_eq!(s.state(), SessionState::LoggedOn);
-    assert_eq!(s.negotiated_appl_ver_id(), Some("FIX.9.9"));
 
-    let actions = s.handle(Event::Received(new_order("Z", 2))); // bad Side, but unvalidated
+    let actions = s.handle(Event::Received(new_order_with_appl_ver_id(
+        "Z", 2, "FIX.9.9",
+    )));
     assert!(
         sent(&actions).iter().all(|m| m.msg_type() != Some("3")),
-        "an unresolvable ApplVerID must be treated like the no-dictionary case (skip, not reject)"
+        "an unresolvable per-message ApplVerID must be treated like the no-dictionary case (skip, \
+         not reject)"
     );
     assert_eq!(s.next_in_seq(), 3, "the message is still consumed");
 }

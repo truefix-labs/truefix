@@ -299,7 +299,6 @@ pub struct Monitor {
 
 struct MonitorEntry {
     status: SessionStatus,
-    connected: bool,
     control: mpsc::Sender<Control>,
 }
 
@@ -311,14 +310,7 @@ impl Monitor {
 
     fn register(&self, id: SessionId, status: SessionStatus, control: mpsc::Sender<Control>) {
         if let Ok(mut map) = self.inner.lock() {
-            map.insert(
-                id,
-                MonitorEntry {
-                    status,
-                    connected: true,
-                    control,
-                },
-            );
+            map.insert(id, MonitorEntry { status, control });
         }
     }
 
@@ -330,11 +322,16 @@ impl Monitor {
         }
     }
 
+    // NEW-48 (feature 009): previously only flipped `connected` to `false` and left the entry in
+    // place — for a long-lived multi-session acceptor where each newly-provisioned dynamic session
+    // identity is unlikely to reconnect with that exact identity again, this made the map grow
+    // monotonically for the process's entire lifetime. Removing the entry outright means a
+    // genuinely-reconnecting session (fixed identity) simply gets re-inserted by the next
+    // `register()` call, at the cost of `status()`/`sessions()` no longer reflecting a session
+    // during the brief window between disconnect and reconnect.
     fn mark_disconnected(&self, id: &SessionId) {
-        if let Ok(mut map) = self.inner.lock()
-            && let Some(entry) = map.get_mut(id)
-        {
-            entry.connected = false;
+        if let Ok(mut map) = self.inner.lock() {
+            map.remove(id);
         }
     }
 
@@ -343,13 +340,11 @@ impl Monitor {
         self.inner.lock().ok()?.get(id).map(|e| e.status)
     }
 
-    /// Whether `id`'s connection is currently up.
+    /// Whether `id`'s connection is currently up. NEW-48 (feature 009): a disconnected session's
+    /// entry is removed outright (see `mark_disconnected`), so presence in the map now *is* the
+    /// connected signal — no separate `connected` flag to fall stale.
     pub fn is_connected(&self, id: &SessionId) -> bool {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|m| m.get(id).map(|e| e.connected))
-            .unwrap_or(false)
+        self.inner.lock().is_ok_and(|m| m.contains_key(id))
     }
 
     /// All known session ids.

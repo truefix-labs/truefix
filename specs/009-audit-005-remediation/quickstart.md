@@ -4,11 +4,6 @@
 
 Runnable scenarios that prove each user story works end-to-end. Run from the repo root.
 
-> **Test file names below are placeholders** — `/speckit-tasks` hasn't run yet. These are plausible
-> names following each crate's existing convention, not yet-created files; update this guide with
-> the actual landed names once `/speckit-tasks`/`/speckit-implement` land them (standard practice in
-> this repository — 006/007's quickstarts needed the same correction as a Polish task).
->
 > `cargo test -- <substring>` filters match *test function names*, not file names — a filter that
 > matches nothing silently reports `0 passed; ... ok`, a false-green. Use `--test <file>` (runs the
 > named integration-test binary in full) as shown below.
@@ -19,7 +14,9 @@ Runnable scenarios that prove each user story works end-to-end. Run from the rep
 - `cargo test --workspace --all-features` and
   `cargo clippy --workspace --all-targets --all-features -- -D warnings` green before validating any
   scenario below. AT suite baseline at `/speckit-plan` time (2026-07-05): 424/424 scenario runs
-  (research.md §R3), 4/4 conformance tests passing.
+  (research.md §R3), 4/4 conformance tests passing. **At Polish closeout (T180): 483/483 scenario
+  runs**, 4/4 conformance tests passing — the growth comes from this feature's own scenario
+  additions (see `contracts/README.md`'s AT-impact table for the per-item breakdown).
 - `mongodb` and `mssql` Cargo features are required for the Mongo/MSSQL-specific scenarios below
   (`cargo test -p truefix-store --features mongodb ...`, etc.) — no live MongoDB/MSSQL server is
   required for the config-plumbing-only tests; the transactional/durability tests do need one (a
@@ -31,7 +28,8 @@ Runnable scenarios that prove each user story works end-to-end. Run from the rep
 ## User Story 1 — Protocol-correctness, data-loss, and security defects
 
 ```bash
-cargo test -p truefix-store --features mongodb --test mongo_seq_persistence     # new — NEW-54
+# NEW-54 REFUTED (T003/T004): confirmed `bson::doc!`'s single-token key is a Rust expression, not
+# `stringify!`'d — MongoStore::set_seq was already correct. No test/fix landed for this item.
 cargo test -p truefix-transport --test multisession_prelogon_dos_timeout        # new — NEW-93
 cargo test -p truefix-session --test resend_begin_seq_zero                      # new — NEW-02
 cargo test -p truefix-session --test acceptor_reset_on_logon                    # new — NEW-03
@@ -40,18 +38,25 @@ cargo test -p truefix-core --test fixt_header_tags                             #
 cargo test -p truefix-transport --test fixt_group_aware_decode                  # new — NEW-58
 cargo test -p truefix-session --test teardown_reset_reason                     # new — NEW-56
 cargo test -p truefix-store --features mongodb --test mongo_atomic_save_advance # new — NEW-08
-cargo test -p truefix-transport --test tls_native_trust_store_fallback          # new — NEW-11
-cargo test -p truefix-session --test schedule_exit_sends_logout                # new — NEW-62
+# NEW-11: no new integration-test file — a `#[cfg(test)] mod native_trust_store_tests` inside
+# `crates/truefix-transport/src/tls_config.rs` itself (needs the private `native_root_store` fn).
+cargo test -p truefix-transport --lib native_trust_store_tests                  # NEW-11
+# NEW-62: strengthened an existing test instead of a new file (added the missing Logout assertion).
+cargo test -p truefix-session --test schedule_enforcement                       # NEW-62
 cargo test -p truefix-session --test dict_invalid_logon_rejection              # new — NEW-63
 cargo test -p truefix-log --features mssql --test mssql_url_parsing_parity      # new — NEW-09
 cargo test -p truefix-config --test validation_key_wiring                      # new — NEW-10
 cargo test -p truefix-transport --test proxy_header_capture                    # new — NEW-12/13
-cargo test -p truefix-transport --test scheduled_initiator_connect_nonblocking  # new — NEW-14
-cargo test -p truefix-dict --test udf_validation_short_circuit                 # new — NEW-17
-cargo test -p truefix-dict --test fix50_applverid_dispatch                    # new — NEW-06
+# NEW-14: no new integration-test file — a `#[cfg(test)] mod scheduled_initiator_nonblocking_connect_tests`
+# inside `crates/truefix-transport/src/lib.rs` (uses `tokio::time::pause()` virtual time).
+cargo test -p truefix-transport --lib scheduled_initiator_nonblocking_connect_tests # NEW-14
+# NEW-17: added to the existing `toggles.rs` file instead of a new one.
+cargo test -p truefix-dict --test toggles                                       # NEW-17
+cargo test -p truefix-dict --test fix5_applverid_dispatch                      # new — NEW-06
 cargo test -p truefix-dict --test multiple_char_value_per_token               # new — NEW-07
 cargo test -p truefix-store --features mssql --test mssql_trust_cert_opt_in    # new — NEW-90
-cargo test -p truefix-transport --test log_message_when_session_not_found      # new — NEW-96
+# NEW-96: lands in truefix-config (the `.cfg`-parsing layer), not truefix-transport.
+cargo test -p truefix-config --test log_message_when_session_not_found         # new — NEW-96
 cargo test -p truefix-at --test coverage
 cargo test -p truefix-at --test conformance
 ```
@@ -103,8 +108,7 @@ cargo test -p truefix-store --test bodylog_reset_lock_order              # new �
 cargo test -p truefix-store --test creation_time_parse_error             # new — NEW-77
 cargo test -p truefix-core --test render_members_ordered_no_dup          # new — NEW-80
 cargo test -p truefix-core --test fieldmap_set_removes_duplicates        # new — NEW-81
-cargo test -p truefix-session --test too_high_logout_immediate           # new — NEW-85
-cargo test -p truefix-session --test too_high_resend_request_not_replayed # new — NEW-86
+cargo test -p truefix-session --test too_high_logout_and_resend_request # new — NEW-85/86
 cargo test -p truefix-transport --test proxy_unknown_address_consumes_bytes # new — NEW-94
 cargo test -p truefix-at --test coverage
 cargo test -p truefix-at --test conformance
@@ -118,18 +122,22 @@ User Story 1's fixes; AT suite scenario-run count does not regress below the pos
 ```bash
 cargo test -p truefix-dict --test fix_repository_group_converter_fix    # new — NEW-05
 cargo test -p truefix-dict --test orchestra_map_type_parity              # new — NEW-60
-cargo test -p truefix-dict --test build_rs_rerun_if_changed              # new/manual — NEW-61
+# NEW-61: one-line build.rs directive, verified manually (touching only codegen.rs triggers a
+# rebuild) — no automated test file for a build-script directive.
 cargo test -p truefix-dict --test codegen_parse_dict_errors              # new — NEW-78
 cargo test -p truefix-dict --test codegen_enum_dedup                     # new — NEW-79
 cargo test -p truefix-dict --test generate_code_hash_consistency          # new — NEW-82
 cargo test -p truefix-at --test read_message_three_outcomes              # new — NEW-15/16
 cargo test -p truefix-at --test all_versions_have_validators             # new — NEW-28
-cargo test -p truefix-at --test latency_scenarios_assert_reject_reason    # new — NEW-29
+# NEW-29: strengthened 4 existing scenario functions in scenarios.rs directly — no new test file.
+cargo test -p truefix-at --test conformance                              # extended — NEW-29
 cargo test -p truefix-at --test buffer_empty_at_scenario_end              # new — NEW-30
 cargo test -p truefix-at --test fixed_identity_acceptor_scenarios         # new — NEW-83
 cargo test -p truefix-at --test check_match_flags_extra_fields           # new — NEW-50
-cargo test -p truefix-at --test outbound_seqnum_ordering_asserted        # new — NEW-51
-cargo test -p truefix-at --test conformance                              # extended — NEW-52 (per-scenario reporting)
+# NEW-51: strengthened ~20 existing resend/gap-fill/sequence-reset scenario functions with outbound
+# MsgSeqNum(34) assertions directly — no new test file.
+cargo test -p truefix-at --test conformance                              # extended — NEW-51
+cargo test -p truefix-at --test per_scenario_reporting                   # new — NEW-52
 cargo test -p truefix-dict --test duplicate_dict_definitions_error       # new — NEW-43
 cargo test -p truefix-dict --test strip_comment_preserves_hash_in_string # new — NEW-44
 cargo test -p truefix-dict --test fix5_subversion_parsing                # new — NEW-45
@@ -139,16 +147,22 @@ cargo test -p truefix-transport --test http_connect_status_validation    # new �
 cargo test -p truefix-dict --test extend_detects_name_collision          # new — NEW-53
 cargo test -p truefix-session --test reject_before_logout                # new — NEW-87
 cargo test -p truefix-session --test defaultapplverid_validated          # new — NEW-88
-cargo test -p truefix-session --test logout_timeout_default              # new — NEW-89
+# NEW-89: lands in truefix-config (the `.cfg`-parsing default), not truefix-session.
+cargo test -p truefix-config --test logout_timeout_default               # new — NEW-89
 cargo test -p truefix-log --test async_writer_flush_on_shutdown          # new — NEW-91
-cargo test -p truefix --test acceptor_group_start_order_deterministic    # new — NEW-92
+# NEW-92: no new integration-test file — a `#[cfg(test)] mod acceptor_group_start_order_tests`
+# inside `crates/truefix/src/lib.rs` (no public constructor path for the real `ResolvedSession`
+# grouping from an external test).
+cargo test -p truefix --lib acceptor_group_start_order_tests             # NEW-92
 cargo test -p truefix-transport --test tls_trust_store_load_diagnostics  # new — NEW-95
 cargo test -p truefix-core --test decode_max_body_len_consistency        # new — NEW-04
 cargo test -p truefix-session --test sessionid_display_includes_subid    # new — NEW-39
 cargo test -p truefix-config --test unresolved_variable_line_number      # new — NEW-47
 cargo test -p truefix-store --test bodylog_read_single_handle_per_range  # new — NEW-41
 cargo test -p truefix-store --test redb_reset_no_intermediate_collect    # new — NEW-42
-cargo test -p truefix-core --test decode_encode_allocation_hygiene       # new — NEW-35/36/37/38
+# NEW-35/36/37/38: no dedicated new test file — verified by the existing `truefix-core` codec/
+# framing suite passing unchanged (byte-for-byte identical wire behavior).
+cargo test -p truefix-core                                              # NEW-35/36/37/38
 ```
 
 Expected: dictionary-regeneration tooling matches the shipped hand-normalized `.fixdict` files and
@@ -164,10 +178,12 @@ fixed with byte-for-byte unchanged wire behavior on the existing codec test suit
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-cargo test -p truefix-at --features mongodb,mssql --test conformance
-cargo test -p truefix-at --features mongodb,mssql --test coverage
+# truefix-at has no mongodb/mssql Cargo features (the AT harness doesn't touch either backend) —
+# its suite is exercised via cargo test --workspace --all-features above.
+cargo test -p truefix-at --test conformance
+cargo test -p truefix-at --test coverage
 ```
 
-Expected: zero fmt/clippy diffs; full workspace test suite green; AT suite at or above the 424-run
-floor with all 4 conformance tests passing and (per `FR-065`/`NEW-52`) individually-reported
-per-scenario results within `server_acceptance_suite_passes`.
+Expected: zero fmt/clippy diffs; full workspace test suite green; AT suite at the 483-run floor (up
+from 424 at this feature's Setup baseline) with all 4 conformance tests passing and (per
+`FR-065`/`NEW-52`) individually-reported per-scenario results within `server_acceptance_suite_passes`.

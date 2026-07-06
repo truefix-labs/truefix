@@ -51,7 +51,12 @@ async fn a_no_hops_header_group_is_structured_under_fixt_dual_dictionary_config(
     let mut acc_cfg = SessionConfig::new("FIXT.1.1", "SERVER", "CLIENT", Role::Acceptor);
     acc_cfg.check_latency = false;
     let transport_dict = load_fixt11().expect("FIXT11 transport dictionary");
-    let dicts = FixtDictionaries::new(transport_dict);
+    // T160 (feature 009, NEW-88): `on_logon` now validates a present `DefaultApplVerID` against
+    // the configured `FixtDictionaries` -- register FIX50SP2 (ApplVerID "9", the value this
+    // Logon's own DefaultApplVerID(1137) carries below) so that validation resolves, rather than
+    // rejecting a Logon this test's actual point (header-group structuring) doesn't care about.
+    let app_dict = truefix_dict::load_fix50sp2().expect("FIX50SP2 application dictionary");
+    let dicts = FixtDictionaries::new(transport_dict).with_application("9", app_dict);
     let acceptor = Acceptor::bind_with(
         "127.0.0.1:0".parse().unwrap(),
         acc_cfg,

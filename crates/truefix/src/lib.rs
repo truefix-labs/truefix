@@ -294,6 +294,12 @@ pub struct Engine {
     /// `logout()`/`send()`), so this is purely additive rather than changing `initiators()`'s
     /// existing type.
     failover_initiators: Vec<ReconnectHandle>,
+    /// Every log built for a session this `Engine` started (NEW-91, feature 009), for
+    /// [`Engine::logs`] — a caller wanting entries queued in an async log backend flushed before
+    /// tearing down should iterate it and await [`truefix_log::Log::shutdown`] on each, mirroring
+    /// the existing `initiators()`-then-`.logout().await` pattern for a graceful plain-initiator
+    /// stop, since `Engine::shutdown()`/`Drop` both stay synchronous by design (BUG-21/FR-023).
+    logs: Vec<Arc<dyn truefix_log::Log>>,
 }
 
 impl Engine {
@@ -323,6 +329,12 @@ impl Engine {
         let mut acceptors = Vec::new();
         let mut initiators = Vec::new();
         let mut failover_initiators = Vec::new();
+        // NEW-91 (feature 009): every log built while starting sessions below, so a caller
+        // wanting a graceful flush-on-shutdown can iterate `Engine::logs()` and await
+        // `Log::shutdown()` on each — mirroring the existing `initiators()`-then-`.logout().await`
+        // pattern for a graceful plain-initiator stop, since `Engine::shutdown()`/`Drop` both stay
+        // synchronous by design (BUG-21/FR-023).
+        let mut logs: Vec<Arc<dyn truefix_log::Log>> = Vec::new();
 
         // US2 (feature 005, BUG-03): group resolved acceptor sessions by bind address so multiple
         // `[SESSION]` blocks sharing one `SocketAcceptPort` are served by ONE listener. Before this,
@@ -358,6 +370,12 @@ impl Engine {
             }
         }
 
+        // T164/T165 (feature 009, NEW-92): `HashMap` iteration order is randomized (each `HashMap`
+        // gets its own freshly-keyed hasher state, so even repeated calls within one process can
+        // differ), so two runs over the same config could start this engine's acceptor-group
+        // listeners in a different order — mostly harmless, but an observable nondeterminism
+        // (log/startup-event ordering, listen-backlog readiness timing under load) with no upside.
+        let acceptor_groups = sorted_by_endpoint(acceptor_groups);
         for (addr, members) in acceptor_groups {
             // BUG-61/FR-022 (feature 007): store (feature 006, BUG-07) and now
             // log/validator/fixt_dictionaries are each resolved per statically-registered member
@@ -474,6 +492,9 @@ impl Engine {
                     log_message_when_session_not_found: primary.log_message_when_session_not_found,
                     ..Services::default()
                 };
+                if let Some(log) = &services.log {
+                    logs.push(log.clone());
+                }
 
                 let mut allow: Vec<IpAddr> = Vec::new();
                 for m in &members {
@@ -535,6 +556,9 @@ impl Engine {
                             } else {
                                 None
                             };
+                            if let Some(log) = &member_log {
+                                logs.push(log.clone());
+                            }
                             let member_fixt_dictionaries =
                                 m.fixt_dictionaries.clone().map(|dicts| {
                                     let opts = m.validator.as_ref().map_or_else(
@@ -630,6 +654,9 @@ impl Engine {
                     log_message_when_session_not_found: rs.log_message_when_session_not_found,
                     ..Services::default()
                 };
+                if let Some(log) = &services.log {
+                    logs.push(log.clone());
+                }
                 match rs.connection {
                     ConnectionType::Acceptor => {
                         let bind_addr = resolve_socket_endpoint(&rs.address)
@@ -791,6 +818,7 @@ impl Engine {
             acceptors,
             initiators,
             failover_initiators,
+            logs,
         })
     }
 
@@ -806,6 +834,15 @@ impl Engine {
     /// unchanged.
     pub fn failover_initiators(&self) -> &[ReconnectHandle] {
         &self.failover_initiators
+    }
+
+    /// Every log built for a session this `Engine` started (NEW-91, feature 009). `shutdown()`/
+    /// `Drop` don't flush these (both stay synchronous by design, see [`Engine::shutdown`]'s own
+    /// doc) — a caller wanting queued async-log entries flushed before tearing down should await
+    /// [`truefix_log::Log::shutdown`] on each of these first, the same way a caller wanting a
+    /// graceful plain-initiator stop calls `.logout().await` on each of [`Engine::initiators`].
+    pub fn logs(&self) -> &[Arc<dyn truefix_log::Log>] {
+        &self.logs
     }
 
     /// Abort all acceptor listeners, stop all failover-initiator reconnect loops, and (BUG-27/
@@ -875,5 +912,47 @@ async fn cleanup_partial_start(
     abort_acceptors_and_stop_failover(acceptors, failover_initiators);
     for initiator in initiators {
         initiator.logout().await;
+    }
+}
+
+/// Sort `HashMap` entries by their `SocketEndpoint` key's `(host, port)` (T164/T165, feature 009,
+/// NEW-92) — `HashMap` iteration order is randomized (a freshly-keyed hasher per instance), so
+/// consuming one directly would start `Engine::start`'s acceptor-group listeners in a different,
+/// unreproducible order across runs over the identical config.
+fn sorted_by_endpoint<T>(map: HashMap<SocketEndpoint, T>) -> Vec<(SocketEndpoint, T)> {
+    let mut entries: Vec<_> = map.into_iter().collect();
+    entries.sort_by(|(a, _), (b, _)| (a.host(), a.port()).cmp(&(b.host(), b.port())));
+    entries
+}
+
+#[cfg(test)]
+mod acceptor_group_start_order_tests {
+    use super::sorted_by_endpoint;
+    use truefix_config::SocketEndpoint;
+
+    /// T164 (feature 009, NEW-92): a failing-test-first check of `sorted_by_endpoint` in
+    /// isolation — `Engine::start`'s actual acceptor-group construction has no public
+    /// constructor path for `ResolvedSession` reachable from an external integration test, so
+    /// this exercises the exact sort this fix added directly, the same way
+    /// `scheduled_initiator_nonblocking_connect_tests` (`crates/truefix-transport/src/lib.rs`)
+    /// unit-tests connect-timeout logic that isn't practically triggerable end-to-end either.
+    #[test]
+    fn sorted_by_endpoint_is_stable_regardless_of_input_order() {
+        let a = SocketEndpoint::new("127.0.0.1", 1000);
+        let b = SocketEndpoint::new("127.0.0.1", 2000);
+        let c = SocketEndpoint::new("192.168.0.1", 500);
+
+        let forward: std::collections::HashMap<SocketEndpoint, u32> =
+            [(a.clone(), 1), (b.clone(), 2), (c.clone(), 3)]
+                .into_iter()
+                .collect();
+        let reverse: std::collections::HashMap<SocketEndpoint, u32> =
+            [(c.clone(), 3), (b.clone(), 2), (a.clone(), 1)]
+                .into_iter()
+                .collect();
+
+        let expected = vec![(a, 1), (b, 2), (c, 3)]; // host "127.0.0.1" < "192.168.0.1"; 1000 < 2000
+        assert_eq!(sorted_by_endpoint(forward), expected);
+        assert_eq!(sorted_by_endpoint(reverse), expected);
     }
 }

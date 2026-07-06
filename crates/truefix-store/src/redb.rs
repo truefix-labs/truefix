@@ -222,18 +222,17 @@ impl MessageStore for RedbStore {
             let txn = db.begin_write().map_err(backend)?;
             {
                 let mut messages = txn.open_table(MESSAGES).map_err(backend)?;
-                let keys: Vec<(String, u64)> = messages
-                    .range((session_id.as_str(), 0)..=(session_id.as_str(), u64::MAX))
-                    .map_err(backend)?
-                    .filter_map(|entry| entry.ok())
-                    .map(|(key, _)| {
-                        let (sid, seq) = key.value();
-                        (sid.to_owned(), seq)
-                    })
-                    .collect();
-                for (sid, seq) in keys {
-                    messages.remove((sid.as_str(), seq)).map_err(backend)?;
-                }
+                // T174/T175/T176 (feature 009, NEW-42): `retain_in` removes every entry in the
+                // range directly (predicate `false` => removed) instead of first collecting every
+                // key into an intermediate `Vec` and then removing each individually — avoids
+                // holding a full copy of every key this session has ever stored in memory just to
+                // reset it.
+                messages
+                    .retain_in(
+                        (session_id.as_str(), 0)..=(session_id.as_str(), u64::MAX),
+                        |_, _| false,
+                    )
+                    .map_err(backend)?;
                 let mut sender = txn.open_table(SENDER_SEQ).map_err(backend)?;
                 sender.insert(session_id.as_str(), 1u64).map_err(backend)?;
                 let mut target = txn.open_table(TARGET_SEQ).map_err(backend)?;

@@ -70,7 +70,9 @@ impl MongoLogConfig {
 /// A MongoDB-backed log writing to configurable incoming/outgoing/event collections via a
 /// background task (US6).
 pub struct MongoLog {
-    tx: mpsc::Sender<Entry>,
+    // NEW-91 (feature 009): see `RedbLog`'s identical field for the rationale.
+    tx: std::sync::Mutex<Option<mpsc::Sender<Entry>>>,
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     include_heartbeats: bool,
 }
 
@@ -93,7 +95,7 @@ impl MongoLog {
 
         let (tx, mut rx) = mpsc::channel::<Entry>(ASYNC_LOG_CHANNEL_CAPACITY);
         let session_id = config.session_id;
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             while let Some(entry) = rx.recv().await {
                 match entry {
                     Entry::Message { direction, text } => {
@@ -124,18 +126,28 @@ impl MongoLog {
         });
 
         Ok(Self {
-            tx,
+            tx: std::sync::Mutex::new(Some(tx)),
+            task: std::sync::Mutex::new(Some(task)),
             include_heartbeats: config.include_heartbeats,
         })
     }
+
+    fn send(&self, entry: Entry) {
+        if let Ok(guard) = self.tx.lock()
+            && let Some(tx) = guard.as_ref()
+        {
+            let _ = tx.try_send(entry);
+        }
+    }
 }
 
+#[async_trait::async_trait]
 impl Log for MongoLog {
     fn on_incoming(&self, message: &str) {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.try_send(Entry::Message {
+        self.send(Entry::Message {
             direction: "I",
             text: message.to_owned(),
         });
@@ -144,14 +156,22 @@ impl Log for MongoLog {
         if is_heartbeat(message) && !self.include_heartbeats {
             return;
         }
-        let _ = self.tx.try_send(Entry::Message {
+        self.send(Entry::Message {
             direction: "O",
             text: message.to_owned(),
         });
     }
     fn on_event(&self, text: &str) {
-        let _ = self.tx.try_send(Entry::Event {
+        self.send(Entry::Event {
             text: text.to_owned(),
         });
+    }
+    async fn shutdown(&self) {
+        let tx = self.tx.lock().ok().and_then(|mut guard| guard.take());
+        drop(tx);
+        let task = self.task.lock().ok().and_then(|mut guard| guard.take());
+        if let Some(task) = task {
+            let _ = task.await;
+        }
     }
 }

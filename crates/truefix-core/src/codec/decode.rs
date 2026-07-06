@@ -7,6 +7,7 @@
 use crate::error::DecodeError;
 use crate::field::Field;
 use crate::field_map::FieldMap;
+use crate::framing::MAX_BODY_LEN;
 use crate::group::{Group, GroupSpec};
 use crate::message::Message;
 use crate::tags::{
@@ -35,8 +36,10 @@ pub fn decode(input: &[u8]) -> Result<Message, DecodeError> {
     let fields = tokenize_validated(input)?;
     let mut msg = Message::new();
     let mut max_section_seen = 0u8;
-    for (i, (tag, value, _)) in fields.iter().enumerate() {
-        let (tag, value) = (*tag, value.clone());
+    // T177/T178 (feature 009, NEW-37/38): `fields` is consumed here and nowhere else, so taking
+    // ownership via `into_iter()` moves each value straight into its `Field` — previously
+    // `.iter()` + `.clone()` allocated a second copy of every field's value bytes for no reason.
+    for (i, (tag, value, _)) in fields.into_iter().enumerate() {
         let section = section_of(tag);
         if section < max_section_seen {
             msg.fields_out_of_order = true;
@@ -198,6 +201,20 @@ fn tokenize_validated(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
         return Err(DecodeError::InvalidBodyLength);
     }
     let declared_bl = parse_usize(&second.1).ok_or(DecodeError::InvalidBodyLength)?;
+    // T168/T169 (feature 009, NEW-04): `frame_length` (the normal transport read-loop path)
+    // rejects a declared BodyLength beyond `MAX_BODY_LEN` before ever buffering that many bytes —
+    // but `decode`/`Message::decode` is also a public API callable directly on arbitrary bytes,
+    // bypassing `frame_length` entirely. Without this check here too, a caller using `decode`
+    // directly (not through the transport read loop) could have to hold a many-times-larger
+    // buffer in memory than the transport path would ever have allowed, once actual_bl below is
+    // checked against it — the exact same resource-exhaustion shape `MAX_BODY_LEN` exists to
+    // prevent, just reachable through a different entry point.
+    if declared_bl > MAX_BODY_LEN {
+        return Err(DecodeError::BodyLengthTooLarge {
+            declared: declared_bl,
+            max: MAX_BODY_LEN,
+        });
+    }
 
     // BUG-80/FR-049 (feature 007): MsgType (tag 35) must be present somewhere in the message --
     // previously unchecked entirely, so a message missing it (e.g. a near-empty frame containing
@@ -341,8 +358,10 @@ fn tokenize(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
     Ok(tokens)
 }
 
+/// T177/T178 (feature 009, NEW-35/36): a SIMD-accelerated search, replacing a hand-rolled
+/// `.iter().position()` byte-by-byte scan in this decode hot path.
 fn memchr(haystack: &[u8], needle: u8) -> Option<usize> {
-    haystack.iter().position(|&b| b == needle)
+    memchr::memchr(needle, haystack)
 }
 
 fn parse_u32(bytes: &[u8]) -> Option<u32> {

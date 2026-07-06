@@ -440,6 +440,19 @@ impl DataDictionary {
                     key: tag.to_string(),
                 });
             }
+            // NEW-53 (feature 009): a `field_by_name` collision — `other` names a field the same
+            // as an existing field in `self` that has a *different* tag — is a distinct conflict
+            // from the tag-keyed check above, and was previously undetected: `or_insert` on merge
+            // silently kept `self`'s existing name→tag mapping, leaving the merge looking clean
+            // while `other`'s field became unreachable by name.
+            if let Some(&existing_tag) = self.field_by_name.get(&def.name)
+                && existing_tag != *tag
+            {
+                return Err(DictMergeConflict {
+                    kind: "field name",
+                    key: def.name.clone(),
+                });
+            }
         }
         for (msg_type, def) in &other.messages {
             if let Some(existing) = self.messages.get(msg_type)
@@ -492,6 +505,25 @@ impl DataDictionary {
         }
         self.header.extend(other.header.iter().copied());
         self.trailer.extend(other.trailer.iter().copied());
+
+        // NEW-53 (feature 009): `member_tags` is transitively expanded through `self.groups` at
+        // parse time only — a message kept from `self` (or brought in from `other`) may reference
+        // a group that just became available (or gained members) through this merge, so it must
+        // be recomputed against the now-merged `self.groups`, not left stale.
+        for mdef in self.messages.values_mut() {
+            let seed: Vec<u32> = mdef
+                .required
+                .iter()
+                .chain(mdef.optional.iter())
+                .copied()
+                .collect();
+            let mut member_tags = std::collections::BTreeSet::new();
+            for tag in seed {
+                crate::parser::collect_group_members(&self.groups, tag, &mut member_tags);
+            }
+            mdef.member_tags = member_tags;
+        }
+
         Ok(())
     }
 }
@@ -501,7 +533,8 @@ impl DataDictionary {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("conflicting redefinition of {kind} {key:?}")]
 pub struct DictMergeConflict {
-    /// Which map the conflict is in: `"field"`, `"message"`, `"group"`, or `"component"`.
+    /// Which map the conflict is in: `"field"`, `"field name"`, `"message"`, `"group"`, or
+    /// `"component"`.
     pub kind: &'static str,
     /// The conflicting key (a tag number or name, stringified).
     pub key: String,

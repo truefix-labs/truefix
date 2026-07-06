@@ -32,7 +32,11 @@ fn logon(version: &str, seq: i64, reset: bool) -> Message {
     let mut m = client_message(version, "A", seq);
     m.body.set(Field::int(98, 0));
     m.body.set(Field::int(108, 30));
-    if reset {
+    // T129 (feature 009): FIX.4.0 predates ResetSeqNumFlag(141) (introduced in FIX.4.1) — the
+    // field doesn't exist in that dictionary at all, so sending it now that FIX.4.0 has a bundled
+    // validator (`runner::dictionary_for_version`) would draw a TagNotDefinedForMessage reject on
+    // every scenario using this shared helper with `reset: true`.
+    if reset && version != "FIX.4.0" {
         m.body.set(Field::string(141, "Y"));
     }
     m
@@ -204,7 +208,13 @@ fn resend_request_gap_fill(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(rr),
             // Only the admin Logon was sent, so the resend collapses to a GapFill.
-            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(
+                ExpectMsg::of("4")
+                    .field(123, "Y")
+                    .field(36, "2")
+                    .field(34, "1"),
+            ),
         ],
     )
 }
@@ -224,7 +234,8 @@ fn sequence_reset_reset(v: &str) -> Scenario {
             Step::Send(sr),
             Step::Send(tr),
             // Heartbeat (not ResendRequest) proves the server now expects seq 5.
-            Step::Expect(ExpectMsg::of("0").field(112, "AFTER-RESET")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(ExpectMsg::of("0").field(112, "AFTER-RESET").field(34, "2")),
         ],
     )
 }
@@ -264,6 +275,11 @@ fn poss_dup_orig_sending_time_after_sending_time(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(dup),
+            // NEW-87 (feature 009): a session Reject precedes the Logout for this non-Logon
+            // anti-replay violation, matching QFJ's two-message shape (SessionRejectReason=5,
+            // version-filtered like every other session Reject -- see reject_field_correctness.rs
+            // for the per-version detail already covered at the unit level).
+            Step::Expect(ExpectMsg::of("3")),
             Step::Expect(ExpectMsg::of("5")), // Logout: anti-replay violation
             Step::ExpectDisconnect,
         ],
@@ -309,7 +325,9 @@ fn sequence_reset_reset_missing_new_seq_no_rejected(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
-            Step::Expect(expect_session_reject_reason(v, "3", "1")), // RequiredTagMissing
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — this Reject is the server's
+            // 2nd message (after the Logon ack).
+            Step::Expect(expect_session_reject_reason(v, "3", "1").field(34, "2")), // RequiredTagMissing
         ],
     )
 }
@@ -328,7 +346,8 @@ fn sequence_reset_gap_fill_missing_new_seq_no_rejected(v: &str) -> Scenario {
             Step::Send(sr),
             Step::Expect(
                 expect_session_reject_reason(v, "3", "1") // RequiredTagMissing
-                    .field(371, "36"), // RefTagID = NewSeqNo
+                    .field(371, "36") // RefTagID = NewSeqNo
+                    .field(34, "2"), // T138 (feature 009, NEW-51): outbound MsgSeqNum
             ),
         ],
     )
@@ -348,7 +367,8 @@ fn resend_request_missing_begin_seq_no_rejected(v: &str) -> Scenario {
             Step::Send(rr),
             Step::Expect(
                 expect_session_reject_reason(v, "3", "1") // RequiredTagMissing
-                    .field(371, "7"), // RefTagID = BeginSeqNo
+                    .field(371, "7") // RefTagID = BeginSeqNo
+                    .field(34, "2"), // T138 (feature 009, NEW-51): outbound MsgSeqNum
             ),
         ],
     )
@@ -368,7 +388,8 @@ fn resend_request_missing_end_seq_no_rejected(v: &str) -> Scenario {
             Step::Send(rr),
             Step::Expect(
                 expect_session_reject_reason(v, "3", "1") // RequiredTagMissing
-                    .field(371, "16"), // RefTagID = EndSeqNo
+                    .field(371, "16") // RefTagID = EndSeqNo
+                    .field(34, "2"), // T138 (feature 009, NEW-51): outbound MsgSeqNum
             ),
         ],
     )
@@ -387,9 +408,10 @@ fn gap_fill_drained_message_is_validated(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(invalid_order),
-            Step::Expect(ExpectMsg::of("2").field(7, "2")), // ResendRequest for the gap at seq 2
-            Step::Send(client_message(v, "0", 2)),          // fills the gap, drains queued seq 3
-            Step::Expect(ExpectMsg::of("3").field(373, "5")), // the drained seq-3 message is rejected
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) on both server responses.
+            Step::Expect(ExpectMsg::of("2").field(7, "2").field(34, "2")), // ResendRequest for the gap at seq 2
+            Step::Send(client_message(v, "0", 2)), // fills the gap, drains queued seq 3
+            Step::Expect(ExpectMsg::of("3").field(373, "5").field(34, "3")), // the drained seq-3 message is rejected
         ],
     )
 }
@@ -451,7 +473,9 @@ fn unparseable_sending_time_fails_latency(v: &str) -> Scenario {
         v,
         vec![
             Step::Send(bad_logon),
-            Step::Expect(ExpectMsg::of("5")), // Logout: SendingTime accuracy problem
+            // T130 (feature 009, NEW-29): assert the actual reject reason, not just "a Logout
+            // occurred".
+            Step::Expect(ExpectMsg::of("5").field(58, "SendingTime accuracy problem")),
             Step::ExpectDisconnect,
         ],
         SessionTweaks {
@@ -462,14 +486,19 @@ fn unparseable_sending_time_fails_latency(v: &str) -> Scenario {
 }
 
 /// 1d — with ResetOnLogon (default), the acceptor's Logon response carries ResetSeqNumFlag=Y.
+/// FIX.4.0 predates the field entirely (see `logon`'s doc comment) — `logon()` never sets it on
+/// that version's inbound Logon, so (per BUG-28/FR-005's "echo only what the inbound Logon itself
+/// carried" rule) the response correctly omits it too, rather than echoing a fabricated `Y`.
 fn logon_response_carries_reset_flag(v: &str) -> Scenario {
+    let expect = if v == "FIX.4.0" {
+        ExpectMsg::of("A").without_field(141)
+    } else {
+        ExpectMsg::of("A").field(141, "Y")
+    };
     scenario(
         "1d_LogonResponseResetFlag",
         v,
-        vec![
-            Step::Send(logon(v, 1, true)),
-            Step::Expect(ExpectMsg::of("A").field(141, "Y")),
-        ],
+        vec![Step::Send(logon(v, 1, true)), Step::Expect(expect)],
     )
 }
 
@@ -635,11 +664,12 @@ fn resend_request_not_duplicated(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(client_message(v, "0", 4)), // seq 4: gap → one ResendRequest
-            Step::Expect(ExpectMsg::of("2").field(7, "2")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) on both server responses.
+            Step::Expect(ExpectMsg::of("2").field(7, "2").field(34, "2")),
             Step::Send(client_message(v, "0", 5)), // seq 5: still too high → no second request
             Step::Send(tr2),                       // fills seq 2
             // The next message must be the Heartbeat for seq 2, not a duplicate ResendRequest.
-            Step::Expect(ExpectMsg::of("0").field(112, "TWO")),
+            Step::Expect(ExpectMsg::of("0").field(112, "TWO").field(34, "3")),
         ],
     )
 }
@@ -661,7 +691,13 @@ fn resend_request_begin_zero_treated_as_one(v: &str) -> Scenario {
             Step::Send(rr),
             // Only the admin Logon was sent, so the resend collapses to a GapFill -- same
             // response `resend_request_gap_fill`'s explicit BeginSeqNo=1 case gets.
-            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(
+                ExpectMsg::of("4")
+                    .field(123, "Y")
+                    .field(36, "2")
+                    .field(34, "1"),
+            ),
         ],
     )
 }
@@ -679,7 +715,13 @@ fn resend_request_bounded_end(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(rr),
-            Step::Expect(ExpectMsg::of("4").field(123, "Y").field(36, "2")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(
+                ExpectMsg::of("4")
+                    .field(123, "Y")
+                    .field(36, "2")
+                    .field(34, "1"),
+            ),
         ],
     )
 }
@@ -705,9 +747,13 @@ fn resend_request_too_high_answered_immediately(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(rr),
             // Their too-high ResendRequest is answered right away...
-            Step::Expect(ExpectMsg::of("4")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) on all 3 server responses. The
+            // GapFill answering a ResendRequest carries the MsgSeqNum of the slot it fills (1,
+            // the Logon's own outbound slot), not a freshly-incremented live sequence number —
+            // resending/gap-filling replays historical positions rather than consuming new ones.
+            Step::Expect(ExpectMsg::of("4").field(34, "1")),
             // ...and we still separately request our own gap (seq 2..4).
-            Step::Expect(ExpectMsg::of("2").field(7, "2")),
+            Step::Expect(ExpectMsg::of("2").field(7, "2").field(34, "2")),
             Step::Send(client_message(v, "0", 2)),
             Step::Send(client_message(v, "0", 3)),
             Step::Send(client_message(v, "0", 4)),
@@ -715,7 +761,11 @@ fn resend_request_too_high_answered_immediately(v: &str) -> Scenario {
             // NEW-86: draining the queued seq-5 ResendRequest only advances sequence accounting;
             // it must not emit the already-sent GapFill a second time. A duplicate would arrive
             // before this Heartbeat and fail the expectation.
-            Step::Expect(ExpectMsg::of("0").field(112, "NO-DUPLICATE-RESEND")),
+            Step::Expect(
+                ExpectMsg::of("0")
+                    .field(112, "NO-DUPLICATE-RESEND")
+                    .field(34, "3"),
+            ),
         ],
     )
 }
@@ -735,7 +785,8 @@ fn sequence_reset_gap_fill_advances(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
             Step::Send(tr),
-            Step::Expect(ExpectMsg::of("0").field(112, "GAP-FILLED")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(ExpectMsg::of("0").field(112, "GAP-FILLED").field(34, "2")),
         ],
     )
 }
@@ -756,7 +807,8 @@ fn sequence_reset_gap_fill_backward_ignored(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
             Step::Send(tr),
-            Step::Expect(ExpectMsg::of("0").field(112, "NO-REWIND")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(ExpectMsg::of("0").field(112, "NO-REWIND").field(34, "2")),
         ],
     )
 }
@@ -776,7 +828,8 @@ fn resend_request_nothing_to_resend(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(rr),
             Step::Send(tr),
-            Step::Expect(ExpectMsg::of("0").field(112, "ALIVE")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(ExpectMsg::of("0").field(112, "ALIVE").field(34, "2")),
         ],
     )
 }
@@ -1430,7 +1483,10 @@ fn check_latency_timestamps(v: &str) -> Scenario {
         v,
         vec![
             Step::Send(logon(v, 1, true)),
-            Step::Expect(ExpectMsg::of("5")), // Logout: SendingTime accuracy problem
+            // T130 (feature 009, NEW-29): assert the actual reject reason (Text/58), not just
+            // that some Logout occurred — a Logout for the wrong reason would previously still
+            // pass this scenario.
+            Step::Expect(ExpectMsg::of("5").field(58, "SendingTime accuracy problem")),
             Step::ExpectDisconnect,
         ],
         SessionTweaks {
@@ -1521,7 +1577,13 @@ fn resend_request_chunk_size(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(client_message(v, "0", 10)), // gap: expected 2, received 10
             // chunk=5 → request only 2..=6 rather than 2..0 (open-ended).
-            Step::Expect(ExpectMsg::of("2").field(7, "2").field(16, "6")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(
+                ExpectMsg::of("2")
+                    .field(7, "2")
+                    .field(16, "6")
+                    .field(34, "2"),
+            ),
         ],
         SessionTweaks {
             resend_chunk_size: 5,
@@ -1558,16 +1620,32 @@ fn chunked_resend_auto_continues(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(client_message(v, "0", 10)), // gap: expected 2, got 10
-            Step::Expect(ExpectMsg::of("2").field(7, "2").field(16, "4")), // chunk 1: 2..4
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) on all 4 server responses.
+            Step::Expect(
+                ExpectMsg::of("2")
+                    .field(7, "2")
+                    .field(16, "4")
+                    .field(34, "2"),
+            ), // chunk 1: 2..4
             Step::Send(gf1),
             // No external nudge: the next chunk's ResendRequest is auto-issued.
-            Step::Expect(ExpectMsg::of("2").field(7, "5").field(16, "7")), // chunk 2: 5..7
+            Step::Expect(
+                ExpectMsg::of("2")
+                    .field(7, "5")
+                    .field(16, "7")
+                    .field(34, "3"),
+            ), // chunk 2: 5..7
             Step::Send(gf2),
-            Step::Expect(ExpectMsg::of("2").field(7, "8").field(16, "10")), // chunk 3: 8..10
+            Step::Expect(
+                ExpectMsg::of("2")
+                    .field(7, "8")
+                    .field(16, "10")
+                    .field(34, "4"),
+            ), // chunk 3: 8..10
             Step::Send(gf3),
             Step::Send(tr),
             // A Heartbeat (not a fourth ResendRequest) proves the gap is now fully closed.
-            Step::Expect(ExpectMsg::of("0").field(112, "SETTLED")),
+            Step::Expect(ExpectMsg::of("0").field(112, "SETTLED").field(34, "5")),
         ],
         SessionTweaks {
             resend_chunk_size: 3,
@@ -1578,15 +1656,66 @@ fn chunked_resend_auto_continues(v: &str) -> Scenario {
 
 // --- 003 US1: identity/CompID/logon-integrity class (T012) ---
 //
-// NOTE: `1c_InvalidSenderCompID`/`1c_InvalidTargetCompID`/`1d_InvalidLogonWrongBeginString` (a
-// mismatch on the *Logon itself*) cannot be represented against this harness's dynamic-template
+// `1c_InvalidSenderCompID`/`1c_InvalidTargetCompID`/`1d_InvalidLogonWrongBeginString` (a mismatch
+// on the *Logon itself*) previously couldn't be represented against this harness's dynamic-template
 // acceptor (`start_acceptor`): the template adopts whatever CompIDs/BeginString the first Logon
-// claims, rather than checking them against a pre-existing fixed identity, so there is nothing to
-// "mismatch" on a first connection. `identity_problem`'s CheckCompID/BeginString logic is instead
-// proven mid-session, where a fixed identity already exists from the earlier Logon — see
-// `begin_string_value_unexpected` / `comp_id_does_not_match_profile` below. Testing the Logon-time
-// variant would need a non-dynamic (fixed-identity) acceptor mode in this test harness, which is a
-// harness change, not scenario authoring — tracked as a follow-up, not attempted here.
+// claims, rather than checking them against a pre-existing fixed identity, so there was nothing to
+// "mismatch" on a first connection. `identity_problem`'s CheckCompID/BeginString logic is proven
+// mid-session elsewhere, where a fixed identity already exists from an earlier Logon — see
+// `begin_string_value_unexpected` / `comp_id_does_not_match_profile` below. T133/T134 (feature 009,
+// NEW-83) added `start_fixed_identity_acceptor` (a `SessionTweaks::fixed_identity`-gated,
+// `AcceptorBuilder::with_session`-based mode) specifically to cover the Logon-time variant: a
+// mismatched first Logon never resolves to the registered session (no dynamic-template fallback),
+// so the connection is simply dropped rather than answered.
+
+/// 1c — a Logon whose SenderCompID doesn't match the acceptor's configured counterparty identity
+/// is refused: the connection is dropped without a reply (`route_and_run`'s static-session lookup
+/// fails with no template to fall back to).
+fn invalid_sender_comp_id(v: &str) -> Scenario {
+    let mut lo = logon(v, 1, true);
+    lo.header.set(Field::string(49, "WRONG-SENDER"));
+    scenario_with(
+        "1c_InvalidSenderCompID",
+        v,
+        vec![Step::Send(lo), Step::ExpectDisconnect],
+        SessionTweaks {
+            fixed_identity: Some(("SERVER".to_owned(), "CLIENT".to_owned())),
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// 1c — same as `invalid_sender_comp_id`, but the mismatch is on TargetCompID instead.
+fn invalid_target_comp_id(v: &str) -> Scenario {
+    let mut lo = logon(v, 1, true);
+    lo.header.set(Field::string(56, "WRONG-TARGET"));
+    scenario_with(
+        "1c_InvalidTargetCompID",
+        v,
+        vec![Step::Send(lo), Step::ExpectDisconnect],
+        SessionTweaks {
+            fixed_identity: Some(("SERVER".to_owned(), "CLIENT".to_owned())),
+            ..SessionTweaks::default()
+        },
+    )
+}
+
+/// 1d — a Logon whose BeginString doesn't match the acceptor's configured version is refused the
+/// same way: the static-session lookup keys on BeginString too, so this never resolves either.
+fn invalid_logon_wrong_begin_string(v: &str) -> Scenario {
+    // FIX.4.2 differs from every other `SUITE_VERSIONS` entry, so it's always a mismatch here.
+    let wrong_begin = if v == "FIX.4.2" { "FIX.4.4" } else { "FIX.4.2" };
+    let lo = logon(wrong_begin, 1, true);
+    scenario_with(
+        "1d_InvalidLogonWrongBeginString",
+        v,
+        vec![Step::Send(lo), Step::ExpectDisconnect],
+        SessionTweaks {
+            fixed_identity: Some(("SERVER".to_owned(), "CLIENT".to_owned())),
+            ..SessionTweaks::default()
+        },
+    )
+}
 
 /// 1d — a Logon carrying a stale SendingTime (outside MaxLatency) draws a Logout and disconnect.
 /// Same underlying `CheckLatency` mechanism as the `special_CheckLatencyStaleSendingTime` suite,
@@ -1597,7 +1726,9 @@ fn invalid_logon_bad_sending_time(v: &str) -> Scenario {
         v,
         vec![
             Step::Send(logon(v, 1, true)),
-            Step::Expect(ExpectMsg::of("5")), // Logout: SendingTime accuracy problem
+            // T130 (feature 009, NEW-29): assert the actual reject reason, not just "a Logout
+            // occurred".
+            Step::Expect(ExpectMsg::of("5").field(58, "SendingTime accuracy problem")),
             Step::ExpectDisconnect,
         ],
         SessionTweaks {
@@ -1642,7 +1773,8 @@ fn msgseqnum_correct(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(tr),
-            Step::Expect(ExpectMsg::of("0").field(112, "INSEQ")), // Heartbeat echo, not a reject
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(ExpectMsg::of("0").field(112, "INSEQ").field(34, "2")), // Heartbeat echo, not a reject
         ],
     )
 }
@@ -1661,7 +1793,8 @@ fn poss_dup_not_received(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(tr),
-            Step::Expect(ExpectMsg::of("0").field(112, "NOTADUP")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(ExpectMsg::of("0").field(112, "NOTADUP").field(34, "2")),
         ],
     )
 }
@@ -1681,7 +1814,8 @@ fn seq_reset_new_seq_no_equal(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
             Step::Send(tr),
-            Step::Expect(ExpectMsg::of("0").field(112, "STILL-2")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(ExpectMsg::of("0").field(112, "STILL-2").field(34, "2")),
         ],
     )
 }
@@ -1701,7 +1835,8 @@ fn seq_reset_new_seq_no_less(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
-            Step::Expect(expect_session_reject_reason(v, "3", "5")), // ValueIsIncorrect
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(expect_session_reject_reason(v, "3", "5").field(34, "2")), // ValueIsIncorrect
         ],
     )
 }
@@ -1725,7 +1860,8 @@ fn seq_reset_gap_fill_new_seq_no_equal(v: &str) -> Scenario {
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(sr),
             Step::Send(tr),
-            Step::Expect(ExpectMsg::of("0").field(112, "GAPFILL-EQ")),
+            // T138 (feature 009, NEW-51): outbound MsgSeqNum(34) — the server's 2nd message.
+            Step::Expect(ExpectMsg::of("0").field(112, "GAPFILL-EQ").field(34, "2")),
         ],
     )
 }
@@ -1793,6 +1929,9 @@ fn comp_id_does_not_match_profile(v: &str) -> Scenario {
             Step::Send(logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(tr),
+            // NEW-87 (feature 009): a session Reject precedes the Logout for this non-Logon CompID
+            // mismatch, matching QFJ's `doBadCompID` two-message shape.
+            Step::Expect(ExpectMsg::of("3")),
             Step::Expect(ExpectMsg::of("5")), // Logout: CompID problem
             Step::ExpectDisconnect,
         ],
@@ -1813,6 +1952,16 @@ fn fresh_logon(version: &str, seq: i64, reset: bool) -> Message {
 /// mid-session (after a Logon whose own SendingTime is fresh) rather than at logon.
 fn sending_time_value_out_of_range(v: &str) -> Scenario {
     let tr = client_message(v, "1", 2); // fixed 2024 SendingTime, stale relative to "now"
+    // BUG-59/FR-023 (feature 007): FIX.4.0/4.1 omit SessionRejectReason(373) entirely, so this
+    // reject-reason assertion (T130, NEW-29) is version-filtered like `reject_field_correctness.rs`'s
+    // existing unit coverage of the same rule.
+    let reject_expect = if matches!(v, "FIX.4.0" | "FIX.4.1") {
+        ExpectMsg::of("3").field(58, "SendingTime accuracy problem")
+    } else {
+        ExpectMsg::of("3")
+            .field(373, "10")
+            .field(58, "SendingTime accuracy problem")
+    };
     scenario_with(
         "2o_SendingTimeValueOutOfRange",
         v,
@@ -1820,7 +1969,12 @@ fn sending_time_value_out_of_range(v: &str) -> Scenario {
             Step::Send(fresh_logon(v, 1, true)),
             Step::Expect(ExpectMsg::of("A")),
             Step::Send(tr),
-            Step::Expect(ExpectMsg::of("5")), // Logout: SendingTime accuracy problem
+            // NEW-87 (feature 009): a session Reject precedes the Logout for this non-Logon
+            // latency failure, matching QFJ's `doBadTime` two-message shape.
+            // T130 (feature 009, NEW-29): assert the actual reject reason on both messages, not
+            // just "a Logout occurred".
+            Step::Expect(reject_expect),
+            Step::Expect(ExpectMsg::of("5").field(58, "SendingTime accuracy problem")),
             Step::ExpectDisconnect,
         ],
         SessionTweaks {
@@ -2112,6 +2266,11 @@ pub fn server_suite() -> Vec<Scenario> {
         out.push(sequence_reset_reset_missing_new_seq_no_rejected(v));
         out.push(resend_request_missing_begin_seq_no_rejected(v));
         out.push(resend_request_missing_end_seq_no_rejected(v));
+        // T135 (feature 009, NEW-83): Logon-time identity-mismatch scenarios, using the new
+        // fixed-identity acceptor mode (T133/T134).
+        out.push(invalid_sender_comp_id(v));
+        out.push(invalid_target_comp_id(v));
+        out.push(invalid_logon_wrong_begin_string(v));
     }
     // Field-validation scenarios for FIX.4.2 (its NewOrderSingle subset differs from 4.4).
     out.push(valid_new_order_accepted_42());
@@ -2142,8 +2301,17 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(tag_specified_without_value("FIX.4.4"));
     out.push(incorrect_data_format("FIX.4.4"));
     out.push(repeated_tag("FIX.4.4"));
-    out.push(unregistered_msg_type("FIX.4.4"));
-    out.push(admin_message_dictionary_invalid_is_rejected("FIX.4.4"));
+    // T129 (feature 009, NEW-28): now that every `FLAT_DICTIONARY_VERSIONS` entry has a bundled
+    // dictionary (`runner::dictionary_for_version`), these two dictionary-validation scenarios —
+    // which build their probe message directly via `client_message`/`logon` rather than the
+    // FIX.4.4-hardcoded `new_order_single` helper — run across that matrix instead of FIX.4.4
+    // alone. FIX.5.0/SP1/SP2/Latest are deliberately excluded: they have no flat validator (see
+    // `dictionary_for_version`'s doc comment), so these scenarios' expected Reject would never
+    // arrive for those four.
+    for &v in crate::runner::FLAT_DICTIONARY_VERSIONS {
+        out.push(unregistered_msg_type(v));
+        out.push(admin_message_dictionary_invalid_is_rejected(v));
+    }
     // Special-category suites (T086) requiring per-acceptor session-feature toggles.
     out.push(next_expected_msg_seq_num("FIX.4.4"));
     out.push(last_msg_seq_num_processed("FIX.4.4"));
@@ -2163,11 +2331,19 @@ pub fn server_suite() -> Vec<Scenario> {
     out.push(only_application_messages());
     out.push(admin_and_application_messages());
     // 006 US1: dictionary/tweak-dependent session protocol-correctness fixes (T021).
+    // Single-version: both build their probe order via the FIX.4.4-hardcoded `new_order_single`
+    // helper, so extending them to the full matrix would need a per-version order builder —
+    // out of this item's scope (NEW-28 is about the validator being present, not every scenario's
+    // fixture being version-generic).
     out.push(gap_fill_drained_message_is_validated("FIX.4.4"));
     out.push(dictionary_failure_disconnect_sends_logout("FIX.4.4"));
-    out.push(dict_invalid_logon_disconnects_without_disconnect_on_error(
-        "FIX.4.4",
-    ));
+    // T129: version-safe (builds its Logon via `client_message` directly, no `new_order_single`),
+    // but only meaningful where a validator exists to reject the missing EncryptMethod(98).
+    for &v in crate::runner::FLAT_DICTIONARY_VERSIONS {
+        out.push(dict_invalid_logon_disconnects_without_disconnect_on_error(
+            v,
+        ));
+    }
     out.push(unparseable_sending_time_fails_latency("FIX.4.4"));
     // 006 US9 (T084): MinQty (tag 110) is a recognized, accepted field (BUG-17 MinQty follow-up).
     out.push(min_qty_field_accepted_44());

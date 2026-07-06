@@ -79,6 +79,27 @@ pub enum DisconnectReason {
     Other,
 }
 
+/// The kind of BeginString/CheckCompID mismatch `identity_problem` detected. Distinguished (rather
+/// than a single `&'static str` reason) because NEW-87 (feature 009) gives the two cases different
+/// wire behavior: a CompID mismatch gets a session `Reject` before the `Logout` (matching QFJ's
+/// `doBadCompID`); an incorrect BeginString stays Logout-only (QFJ has no equivalent
+/// `doBadBeginString` two-message path).
+enum IdentityProblem {
+    /// The inbound message's BeginString(8) doesn't match this session's configured version.
+    BeginString,
+    /// `CheckCompID` is enabled and the inbound SenderCompID(49)/TargetCompID(56) doesn't match.
+    CompId,
+}
+
+impl IdentityProblem {
+    fn text(&self) -> &'static str {
+        match self {
+            IdentityProblem::BeginString => "Incorrect BeginString",
+            IdentityProblem::CompId => "CompID problem",
+        }
+    }
+}
+
 /// A point-in-time snapshot of a session, for monitoring (FR-L1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionStatus {
@@ -625,12 +646,52 @@ impl Session {
         vec![Action::ResetStore]
     }
 
+    /// NEW-87 (feature 009): builds and sends a session-level `Reject` (373=`reject.reason`)
+    /// referencing `msg`'s own `MsgSeqNum` — matching QFJ's `doBadTime`/`doBadCompID`, which each
+    /// send this Reject *before* the Logout for a non-Logon message, rather than a Logout alone.
+    fn build_session_reject(&mut self, msg: &Message, reject: &truefix_core::Reject) -> Action {
+        let ref_seq = msg
+            .header
+            .get(MSG_SEQ_NUM)
+            .and_then(|f| f.as_int().ok())
+            .filter(|&s| s > 0)
+            .map_or(0, |s| s as u64);
+        let ref_mt = msg.msg_type().map(str::to_owned);
+        let seq = self.next_seq();
+        let rej = admin::reject_with_reason(
+            &self.config,
+            seq,
+            ref_seq,
+            ref_mt.as_deref(),
+            reject.ref_tag,
+            reject.reason,
+            reject.text.as_deref().unwrap_or(""),
+        );
+        self.send_stored(rej)
+    }
+
+    /// `build_session_reject` followed by `reject_logon` (Logout + disconnect) — for the
+    /// PossDup-falsification/anti-replay paths, which (unlike the latency/CompID paths just above)
+    /// don't call `reset_on_error()` even after this fix, matching their pre-existing behavior.
+    /// Deliberately doesn't touch `reject_logon` itself, which stays Logout-only for its other
+    /// callers (Logon-rejection paths keep QFJ's `logoutWithErrorMessage`-equivalent behavior, per
+    /// the source audit's own note distinguishing that case from this one).
+    fn session_reject_before_logout(
+        &mut self,
+        msg: &Message,
+        reject: &truefix_core::Reject,
+    ) -> Vec<Action> {
+        let mut actions = vec![self.build_session_reject(msg, reject)];
+        actions.extend(self.reject_logon(reject));
+        actions
+    }
+
     /// Detect a BeginString or CompID mismatch (CheckCompID). Returns a Logout reason on failure.
-    fn identity_problem(&self, msg: &Message) -> Option<&'static str> {
+    fn identity_problem(&self, msg: &Message) -> Option<IdentityProblem> {
         if let Some(bs) = msg.header.get(8).and_then(|f| f.as_str().ok())
             && bs != self.config.begin_string
         {
-            return Some("Incorrect BeginString");
+            return Some(IdentityProblem::BeginString);
         }
         if self.config.check_comp_id {
             // Inbound SenderCompID(49) is the peer's sender = our target; TargetCompID(56) = ours.
@@ -638,12 +699,12 @@ impl Session {
             if let Some(sender) = msg.header.get(49).and_then(|f| f.as_str().ok())
                 && sender != self.config.target_comp_id
             {
-                return Some("CompID problem");
+                return Some(IdentityProblem::CompId);
             }
             if let Some(target) = msg.header.get(56).and_then(|f| f.as_str().ok())
                 && target != self.config.sender_comp_id
             {
-                return Some("CompID problem");
+                return Some(IdentityProblem::CompId);
             }
         }
         None
@@ -746,23 +807,56 @@ impl Session {
         self.ticks_since_recv = 0;
         self.test_request_outstanding = false;
 
+        // NEW-87 (feature 009): computed up-front (previously computed further down, after these
+        // two checks) so both can tell a Logon apart from every other message type -- QFJ's
+        // `doBadTime`/`doBadCompID` two-message shape (Reject, then Logout) only applies to a
+        // non-Logon message; a Logon-specific bad-time/bad-CompID uses QFJ's
+        // `logoutWithErrorMessage` instead, matching TrueFix's pre-existing Logout-only behavior
+        // for that one case, which this fix must not change.
+        let is_logon = msg.msg_type() == Some("A");
+
         // CheckLatency / MaxLatency: a stale SendingTime aborts the session.
         if !self.latency_ok(&msg) {
+            let mut actions = Vec::new();
+            if !is_logon {
+                let reject = truefix_core::Reject {
+                    reason: 10, // SessionRejectReason: SendingTime accuracy problem
+                    ref_tag: Some(SENDING_TIME),
+                    text: Some("SendingTime accuracy problem".to_owned()),
+                    session_status: None,
+                };
+                actions.push(self.build_session_reject(&msg, &reject));
+            }
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, Some("SendingTime accuracy problem"));
             self.state = SessionState::Disconnected;
-            let mut actions = vec![self.send_stored(lo)];
+            actions.push(self.send_stored(lo));
             actions.extend(self.reset_on_error());
             actions.push(Action::Disconnect);
             return actions;
         }
 
         // BeginString / CheckCompID: a mismatched identity aborts the session (FR-007).
-        if let Some(reason) = self.identity_problem(&msg) {
+        if let Some(problem) = self.identity_problem(&msg) {
+            let mut actions = Vec::new();
+            // NEW-87 (feature 009): only a non-Logon CompID mismatch gets the
+            // Reject-before-Logout treatment, matching QFJ's `doBadCompID`
+            // (SessionRejectReason=9, RefTagID=49) -- an incorrect BeginString stays Logout-only
+            // (QFJ has no equivalent two-message path for it), and so does a Logon-specific CompID
+            // mismatch (see `is_logon` above).
+            if !is_logon && matches!(problem, IdentityProblem::CompId) {
+                let reject = truefix_core::Reject {
+                    reason: 9, // SessionRejectReason: CompID problem
+                    ref_tag: Some(49),
+                    text: Some(problem.text().to_owned()),
+                    session_status: None,
+                };
+                actions.push(self.build_session_reject(&msg, &reject));
+            }
             let seq = self.next_seq();
-            let lo = admin::logout(&self.config, seq, Some(reason));
+            let lo = admin::logout(&self.config, seq, Some(problem.text()));
             self.state = SessionState::Disconnected;
-            let mut actions = vec![self.send_stored(lo)];
+            actions.push(self.send_stored(lo));
             actions.extend(self.reset_on_error());
             actions.push(Action::Disconnect);
             return actions;
@@ -823,7 +917,8 @@ impl Session {
         // handled the falsification signal, so that call only meaningfully covers the missing-tag
         // case from here on.
         if poss_dup && let Some(reject) = self.poss_dup_falsification_check(&msg) {
-            return self.reject_logon(&reject);
+            // NEW-87 (feature 009): a session Reject before the Logout, not a Logout alone.
+            return self.session_reject_before_logout(&msg, &reject);
         }
 
         if mt.as_deref() == Some("4") {
@@ -867,7 +962,8 @@ impl Session {
                     // Mirror the generic `Ordering::Less` handling below.
                     if poss_dup {
                         match self.poss_dup_anti_replay_violation(&msg) {
-                            Some(reject) => self.reject_logon(&reject),
+                            // NEW-87 (feature 009): a session Reject before the Logout.
+                            Some(reject) => self.session_reject_before_logout(&msg, &reject),
                             None => Vec::new(),
                         }
                     } else {
@@ -965,9 +1061,10 @@ impl Session {
                     // `reject_logon` (Logout + disconnect), the same severity as a duplicate Logon
                     // (`on_logon`, below) — resolved via `/speckit-clarify`, not routed through
                     // `Application::from_admin` since this is a purely session-internal protocol
-                    // violation.
+                    // violation. NEW-87 (feature 009): now via `session_reject_before_logout`,
+                    // sending a session Reject before the Logout instead of a Logout alone.
                     match self.poss_dup_anti_replay_violation(&msg) {
-                        Some(reject) => self.reject_logon(&reject),
+                        Some(reject) => self.session_reject_before_logout(&msg, &reject),
                         None => Vec::new(),
                     }
                 } else {
@@ -1561,6 +1658,24 @@ impl Session {
             .get(DEFAULT_APPL_VER_ID)
             .and_then(|f| f.as_str().ok())
         {
+            // NEW-88 (feature 009): validate against the registered `FixtDictionaries`
+            // application keys before accepting, matching QFJ's `nextLogon` (which throws
+            // `RejectLogon("Invalid DefaultApplVerID=...")` for an unregistered value) — an
+            // invalid/typo'd value previously stored verbatim and silently disabled
+            // per-message application validation for the rest of the connection instead of being
+            // rejected up front. Only applies when a `FixtDictionaries` is actually configured;
+            // there is nothing to validate against otherwise.
+            if !appl_ver_id.is_empty()
+                && let Some((dicts, _)) = &self.fixt_validator
+                && dicts.application_for(Some(appl_ver_id)).is_none()
+            {
+                return self.reject_logon(&truefix_core::Reject {
+                    reason: 5, // SessionRejectReason: Value is incorrect (out of range) for this tag
+                    ref_tag: Some(DEFAULT_APPL_VER_ID),
+                    text: Some(format!("Invalid DefaultApplVerID={appl_ver_id}")),
+                    session_status: None,
+                });
+            }
             self.negotiated_appl_ver_id = Some(appl_ver_id.to_owned());
         }
 

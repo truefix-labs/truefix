@@ -66,6 +66,7 @@ pub enum LogError {
 ///
 /// Methods are best-effort and infallible from the caller's perspective; a sink that cannot
 /// write drops the entry rather than failing the session.
+#[async_trait::async_trait]
 pub trait Log: Send + Sync {
     /// Log an inbound wire message.
     fn on_incoming(&self, message: &str);
@@ -73,8 +74,15 @@ pub trait Log: Send + Sync {
     fn on_outgoing(&self, message: &str);
     /// Log a session event.
     fn on_event(&self, text: &str);
+    /// NEW-91 (feature 009): flush any entries still buffered in an async background writer and
+    /// await its completion, so a shutdown doesn't drop entries queued right before it. Default
+    /// no-op — every synchronous backend (`ScreenLog`/`FileLog`/`TracingLog`) already persists
+    /// each entry before its `on_*` call returns; only the channel-backed async backends
+    /// (`Sql`/`Mssql`/`Mongo`/`Redb`Log, each behind its own Cargo feature) override this.
+    async fn shutdown(&self) {}
 }
 
+#[async_trait::async_trait]
 impl Log for Box<dyn Log> {
     fn on_incoming(&self, message: &str) {
         (**self).on_incoming(message);
@@ -84,6 +92,9 @@ impl Log for Box<dyn Log> {
     }
     fn on_event(&self, text: &str) {
         (**self).on_event(text);
+    }
+    async fn shutdown(&self) {
+        (**self).shutdown().await;
     }
 }
 

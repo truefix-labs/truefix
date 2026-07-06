@@ -95,8 +95,10 @@ pub fn frame_length(buf: &[u8]) -> Result<Option<usize>, DecodeError> {
     }
 }
 
+/// T177/T178 (feature 009, NEW-35/36): a SIMD-accelerated search, replacing a hand-rolled
+/// `.iter().position()` byte-by-byte scan in this decode/framing hot path.
 fn find(haystack: &[u8], needle: u8) -> Option<usize> {
-    haystack.iter().position(|&b| b == needle)
+    memchr::memchr(needle, haystack)
 }
 
 /// Whether `value` (the BeginString field's value, e.g. `b"FIX.4.4"`) matches the

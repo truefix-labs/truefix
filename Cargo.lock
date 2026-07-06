@@ -3288,6 +3288,7 @@ dependencies = [
 name = "truefix-core"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "rust_decimal",
  "thiserror 2.0.18",
  "time",
@@ -3308,6 +3309,7 @@ dependencies = [
 name = "truefix-log"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "mongodb",
  "redb",
  "sqlx",

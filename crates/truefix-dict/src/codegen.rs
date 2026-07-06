@@ -30,6 +30,14 @@ use std::fmt::Write as _;
 /// the same result, verified by the content hash, not share one parser implementation).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CodegenError {
+    /// A normalized-dictionary directive was malformed or unknown.
+    #[error("line {line}: {reason}")]
+    Malformed {
+        /// 1-based source line.
+        line: usize,
+        /// Why the directive was rejected.
+        reason: &'static str,
+    },
     /// A `req:`/`opt:`/group-member-list token was neither a tag number nor `component:<Name>`.
     #[error("bad tag or component:<Name> token: {0:?}")]
     BadToken(String),
@@ -170,8 +178,19 @@ fn parse_dict(text: &str) -> Result<Dict, CodegenError> {
     let mut messages_raw: Vec<RawMessage> = Vec::new();
     let mut components_raw: BTreeMap<String, Vec<RawMember>> = BTreeMap::new();
 
-    for raw in text.lines() {
-        let line = match raw.find('#') {
+    for (index, raw) in text.lines().enumerate() {
+        let line_no = index + 1;
+        // NEW-44/FR-067 (feature 009): mirror parser.rs's `strip_comment` fix — a `#` only starts
+        // a comment at line-start or when preceded by whitespace, so a STRING-typed enum value
+        // literal like `SYM#BOL` isn't truncated (dual-track parity, Constitution Principle IV).
+        let raw_bytes = raw.as_bytes();
+        let comment_start = raw
+            .char_indices()
+            .find(|&(i, ch)| {
+                ch == '#' && (i == 0 || matches!(raw_bytes.get(i - 1), Some(b' ' | b'\t')))
+            })
+            .map(|(i, _)| i);
+        let line = match comment_start {
             Some(i) => raw.split_at(i).0,
             None => raw,
         }
@@ -183,10 +202,19 @@ fn parse_dict(text: &str) -> Result<Dict, CodegenError> {
         match tokens.next() {
             Some("field") => {
                 let Some(tag) = tokens.next().and_then(|t| t.parse::<u32>().ok()) else {
-                    continue;
+                    return Err(CodegenError::Malformed {
+                        line: line_no,
+                        reason: "field requires a numeric tag",
+                    });
                 };
-                let Some(name) = tokens.next() else { continue };
-                let Some(ty) = tokens.next() else { continue };
+                let name = tokens.next().ok_or(CodegenError::Malformed {
+                    line: line_no,
+                    reason: "field requires a name",
+                })?;
+                let ty = tokens.next().ok_or(CodegenError::Malformed {
+                    line: line_no,
+                    reason: "field requires a type",
+                })?;
                 // BUG-74/FR-050 (feature 007): strip a leading `open` modifier the same way
                 // `parser.rs`'s runtime track already does — previously codegen ingested it as a
                 // literal (unlabeled) enum value instead, a dual-track divergence (Constitution
@@ -216,31 +244,49 @@ fn parse_dict(text: &str) -> Result<Dict, CodegenError> {
             }
             Some("group") => {
                 let Some(count_tag) = tokens.next().and_then(|t| t.parse::<u32>().ok()) else {
-                    continue;
+                    return Err(CodegenError::Malformed {
+                        line: line_no,
+                        reason: "group requires a numeric count tag",
+                    });
                 };
-                let Some(name) = tokens.next() else { continue };
+                let name = tokens.next().ok_or(CodegenError::Malformed {
+                    line: line_no,
+                    reason: "group requires a name",
+                })?;
                 let Some(delimiter) = tokens.next().and_then(|t| t.parse::<u32>().ok()) else {
-                    continue;
+                    return Err(CodegenError::Malformed {
+                        line: line_no,
+                        reason: "group requires a numeric delimiter",
+                    });
                 };
-                let members = match tokens.next() {
-                    Some(list) => parse_member_list_raw(list)?,
-                    None => Vec::new(),
-                };
+                let members =
+                    parse_member_list_raw(tokens.next().ok_or(CodegenError::Malformed {
+                        line: line_no,
+                        reason: "group requires a member list",
+                    })?)?;
                 groups_raw.insert(count_tag, (name.to_owned(), delimiter, members));
             }
             Some("component") => {
-                let Some(name) = tokens.next() else { continue };
-                let members = match tokens.next() {
-                    Some(list) => parse_member_list_raw(list)?,
-                    None => Vec::new(),
-                };
+                let name = tokens.next().ok_or(CodegenError::Malformed {
+                    line: line_no,
+                    reason: "component requires a name",
+                })?;
+                let members =
+                    parse_member_list_raw(tokens.next().ok_or(CodegenError::Malformed {
+                        line: line_no,
+                        reason: "component requires a member list",
+                    })?)?;
                 components_raw.insert(name.to_owned(), members);
             }
             Some("message") => {
-                let Some(msg_type) = tokens.next() else {
-                    continue;
-                };
-                let Some(name) = tokens.next() else { continue };
+                let msg_type = tokens.next().ok_or(CodegenError::Malformed {
+                    line: line_no,
+                    reason: "message requires a MsgType",
+                })?;
+                let name = tokens.next().ok_or(CodegenError::Malformed {
+                    line: line_no,
+                    reason: "message requires a name",
+                })?;
                 let mut required = Vec::new();
                 let mut optional = Vec::new();
                 let mut ordered = false;
@@ -261,7 +307,31 @@ fn parse_dict(text: &str) -> Result<Dict, CodegenError> {
                     ordered,
                 ));
             }
-            _ => {}
+            Some("version") => {
+                if tokens.next().is_none() {
+                    return Err(CodegenError::Malformed {
+                        line: line_no,
+                        reason: "version requires a value",
+                    });
+                }
+            }
+            // These runtime-track directives do not contribute to generated typed message code,
+            // but they are valid grammar and must not be mistaken for unknown input.
+            Some("version-meta") => {}
+            Some("header" | "trailer") => {
+                if tokens.any(|token| token.parse::<u32>().is_err()) {
+                    return Err(CodegenError::Malformed {
+                        line: line_no,
+                        reason: "header/trailer tags must be numeric",
+                    });
+                }
+            }
+            Some(_) | None => {
+                return Err(CodegenError::Malformed {
+                    line: line_no,
+                    reason: "unknown directive",
+                });
+            }
         }
     }
 
@@ -445,15 +515,41 @@ const RUST_KEYWORDS: &[&str] = &[
 /// `"Match"`, etc.) previously produced uncompilable generated code — no real bundled QFJ schema
 /// label actually hits this (they're all `SCREAMING_SNAKE_CASE`, e.g. `PER_UNIT`), but a custom
 /// dictionary source could. Reuses the same `V`-prefix strategy as the leading-digit case above.
-fn sanitize_variant(label: &str) -> String {
-    let needs_prefix = label.starts_with(|c: char| c.is_ascii_digit())
+///
+/// NEW-79/FR-056 (feature 009): `used` also makes the final identifier unique within its enum.
+/// Distinct source labels can normalize to the same Rust identifier (or a custom dictionary can
+/// repeat one label outright); stable numeric suffixes preserve a separate wire mapping for each.
+fn sanitize_variant(label: &str, used: &mut BTreeMap<String, usize>) -> String {
+    let normalized: String = label
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let normalized = if normalized.is_empty() {
+        "V".to_owned()
+    } else {
+        normalized
+    };
+    let needs_prefix = normalized.starts_with(|c: char| c.is_ascii_digit())
         || RUST_KEYWORDS
             .iter()
-            .any(|kw| kw.eq_ignore_ascii_case(label));
-    if needs_prefix {
-        format!("V{label}")
+            .any(|kw| kw.eq_ignore_ascii_case(&normalized));
+    let base = if needs_prefix {
+        format!("V{normalized}")
     } else {
-        label.to_owned()
+        normalized
+    };
+    let count = used.entry(base.clone()).or_default();
+    *count += 1;
+    if *count == 1 {
+        base
+    } else {
+        format!("{base}_{count}")
     }
 }
 
@@ -468,10 +564,14 @@ fn emit_field_enum(
     field: &FieldDef,
     message_names: &std::collections::BTreeSet<String>,
 ) -> Option<String> {
+    let mut used_variants = BTreeMap::new();
     let labeled: Vec<(&str, String)> = field
         .values
         .iter()
-        .filter_map(|(v, l)| l.as_deref().map(|l| (v.as_str(), sanitize_variant(l))))
+        .filter_map(|(v, l)| {
+            l.as_deref()
+                .map(|l| (v.as_str(), sanitize_variant(l, &mut used_variants)))
+        })
         .collect();
     if labeled.is_empty() {
         return None;
