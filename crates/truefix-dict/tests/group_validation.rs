@@ -1,7 +1,7 @@
 //! T021 (US3) — dictionary-driven repeating-group validation (FR-004/005).
 
 use truefix_core::{Field, Message};
-use truefix_dict::{ValidationOptions, load_fix44};
+use truefix_dict::{RejectReason, ValidationOptions, load_fix44};
 
 /// A FIX.4.4 NewOrderSingle whose body carries the given (flat, wire-ordered) group fields after the
 /// required fields — i.e. exactly what a flat decode produces.
@@ -186,4 +186,86 @@ fn group_field_checking_is_skipped_when_check_field_types_is_off() {
         ..ValidationOptions::default()
     };
     assert!(d.validate(&m, &lax).is_ok());
+}
+
+// --- T010/T011 (US1, feature 011, FR-005): the same checks above, but for a body-level group
+// that arrives already `Member::Group`-structured (via `decode_with_groups`, the real production
+// shape — feature 011, FR-003) rather than the hand-built-flat `nos()`/`heartbeat_with_group()`
+// fixtures above. `validate_structured_group` is the path exercised here. ---
+
+const REQUIRED_GROUP_DICT_SRC: &str = "version FIX.4.4\n\
+     field 8 BeginString STRING\n\
+     field 9 BodyLength LENGTH\n\
+     field 35 MsgType STRING\n\
+     field 34 MsgSeqNum SEQNUM\n\
+     field 49 SenderCompID STRING\n\
+     field 56 TargetCompID STRING\n\
+     field 52 SendingTime UTCTIMESTAMP\n\
+     field 10 CheckSum STRING\n\
+     field 453 NoPartyIDs NUMINGROUP\n\
+     field 448 PartyID STRING\n\
+     field 447 PartyIDSource CHAR D C\n\
+     header 8 9 35 34 49 56 52\n\
+     trailer 10\n\
+     group 453 NoPartyIDs 448 448,447 req:447\n\
+     message 0 Heartbeat req: opt:453\n";
+
+struct PartyIdsSpec;
+impl truefix_core::GroupSpec for PartyIdsSpec {
+    fn group_of(&self, count_tag: u32) -> Option<(u32, &[u32])> {
+        (count_tag == 453).then_some((448, [448u32, 447].as_slice()))
+    }
+}
+
+fn wire_heartbeat_with_group(group_fields: &str) -> Vec<u8> {
+    let body = format!("35=0\x0134=1\x0149=A\x0156=B\x0152=20240101-00:00:00\x01{group_fields}");
+    let mut msg = Vec::new();
+    msg.extend_from_slice(b"8=FIX.4.4\x01");
+    msg.extend_from_slice(format!("9={}\x01", body.len()).as_bytes());
+    msg.extend_from_slice(body.as_bytes());
+    let sum: u32 = msg.iter().map(|&b| u32::from(b)).sum::<u32>() & 0xFF;
+    msg.extend_from_slice(format!("10={sum:03}\x01").as_bytes());
+    msg
+}
+
+#[test]
+fn a_structured_body_group_with_its_required_member_present_is_accepted() {
+    let d = truefix_dict::parse(REQUIRED_GROUP_DICT_SRC).unwrap();
+    let wire = wire_heartbeat_with_group("453=1\x01448=A\x01447=D\x01");
+    let decoded = truefix_core::decode_with_groups(&wire, &PartyIdsSpec).expect("decode");
+    assert!(
+        decoded.body.group(453).is_some(),
+        "precondition: group must be structured"
+    );
+    assert!(d.validate(&decoded, &ValidationOptions::default()).is_ok());
+}
+
+#[test]
+fn a_structured_body_group_entry_missing_a_required_member_is_rejected() {
+    let d = truefix_dict::parse(REQUIRED_GROUP_DICT_SRC).unwrap();
+    // PartyIDSource(447) is required by `req:447` but this entry omits it.
+    let wire = wire_heartbeat_with_group("453=1\x01448=A\x01");
+    let decoded = truefix_core::decode_with_groups(&wire, &PartyIdsSpec).expect("decode");
+    assert!(
+        decoded.body.group(453).is_some(),
+        "precondition: group must be structured"
+    );
+    let err = d
+        .validate(&decoded, &ValidationOptions::default())
+        .unwrap_err();
+    assert_eq!(err.reason, RejectReason::RequiredTagMissing);
+    assert_eq!(err.ref_tag, Some(447));
+}
+
+#[test]
+fn a_structured_body_group_entry_with_an_invalid_enum_value_is_rejected() {
+    let d = truefix_dict::parse(REQUIRED_GROUP_DICT_SRC).unwrap();
+    // PartyIDSource(447) = "X" is not in its {D, C} enum.
+    let wire = wire_heartbeat_with_group("453=1\x01448=A\x01447=X\x01");
+    let decoded = truefix_core::decode_with_groups(&wire, &PartyIdsSpec).expect("decode");
+    let err = d
+        .validate(&decoded, &ValidationOptions::default())
+        .unwrap_err();
+    assert_eq!(err.reason, RejectReason::ValueIsIncorrect);
+    assert_eq!(err.ref_tag, Some(447));
 }

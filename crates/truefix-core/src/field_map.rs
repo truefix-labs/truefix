@@ -156,8 +156,48 @@ impl FieldMap {
         })
     }
 
+    /// Iterate every top-level member (feature 011, FR-001) — both plain fields and repeating
+    /// groups, in wire order. Unlike [`Self::fields`] (which silently skips `Member::Group`
+    /// entries), this is the accessor for callers that need to see a message's real structure —
+    /// e.g. a group whose own count tag is itself required at the message level (see
+    /// `truefix-dict`'s `present()`), or any caller walking a decoded message generically without
+    /// assuming every top-level tag is a plain field.
+    pub fn members(&self) -> impl Iterator<Item = MemberRef<'_>> {
+        self.members.iter().map(|m| match m {
+            Member::Field(f) => MemberRef::Field(f),
+            Member::Group {
+                count_tag,
+                entries,
+                declared_count,
+            } => MemberRef::Group {
+                count_tag: *count_tag,
+                entries,
+                declared_count: *declared_count,
+            },
+        })
+    }
+
     /// Internal: ordered members, for the encoder.
-    pub(crate) fn members(&self) -> &[Member] {
+    pub(crate) fn raw_members(&self) -> &[Member] {
         &self.members
     }
+}
+
+/// A borrowed view of one [`FieldMap`] top-level member, returned by [`FieldMap::members`] —
+/// either a plain field or a repeating group's count tag plus its ordered entries.
+#[derive(Debug, Clone, Copy)]
+pub enum MemberRef<'a> {
+    /// A plain field.
+    Field(&'a Field),
+    /// A repeating group: its count tag, ordered entries, and (per [`crate::Group`]'s doc) the
+    /// wire-declared count when it didn't match `entries.len()`.
+    Group {
+        /// The `NoXxx` count tag.
+        count_tag: u32,
+        /// The group's ordered entries.
+        entries: &'a [FieldMap],
+        /// The count declared on the wire, if decoded from one and it didn't match
+        /// `entries.len()` (`None` for a group built directly by application code).
+        declared_count: Option<i64>,
+    },
 }

@@ -1094,6 +1094,52 @@ impl Session {
         }
     }
 
+    /// Feature 011 (FR-008/FR-009/FR-010): under FIXT 1.1, re-group `msg`'s body against its
+    /// resolved application dictionary, in place, before delivery/validation.
+    ///
+    /// **Call this before `msg` reaches `Application::from_app`/`from_admin` — not after.**
+    /// `truefix-transport`'s `handle_inbound` delivers a decoded message to the application
+    /// *directly*, ahead of ever calling [`Session::handle`]/`on_received` (there is no
+    /// `Action::Deliver` — delivery is not one of the `Action`s `handle` returns at all), so a
+    /// caller that restructured only from inside the state machine would always be too late: by
+    /// the time `on_received`/`validate_app` ran, the application had already seen the
+    /// transport-dictionary-scoped body. This method exists to be called from `handle_inbound`
+    /// itself, right after its pre-delivery reject precheck and before `from_app`/`from_admin`.
+    ///
+    /// The reader task (`classify_buffered`, `truefix-transport`) only has the transport
+    /// dictionary available when it decodes a message — application-dictionary selection depends
+    /// on `ApplVerID`, which for most messages is never carried on the wire at all and instead
+    /// falls back to `negotiated_appl_ver_id`, session state the reader task (a separate,
+    /// independently-scheduled tokio task) has no access to. So an application-layer message's
+    /// body arrives already decoded, but only transport-dictionary-scoped (effectively flat for
+    /// any body-level group the transport dictionary doesn't itself declare) — this method
+    /// resolves the *application* dictionary (mirroring `validate_app`'s own `appl_ver_id`
+    /// resolution precedence exactly, so both agree) and applies it to the message's actual
+    /// structure via [`truefix_core::restructure_groups`], not just its later validation.
+    ///
+    /// No-ops for: a non-FIXT session (`fixt_validator: None` — a single `DataDictionary` session
+    /// already structured the whole message, body included, at decode time, per FR-003); an admin
+    /// (session-layer) message (already correctly structured against the transport dictionary,
+    /// same as `validate_app`'s BUG-89 special case — resolving it against a per-message
+    /// application dict would be wrong, not just redundant); and a message whose `ApplVerID`
+    /// resolves to no registered application dictionary (FR-010 — left transport-scoped rather
+    /// than rejected or misattributed). A restructuring failure (e.g. pathological nesting depth)
+    /// is treated the same conservative way: `msg` keeps whatever structure it already had.
+    pub fn restructure_fixt_application_body(&self, msg: &mut Message) {
+        let Some((dicts, _)) = self.fixt_validator.as_ref() else {
+            return;
+        };
+        if is_admin_type(msg.msg_type()) {
+            return;
+        }
+        let msg_appl_ver_id = msg.header.get(APPL_VER_ID).and_then(|f| f.as_str().ok());
+        let appl_ver_id = msg_appl_ver_id.or(self.negotiated_appl_ver_id.as_deref());
+        let Some(dict) = dicts.application_for(appl_ver_id) else {
+            return;
+        };
+        let _ = truefix_core::restructure_groups(&mut msg.body, dict);
+    }
+
     /// Validate an inbound message; on failure, return a Reject/BusinessMessageReject action.
     /// The no-dictionary case returns `None`.
     ///

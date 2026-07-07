@@ -1284,19 +1284,24 @@ async fn classify_buffered(
                 // awareness (`decode_with_groups`, already correct since feature 005 but never
                 // invoked from any production path until now) so a header/trailer repeating group
                 // (e.g. NoHops) is structured instead of silently misrouted to the flat body.
-                // Scoped to header/trailer groups only via `HeaderTrailerGroupsOnly` — the runtime
-                // `DataDictionary` also declares body-level groups (e.g. NoPartyIDs), and
-                // structuring those into `Member::Group` here would silently break
-                // `validate_groups`'s existing flat-`body.fields()`-based walk (and any codegen-
-                // generated accessor reading a body group's member tags directly) — a much larger,
-                // riskier change than this fix's actual scope (GAP-26 is specifically about
-                // header/trailer groups being invisible, not a mandate to restructure body-group
-                // handling too).
+                // FR-003 (feature 011): previously scoped to header/trailer groups only via a
+                // `HeaderTrailerGroupsOnly` wrapper, because the runtime `DataDictionary` also
+                // declares body-level groups (e.g. NoPartyIDs) and structuring those here used to
+                // silently break `validate_groups`'s flat-`body.fields()`-based walk and any
+                // codegen-generated body-group accessor. Both of those consumers have since been
+                // fixed to see `Member::Group` content directly (`validate_structured_group`,
+                // `FieldMap::group`-based accessors) — so passing the dictionary itself, with no
+                // header/trailer restriction, is now correct for the whole message, not just an
+                // acceptable-but-incomplete stopgap.
                 // NEW-58 (feature 009): under a FIXT 1.1 dual-dictionary configuration,
                 // `services.validator` is unset (the session uses `fixt_dictionaries` instead --
                 // see `run_connection`'s `session.set_fixt_dictionaries` call) -- so this dispatch
-                // must also check `fixt_dictionaries`, or header/trailer repeating groups (e.g.
-                // NoHops) never get group-aware decoding under FIXT 1.1 at all.
+                // must also check `fixt_dictionaries`. Only the transport (session-layer)
+                // dictionary is used here — an application-layer message's body is re-structured
+                // against its own resolved `ApplVerID`-specific dictionary later, once the
+                // processing loop knows it (feature 011, FR-008; see `truefix-session`'s
+                // post-decode restructuring call site — the reader task here has no visibility
+                // into the session's negotiated `ApplVerID`).
                 let decoded = {
                     // `total` is always `<= buf.len()` here (`frame_length` only ever returns a
                     // length it verified fits within `buf`), so `.get(..total)` never actually
@@ -1305,12 +1310,8 @@ async fn classify_buffered(
                     // believed unreachable today.
                     let raw = buf.get(..total).unwrap_or(&[]);
                     match (&services.validator, &services.fixt_dictionaries) {
-                        (Some((dict, _)), _) => {
-                            decode_with_groups(raw, &HeaderTrailerGroupsOnly(dict))
-                        }
-                        (None, Some((dicts, _))) => {
-                            decode_with_groups(raw, &HeaderTrailerGroupsOnly(dicts.transport()))
-                        }
+                        (Some((dict, _)), _) => decode_with_groups(raw, dict),
+                        (None, Some((dicts, _))) => decode_with_groups(raw, dicts.transport()),
                         (None, None) => decode(raw),
                     }
                 };
@@ -1370,24 +1371,6 @@ fn next_frame_start(buf: &[u8]) -> Option<usize> {
     (1..buf.len().saturating_sub(1)).find(|&i| buf.get(i..i + 2) == Some(b"8="))
 }
 
-/// A [`truefix_core::GroupSpec`] adapter that only reports a group definition for count tags the
-/// version-agnostic codec already classifies as header/trailer (GAP-26/FR-032, feature 006) —
-/// every other (body-level) group is hidden, so `decode_with_groups` leaves the body exactly as
-/// flat as plain `decode()` would, preserving `validate_groups`'s existing body-group validation
-/// (which walks `body.fields()`, invisible to `Member::Group` entries) and every codegen-generated
-/// body-group accessor unchanged.
-struct HeaderTrailerGroupsOnly<'a>(&'a truefix_dict::DataDictionary);
-
-impl truefix_core::GroupSpec for HeaderTrailerGroupsOnly<'_> {
-    fn group_of(&self, count_tag: u32) -> Option<(u32, &[u32])> {
-        if truefix_core::tags::is_header(count_tag) || truefix_core::tags::is_trailer(count_tag) {
-            self.0.group_of(count_tag)
-        } else {
-            None
-        }
-    }
-}
-
 /// Run the application hooks and drive the session state machine for one dequeued inbound item —
 /// the per-message logic `drain_messages` used to run inline before US14's reader/processor
 /// split; now run by the processing loop after a message has already been read, framed, and
@@ -1407,7 +1390,7 @@ where
     S: AsyncWrite + Unpin,
 {
     match inbound {
-        Inbound::Message(msg) => {
+        Inbound::Message(mut msg) => {
             // BUG-34/FR-010 (feature 007): a message the session layer is about to reject
             // outright (stale latency, mismatched identity, or a too-low sequence number with no
             // PossDupFlag — `Session::would_reject_before_processing`'s read-only precheck) must
@@ -1433,6 +1416,15 @@ where
                 )
                 .await;
             }
+
+            // Feature 011 (FR-008/FR-009/FR-010): under FIXT 1.1, structure this message's body
+            // against its resolved application dictionary *before* it's delivered to
+            // `from_admin`/`from_app` below — there is no `Action::Deliver` `dispatch`/
+            // `Session::handle` could do this from, since delivery happens here, directly, ahead
+            // of ever calling into the state machine (see
+            // `Session::restructure_fixt_application_body`'s doc for why this exact call site is
+            // the only correct one).
+            session.restructure_fixt_application_body(&mut msg);
 
             if is_admin(&msg) {
                 if let Err(reject) = app.from_admin(&msg, id).await {

@@ -69,7 +69,7 @@ pub fn encode_with_order(msg: &Message, field_order: Option<&[u32]>) -> Vec<u8> 
 /// original relative position among the remaining members). Each group entry's own internal
 /// field order is untouched.
 fn render_members_ordered(map: &FieldMap, order: &[u32], out: &mut Vec<u8>) {
-    let members: &[Member] = map.members();
+    let members: &[Member] = map.raw_members();
     let tag_of = |m: &Member| match m {
         Member::Field(f) => Some(f.tag()),
         Member::Group { count_tag, .. } => Some(*count_tag),
@@ -125,7 +125,7 @@ fn render_one_member(member: &Member, out: &mut Vec<u8>) {
 }
 
 fn render_members(map: &FieldMap, skip: &[u32], out: &mut Vec<u8>) {
-    for member in map.members() {
+    for member in map.raw_members() {
         match member {
             Member::Field(f) => {
                 if !skip.contains(&f.tag()) {

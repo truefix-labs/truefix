@@ -31,6 +31,8 @@ pub mod model;
 pub mod orchestra;
 pub mod parser;
 mod validate;
+#[cfg(feature = "dict-tooling")]
+pub mod vendor_xml;
 
 pub use codegen::CodegenError;
 pub use fixt::FixtDictionaries;
@@ -39,6 +41,8 @@ pub use model::{
     RejectReason, ValidationError, ValidationOptions,
 };
 pub use parser::{ParseError, parse};
+#[cfg(feature = "dict-tooling")]
+pub use vendor_xml::VendorXmlError;
 
 /// An error loading a dictionary file from disk (FR-010).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -60,16 +64,48 @@ pub enum DictLoadError {
         #[source]
         source: ParseError,
     },
+    /// The file looked like vendor dictionary XML (US3, feature 011, FR-011/FR-016) but failed to
+    /// convert to the normalized `.fixdict` grammar. Only constructible with `dict-tooling`
+    /// enabled — without it, vendor-XML-shaped content instead falls through to `Parse` (an
+    /// ordinary `.fixdict` syntax error on the XML text), never a silent partial load either way.
+    #[cfg(feature = "dict-tooling")]
+    #[error("could not convert vendor dictionary XML {path}: {source}")]
+    VendorXml {
+        /// The path whose contents failed to convert.
+        path: String,
+        /// The underlying vendor-XML conversion error.
+        #[source]
+        source: VendorXmlError,
+    },
 }
 
 /// Load and parse a dictionary from a file on disk (FR-010; a runtime, custom-dictionary
-/// counterpart to the bundled `load_fix*` loaders).
+/// counterpart to the bundled `load_fix*` loaders). US3 (feature 011, FR-014): when `dict-tooling`
+/// is enabled, content beginning with `<?xml`/`<fix ` is treated as vendor dictionary XML and
+/// converted via [`vendor_xml::convert`] before parsing — no separate format flag needed at load
+/// time. Without `dict-tooling`, such content is parsed as `.fixdict` text exactly as before (and
+/// fails with an ordinary `Parse` error, never a silent partial load).
 pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<DataDictionary, DictLoadError> {
     let path_ref = path.as_ref();
     let text = std::fs::read_to_string(path_ref).map_err(|e| DictLoadError::Io {
         path: path_ref.display().to_string(),
         reason: e.to_string(),
     })?;
+    #[cfg(feature = "dict-tooling")]
+    {
+        let trimmed = text.trim_start();
+        if trimmed.starts_with("<?xml") || trimmed.starts_with("<fix ") {
+            let converted =
+                vendor_xml::convert(&text).map_err(|source| DictLoadError::VendorXml {
+                    path: path_ref.display().to_string(),
+                    source,
+                })?;
+            return parse(&converted).map_err(|source| DictLoadError::Parse {
+                path: path_ref.display().to_string(),
+                source,
+            });
+        }
+    }
     parse(&text).map_err(|source| DictLoadError::Parse {
         path: path_ref.display().to_string(),
         source,

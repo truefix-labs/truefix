@@ -60,6 +60,9 @@ fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  truefix-dict generate-dict --source <orchestra.xml> --out <normalized.fixdict>");
     eprintln!(
+        "  truefix-dict generate-dict --format vendor-xml --source <vendor.xml> --out <normalized.fixdict>"
+    );
+    eprintln!(
         "  truefix-dict generate-code --dict <normalized.fixdict> --out <generated.rs> [--name <Name>]"
     );
     eprintln!("  truefix-dict validate --dict <normalized.fixdict>");
@@ -129,9 +132,19 @@ fn generate_dict(args: &[String]) -> Result<(), String> {
             truefix_dict::orchestra::convert(&xml)
                 .map_err(|e| format!("converting {source}: {e}"))?
         }
+        // `--format vendor-xml` (US3, feature 011, FR-015): a vendor-published dictionary XML
+        // file (e.g. Binance's `spot-fix-oe.xml`/`spot-fix-md.xml`), converted the same way as the
+        // other two formats — see `truefix_dict::vendor_xml`'s module doc for the provenance
+        // boundary and supported shape.
+        Some("vendor-xml") => {
+            let xml =
+                std::fs::read_to_string(source).map_err(|e| format!("reading {source}: {e}"))?;
+            truefix_dict::vendor_xml::convert(&xml)
+                .map_err(|e| format!("converting {source}: {e}"))?
+        }
         Some(other) => {
             return Err(format!(
-                "unknown --format {other:?} (expected orchestra or fix-repository)"
+                "unknown --format {other:?} (expected orchestra, fix-repository, or vendor-xml)"
             ));
         }
     };
