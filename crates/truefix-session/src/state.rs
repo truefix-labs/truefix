@@ -471,7 +471,7 @@ impl Session {
             lo.body.set(Field::int(SESSION_STATUS, i64::from(status)));
         }
         self.state = SessionState::Disconnected;
-        vec![self.send_stored(lo), Action::Disconnect]
+        vec![self.send_logout(lo), Action::Disconnect]
     }
 
     /// Emit a Business Message Reject (35=j) in response to `original`, using an
@@ -574,11 +574,7 @@ impl Session {
     /// timer.
     fn send_stored(&mut self, mut msg: Message) -> Action {
         self.ticks_since_send = 0;
-        if self.config.enable_last_msg_seq_num_processed {
-            // LastMsgSeqNumProcessed (369): the last inbound sequence number we have processed.
-            let last = self.next_in_seq.saturating_sub(1);
-            msg.header.set(Field::int(369, last as i64));
-        }
+        self.stamp_last_msg_seq_num_processed(&mut msg);
         if self.config.persist_messages
             && let Some(seq) = msg
                 .header
@@ -592,9 +588,22 @@ impl Session {
     }
 
     /// Send without allocating a new sequence number or storing (used for resend responses).
-    fn send_raw(&mut self, msg: Message) -> Action {
+    fn send_raw(&mut self, mut msg: Message) -> Action {
         self.ticks_since_send = 0;
+        self.stamp_last_msg_seq_num_processed(&mut msg);
         Action::Send(msg)
+    }
+
+    fn send_logout(&mut self, msg: Message) -> Action {
+        self.send_raw(msg)
+    }
+
+    fn stamp_last_msg_seq_num_processed(&self, msg: &mut Message) {
+        if self.config.enable_last_msg_seq_num_processed && msg.header.get(369).is_none() {
+            // LastMsgSeqNumProcessed (369): the last inbound sequence number we have processed.
+            let last = self.next_in_seq.saturating_sub(1);
+            msg.header.set(Field::int(369, last as i64));
+        }
     }
 
     /// Resend a previously-sent application message during gap-fill resend (US3, feature 005,
@@ -830,7 +839,7 @@ impl Session {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, Some("SendingTime accuracy problem"));
             self.state = SessionState::Disconnected;
-            actions.push(self.send_stored(lo));
+            actions.push(self.send_logout(lo));
             actions.extend(self.reset_on_error());
             actions.push(Action::Disconnect);
             return actions;
@@ -856,7 +865,7 @@ impl Session {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, Some(problem.text()));
             self.state = SessionState::Disconnected;
-            actions.push(self.send_stored(lo));
+            actions.push(self.send_logout(lo));
             actions.extend(self.reset_on_error());
             actions.push(Action::Disconnect);
             return actions;
@@ -877,7 +886,7 @@ impl Session {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, Some("Logon state is not valid"));
             self.state = SessionState::Disconnected;
-            let mut actions = vec![self.send_stored(lo)];
+            let mut actions = vec![self.send_logout(lo)];
             actions.extend(self.reset_on_error());
             actions.push(Action::Disconnect);
             return actions;
@@ -970,7 +979,7 @@ impl Session {
                         let s = self.next_seq();
                         let lo = admin::logout(&self.config, s, Some("MsgSeqNum too low"));
                         self.state = SessionState::Disconnected;
-                        let mut actions = vec![self.send_stored(lo)];
+                        let mut actions = vec![self.send_logout(lo)];
                         actions.extend(self.reset_on_error());
                         actions.push(Action::Disconnect);
                         actions
@@ -995,7 +1004,7 @@ impl Session {
                             seq,
                             Some("application message failed validation"),
                         );
-                        actions.push(self.send_stored(lo));
+                        actions.push(self.send_logout(lo));
                         self.state = SessionState::Disconnected;
                         actions.push(Action::Disconnect);
                     } else {
@@ -1071,7 +1080,7 @@ impl Session {
                     let s = self.next_seq();
                     let lo = admin::logout(&self.config, s, Some("MsgSeqNum too low"));
                     self.state = SessionState::Disconnected;
-                    let mut actions = vec![self.send_stored(lo)];
+                    let mut actions = vec![self.send_logout(lo)];
                     // BUG-68/FR-039 (feature 007): `reset_on_error()`, matching the
                     // latency-failure/identity-failure/validLogonState/dictionary-validation
                     // disconnect paths above and below -- previously this was the one hard
@@ -1195,6 +1204,13 @@ impl Session {
                 self.next_in_seq = self.next_in_seq.saturating_add(1);
                 actions.extend(self.reset_on_error());
                 if self.config.disconnect_on_error {
+                    let seq = self.next_seq();
+                    let lo = admin::logout(
+                        &self.config,
+                        seq,
+                        Some("application message failed validation"),
+                    );
+                    actions.push(self.send_logout(lo));
                     self.state = SessionState::Disconnected;
                     actions.push(Action::Disconnect);
                     return actions;
@@ -1368,11 +1384,40 @@ impl Session {
     }
 
     fn gap_fill(&mut self, from_seq: u64, new_seq_no: u64) -> Action {
-        let m = admin::sequence_reset(&self.config, from_seq, new_seq_no, true);
+        let mut m = admin::sequence_reset(&self.config, from_seq, new_seq_no, true);
+        if self.config.enable_last_msg_seq_num_processed {
+            m.header.set(Field::int(369, self.next_in_seq as i64));
+        }
         self.send_raw(m)
     }
 
     fn on_sequence_reset(&mut self, msg: &Message) -> Vec<Action> {
+        if let Some(reject) = self.validate_app(msg) {
+            let mut actions = vec![reject];
+            let ref_seq = msg
+                .header
+                .get(MSG_SEQ_NUM)
+                .and_then(|f| f.as_int().ok())
+                .filter(|&s| s > 0)
+                .map(|s| s as u64);
+            if ref_seq.is_some_and(|s| s == self.next_in_seq) {
+                self.next_in_seq = self.next_in_seq.saturating_add(1);
+            }
+            actions.extend(self.reset_on_error());
+            if self.config.disconnect_on_error {
+                let seq = self.next_seq();
+                let lo = admin::logout(
+                    &self.config,
+                    seq,
+                    Some("application message failed validation"),
+                );
+                actions.push(self.send_logout(lo));
+                self.state = SessionState::Disconnected;
+                actions.push(Action::Disconnect);
+            }
+            return actions;
+        }
+
         let gap_fill = msg.body.get(GAP_FILL_FLAG).and_then(|f| f.as_str().ok()) == Some("Y");
         let new_seq_present = msg.body.get(NEW_SEQ_NO).is_some();
         // NEW-34 (feature 009): `n >= 0`, not `n > 0` -- a present `NewSeqNo=0` must still flow
@@ -1434,6 +1479,7 @@ impl Session {
                     return vec![self.send_stored(rej)];
                 }
                 self.next_in_seq = ns;
+                self.queue.retain(|&seq, _| seq >= ns);
             }
             return self.drain_queue();
         }
@@ -1639,7 +1685,7 @@ impl Session {
                 seq,
                 Some("Logon failed dictionary validation"),
             );
-            actions.push(self.send_stored(lo));
+            actions.push(self.send_logout(lo));
             self.state = SessionState::Disconnected;
             actions.push(Action::Disconnect);
             return actions;
@@ -1712,6 +1758,22 @@ impl Session {
         let mut actions = Vec::new();
         if store_reset {
             actions.push(Action::ResetStore);
+        }
+        if self.config.role == Role::Acceptor
+            && self.state == SessionState::AwaitingLogon
+            && disposition == Some(Ordering::Greater)
+        {
+            if !self.resend_requested || self.config.send_redundant_resend_requests {
+                self.resend_requested = true;
+                if self.config.resend_request_chunk_size > 0
+                    && let Some(s) = logon_seq
+                {
+                    self.resend_target = Some(self.resend_target.map_or(s, |t| t.max(s)));
+                }
+                let begin = self.next_in_seq;
+                actions.push(self.request_resend(begin));
+            }
+            return actions;
         }
         match self.config.role {
             Role::Acceptor if self.state == SessionState::AwaitingLogon => {
@@ -1819,7 +1881,7 @@ impl Session {
         } else {
             let seq = self.next_seq();
             let lo = admin::logout(&self.config, seq, None);
-            let send = self.send_stored(lo);
+            let send = self.send_logout(lo);
             let reset = self.enter_disconnected(DisconnectReason::GracefulLogout);
             let mut actions = vec![send];
             actions.extend(reset);
@@ -1834,7 +1896,7 @@ impl Session {
             let lo = admin::logout(&self.config, seq, None);
             self.ticks_awaiting = 0;
             self.state = SessionState::AwaitingLogout;
-            vec![self.send_stored(lo)]
+            vec![self.send_logout(lo)]
         } else {
             Vec::new()
         }
@@ -1887,16 +1949,14 @@ impl Session {
                 // the current time crosses outside its configured schedule window, rather than
                 // being left connected indefinitely past the window's end.
                 // NEW-62 (feature 009): send a Logout before disconnecting, matching QFJ's own
-                // session-end behavior -- previously this was an abrupt TCP drop with no Logout,
-                // leaving the counterparty to observe an ungraceful disconnect.
+                // session-end behavior. NEW-97 (audit 006): after sending it, wait for the peer
+                // Logout (or LogoutTimeout) instead of immediately closing the transport.
                 let seq = self.next_seq();
                 let lo = admin::logout(&self.config, seq, Some("session schedule window closed"));
-                let send = self.send_stored(lo);
-                let reset = self.enter_disconnected(DisconnectReason::Other);
-                let mut actions = vec![send];
-                actions.extend(reset);
-                actions.push(Action::Disconnect);
-                return actions;
+                let send = self.send_logout(lo);
+                self.ticks_awaiting = 0;
+                self.state = SessionState::AwaitingLogout;
+                return vec![send];
             }
             SessionState::LoggedOn if !self.config.disable_heart_beat_check => {
                 // BUG-36/FR-033 (feature 007): `f64` arithmetic throughout, not `u32` — besides

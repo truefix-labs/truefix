@@ -195,8 +195,11 @@ impl SessionConfig {
             max_latency: 120,
             check_comp_id: true,
             reject_garbled_message: false,
-            test_request_delay_multiplier: 1.0,
-            heartbeat_timeout_multiplier: 2.0,
+            // NEW-102/NEW-103 (audit 006): match QFJ's defaults (`Session.java`'s
+            // `DEFAULT_HEARTBT_TIMEOUT_MULTIPLIER = 1.4` and the `heartbeatInterval / 2`
+            // test-request threshold) instead of TrueFix's previous slower-to-detect values.
+            test_request_delay_multiplier: 0.5,
+            heartbeat_timeout_multiplier: 1.4,
             timestamp_precision: TimeStampPrecision::Milliseconds,
             logon_timeout: 10,
             logout_timeout: 10,

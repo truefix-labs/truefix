@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use truefix_log::{CompositeLog, Log, LogConfig, build_log};
+use truefix_log::{CompositeLog, FileLogOptions, Log, LogConfig, build_log};
 
 #[derive(Default, Clone)]
 struct CapturingLog {
@@ -50,7 +50,11 @@ fn composite_fans_out_and_separates_streams() {
 fn file_log_separates_message_and_event_files() {
     let dir = std::env::temp_dir().join(format!("truefix-log-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let log = build_log(&LogConfig::File { dir: dir.clone() }).unwrap();
+    let log = build_log(&LogConfig::File {
+        dir: dir.clone(),
+        options: FileLogOptions::default(),
+    })
+    .unwrap();
     log.on_incoming("8=FIX.4.4|35=D");
     log.on_event("session reset");
     drop(log);

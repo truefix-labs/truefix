@@ -2,7 +2,9 @@
 
 use truefix_core::{Field, FieldMap, GroupSpec, Message};
 
-use crate::model::{DataDictionary, GroupDef, RejectReason, ValidationError, ValidationOptions};
+use crate::model::{
+    DataDictionary, GroupDef, RejectReason, ValidationError, ValidationOptions, VersionMeta,
+};
 
 impl GroupSpec for DataDictionary {
     fn group_of(&self, count_tag: u32) -> Option<(u32, &[u32])> {
@@ -42,11 +44,26 @@ impl DataDictionary {
             return Ok(());
         }
 
-        // GAP-32/FR-029 (feature 005): a no-op when this dictionary has no `version-meta`
-        // (spec.md Edge Case) or the message's BeginString doesn't have the plain "FIX.M.N" shape
-        // (e.g. FIXT.1.1, whose version is instead resolved via ApplVerID — a separate mechanism,
-        // see `fixt.rs` — not this per-message BeginString check).
-        if let Some(vm) = self.version_meta
+        // GAP-32/FR-029 (feature 005); NEW-145 (audit 006): previously a no-op whenever this
+        // dictionary had no `version-meta` directive -- true for every bundled dictionary, since
+        // none declares one, making the check always skipped in practice. Falls back to parsing
+        // `self.version` (the plain `version FIX.M.N` directive every bundled dictionary does
+        // declare) when `version_meta` is absent, so the check actually runs for real dictionaries
+        // instead of only for a hypothetical one with an explicit `version-meta` line. Still a
+        // no-op when neither source parses as a plain "FIX.M.N" BeginString (e.g. FIXT.1.1, whose
+        // version is instead resolved via ApplVerID — a separate mechanism, see `fixt.rs`) or the
+        // message's own BeginString doesn't either (spec.md Edge Case).
+        let effective_version = self.version_meta.or_else(|| {
+            parse_fix_begin_string(&self.version).map(
+                |(major, minor, service_pack, extension_pack)| VersionMeta {
+                    major,
+                    minor,
+                    service_pack,
+                    extension_pack,
+                },
+            )
+        });
+        if let Some(vm) = effective_version
             && let Some(bs) = message.header.get(8).and_then(|f| f.as_str().ok())
             && let Some((major, minor, service_pack, extension_pack)) = parse_fix_begin_string(bs)
             && (major != vm.major
@@ -220,6 +237,36 @@ impl DataDictionary {
                         Some(tag),
                         "required field missing",
                     ));
+                }
+            }
+            // NEW-127 (audit 006): QFJ's `DataDictionary.checkHasRequired()` checks required
+            // fields for HEADER_ID/TRAILER_ID as well as the message body; previously this
+            // dictionary only checked `mdef.required` (body fields) -- header/trailer had no
+            // required/optional split at all, so this check was structurally impossible. These
+            // envelope-framing tags are universally required by the FIX message-structure spec
+            // (Volume 1) regardless of dictionary version, so they're checked directly here rather
+            // than needing a per-dictionary required/optional split for header/trailer. Gated on
+            // `check_required_envelope_fields` (default `false`, see its doc) since a message built
+            // directly (bypassing `truefix_core::decode`/`encode`'s envelope construction) may
+            // legitimately omit them -- e.g. this crate's and other crates' own test fixtures.
+            if opts.check_required_envelope_fields {
+                for &tag in self.header_required_tags() {
+                    if !present(message, tag) {
+                        return Err(ValidationError::session(
+                            RejectReason::RequiredTagMissing,
+                            Some(tag),
+                            "required header field missing",
+                        ));
+                    }
+                }
+                for &tag in self.trailer_required_tags() {
+                    if !present(message, tag) {
+                        return Err(ValidationError::session(
+                            RejectReason::RequiredTagMissing,
+                            Some(tag),
+                            "required trailer field missing",
+                        ));
+                    }
                 }
             }
         }

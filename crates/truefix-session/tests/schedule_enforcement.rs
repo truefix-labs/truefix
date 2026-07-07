@@ -113,7 +113,7 @@ fn logon_inside_the_configured_schedule_is_accepted() {
 // --- T041: an already-LoggedOn session is disconnected once schedule crosses out of window ---
 
 #[test]
-fn logged_on_session_is_disconnected_once_the_schedule_window_elapses() {
+fn logged_on_session_starts_logout_once_the_schedule_window_elapses() {
     let now = OffsetDateTime::now_utc();
     let mut c = cfg(Role::Acceptor);
     c.heartbeat_interval = 30; // long enough that heartbeat-timeout doesn't also fire
@@ -135,12 +135,12 @@ fn logged_on_session_is_disconnected_once_the_schedule_window_elapses() {
     let actions = s.handle(Event::Tick);
     assert_eq!(
         s.state(),
-        SessionState::Disconnected,
-        "the session must be disconnected once the current time crosses outside its schedule \
-         window, not left logged on indefinitely"
+        SessionState::AwaitingLogout,
+        "the session must begin graceful logout once the current time crosses outside its \
+         schedule window, not stay logged on indefinitely"
     );
-    assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
-    // NEW-62 (feature 009): a Logout must be sent before the disconnect, not an abrupt TCP drop.
+    assert!(!actions.iter().any(|a| matches!(a, Action::Disconnect)));
+    // NEW-62 (feature 009): a Logout must be sent before any later disconnect.
     let out = sends(&actions);
     assert!(
         out.iter().any(|m| m.msg_type() == Some("5")),
@@ -155,7 +155,7 @@ fn logged_on_session_is_disconnected_once_the_schedule_window_elapses() {
 /// Confirms the initiator side of the identical code path independently, rather than relying on
 /// code-symmetry alone to imply test coverage.
 #[test]
-fn logged_on_initiator_session_is_disconnected_once_the_schedule_window_elapses() {
+fn logged_on_initiator_session_starts_logout_once_the_schedule_window_elapses() {
     let now = OffsetDateTime::now_utc();
     let mut c = cfg(Role::Initiator);
     c.heartbeat_interval = 30; // long enough that heartbeat-timeout doesn't also fire
@@ -176,11 +176,11 @@ fn logged_on_initiator_session_is_disconnected_once_the_schedule_window_elapses(
     let actions = s.handle(Event::Tick);
     assert_eq!(
         s.state(),
-        SessionState::Disconnected,
-        "an initiator session must be disconnected once the current time crosses outside its \
-         schedule window too, not left logged on indefinitely"
+        SessionState::AwaitingLogout,
+        "an initiator session must begin graceful logout once the current time crosses outside \
+         its schedule window too, not stay logged on indefinitely"
     );
-    assert!(actions.iter().any(|a| matches!(a, Action::Disconnect)));
+    assert!(!actions.iter().any(|a| matches!(a, Action::Disconnect)));
     let out = sends(&actions);
     assert!(
         out.iter().any(|m| m.msg_type() == Some("5")),

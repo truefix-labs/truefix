@@ -89,6 +89,15 @@ pub fn frame_length(buf: &[u8]) -> Result<Option<usize>, DecodeError> {
         if buf.get(total - 7..total - 4) != Some(b"10=") {
             return Err(DecodeError::InvalidBodyLength);
         }
+        // NEW-107 (audit 006): also confirm the byte immediately after the three checksum digits
+        // is SOH, completing the `10=\d{3}\x01` trailer shape QFJ's `FIXMessageDecoder` verifies
+        // in full -- the `10=` prefix check above alone would still accept a frame whose
+        // `BodyLength` and checksum digits happen to be numeric/well-positioned but whose trailing
+        // byte isn't SOH, which `tokenize_validated` would then misparse as the start of the next
+        // field, desynchronizing the stream.
+        if buf.get(total - 1) != Some(&SOH) {
+            return Err(DecodeError::InvalidBodyLength);
+        }
         Ok(Some(total))
     } else {
         Ok(None)

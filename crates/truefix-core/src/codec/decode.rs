@@ -230,6 +230,14 @@ fn tokenize_validated(input: &[u8]) -> Result<Vec<Token>, DecodeError> {
     if last.0 != CHECK_SUM {
         return Err(DecodeError::MissingChecksum);
     }
+    // NEW-155 (audit 006): require exactly three ASCII digits (the canonical `10=007` shape every
+    // real FIX encoder emits), not just "parses as a non-negative integer" -- `parse_u32` alone
+    // would accept e.g. `10=7`, which the stream-framing path (`frame_length`, assuming a fixed
+    // seven-byte `10=XXX<SOH>` trailer) can never actually produce, leaving `Message::decode`'s
+    // direct public entry point stricter-in-theory but not in practice.
+    if last.1.len() != 3 || !last.1.iter().all(u8::is_ascii_digit) {
+        return Err(DecodeError::MissingChecksum);
+    }
     let declared_cs = parse_u32(&last.1).ok_or(DecodeError::MissingChecksum)?;
 
     // Body starts at the third field (just after `9=..<SOH>`) and ends just before `10=`.

@@ -32,6 +32,7 @@ async fn cache_miss_is_cached_for_the_next_resend() {
         FileStoreOptions {
             sync: false,
             max_cached_msgs: 1,
+            max_body_records: 0,
         },
     )
     .unwrap();

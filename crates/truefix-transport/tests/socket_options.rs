@@ -21,6 +21,7 @@ async fn full_option_set_applies_without_error() {
         recv_buffer_size: Some(64 * 1024),
         send_buffer_size: Some(64 * 1024),
         traffic_class: Some(0),
+        backlog: 1024,
     };
     opts.apply(&stream);
 

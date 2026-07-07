@@ -59,7 +59,14 @@ fn a_heart_bt_int_beyond_u32_max_is_clamped_not_truncated() {
 
 #[test]
 fn a_heart_bt_int_within_u32_range_is_adopted_unchanged() {
-    let mut s = Session::new(acc_cfg());
+    let mut c = acc_cfg();
+    // NEW-103 (audit 006) lowered the default `test_request_delay_multiplier` to 0.5 (matching
+    // QFJ); with the small `hb=3` this test adopts, that default would fire a TestRequest at tick
+    // 2, which itself resets `ticks_since_send` (any send does) and would then mask the Heartbeat
+    // cadence this test is actually about. Set it back to a value that keeps the two concerns
+    // (test-request timing vs. heartbeat cadence) isolated from each other.
+    c.test_request_delay_multiplier = 1.0;
+    let mut s = Session::new(c);
     s.handle(Event::Connected);
     s.handle(Event::Received(logon_with_hbi(3)));
 

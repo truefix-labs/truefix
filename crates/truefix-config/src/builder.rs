@@ -174,6 +174,9 @@ pub struct LogSpec {
     pub include_timestamp: bool,
     /// `FileIncludeMilliseconds`.
     pub include_milliseconds: bool,
+    /// `MaxFileLogSize` (NEW-108, audit 006). `None`/absent means unbounded (the previous
+    /// behavior).
+    pub max_size_bytes: Option<u64>,
 }
 
 /// A SQL-backed log resolved from configuration (US3, feature 004, FR-003). Data-only mirror of
@@ -216,6 +219,9 @@ pub struct SocketOptionsSpec {
     pub send_buffer_size: Option<usize>,
     /// `IP_TOS` traffic class. Maps from `SocketTrafficClass`.
     pub traffic_class: Option<u32>,
+    /// Listener backlog (NEW-135, audit 006). Maps from `SocketBacklog`; defaults to `1024`,
+    /// matching the previous hardcoded transport value.
+    pub backlog: u32,
 }
 
 impl Default for SocketOptionsSpec {
@@ -226,6 +232,7 @@ impl Default for SocketOptionsSpec {
             reuse_address: false,
             linger: None,
             oob_inline: false,
+            backlog: 1024,
             recv_buffer_size: None,
             send_buffer_size: None,
             traffic_class: None,
@@ -303,7 +310,7 @@ impl SessionSettings {
             match resolve_one(map, i) {
                 Ok(rs) => resolved.push(rs),
                 Err(err) => {
-                    if bool_key(map, "ContinueInitializationOnError", false) {
+                    if lenient_bool_key(map, "ContinueInitializationOnError", false) {
                         skipped.push((label(map, i), err));
                     } else {
                         return Err(err);
@@ -344,28 +351,12 @@ fn u32_key(map: &Map, key: &str, session: &str, default: u32) -> Result<u32, Con
     }
 }
 
-/// A `Y`/`N` boolean (case-insensitive); absent → `default`.
-fn bool_key(map: &Map, key: &str, default: bool) -> bool {
-    map.get(key)
-        .map(|v| v.eq_ignore_ascii_case("Y"))
-        .unwrap_or(default)
-}
-
-/// As [`bool_key`], but a value that's present and neither a recognized affirmative (`Y`) nor
-/// negative (`N`) form is a typed [`ConfigError`] (BUG-64/FR-036, feature 007) rather than
-/// silently treated as `false` — e.g. `SocketUseSSL=true` would otherwise silently disable TLS
-/// with no diagnostic at all. Deliberately a *separate* function from `bool_key`, not a blanket
-/// conversion of it: `resolve_lenient`'s own `ContinueInitializationOnError` read (this file, near
-/// the top) is intentionally a "simple, never-failing boolean key" — it's consulted specifically
-/// to decide whether to tolerate *another* key's failure in the same session, so making it
-/// fallible too would undermine the fallback path it exists for. Applied narrowly to
-/// `SocketUseSSL` (BUG-64's own named example) rather than every boolean key in this file.
-fn strict_bool_key(
-    map: &Map,
-    key: &str,
-    session: &str,
-    default: bool,
-) -> Result<bool, ConfigError> {
+/// A `Y`/`N` boolean (case-insensitive); a value that's present and neither a recognized
+/// affirmative (`Y`) nor negative (`N`) form is a typed [`ConfigError`] (NEW-113/audit 006,
+/// generalizing the BUG-64/FR-036 `SocketUseSSL`-only strict check to every boolean key) rather
+/// than silently treated as `false` — e.g. `CheckLatency=true` or `DisconnectOnError=yes` would
+/// otherwise silently disable/enable a feature with no diagnostic at all.
+fn bool_key(map: &Map, key: &str, session: &str, default: bool) -> Result<bool, ConfigError> {
     match map.get(key).map(String::as_str) {
         None => Ok(default),
         Some(v) if v.eq_ignore_ascii_case("Y") => Ok(true),
@@ -376,6 +367,18 @@ fn strict_bool_key(
             reason: format!("expected Y/N, got {other:?}"),
         }),
     }
+}
+
+/// As [`bool_key`], but a value that's present and neither a recognized affirmative (`Y`) nor
+/// negative (`N`) form falls back to `default` instead of erroring. Deliberately kept as a
+/// *separate* function used only by `resolve_lenient`'s own `ContinueInitializationOnError` read
+/// (this file, near the top): that key is intentionally a "simple, never-failing boolean key" —
+/// it's consulted specifically to decide whether to tolerate *another* key's failure in the same
+/// session, so making it fallible too would undermine the fallback path it exists for.
+fn lenient_bool_key(map: &Map, key: &str, default: bool) -> bool {
+    map.get(key)
+        .map(|v| v.eq_ignore_ascii_case("Y"))
+        .unwrap_or(default)
 }
 
 /// `LogonTag=<tag>=<value>`, `LogonTag1=<tag>=<value>`, `LogonTag2=<tag>=<value>`, … (e.g.
@@ -463,7 +466,7 @@ fn precision_key(
     default: TimeStampPrecision,
 ) -> Result<TimeStampPrecision, ConfigError> {
     // BUG-63/FR-036 (feature 007): case-insensitive, matching every other parser in this file
-    // (`bool_key`/`strict_bool_key`'s `eq_ignore_ascii_case`) — previously required exact
+    // (`bool_key`'s `eq_ignore_ascii_case`) — previously required exact
     // uppercase, so a perfectly reasonable `.cfg` value like `TimeStampPrecision=seconds` failed
     // with `InvalidValue` even though it's unambiguous.
     match map.get(key).map(|v| v.to_ascii_uppercase()).as_deref() {
@@ -505,11 +508,11 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
 
     let mut cfg = SessionConfig::new(begin_string, sender, target, role);
     cfg.heartbeat_interval = u32_key(map, "HeartBtInt", &session, 30)?;
-    cfg.reset_on_logon = bool_key(map, "ResetOnLogon", cfg.reset_on_logon);
-    cfg.reset_on_logout = bool_key(map, "ResetOnLogout", false);
-    cfg.reset_on_disconnect = bool_key(map, "ResetOnDisconnect", false);
-    cfg.persist_messages = bool_key(map, "PersistMessages", true);
-    cfg.check_latency = bool_key(map, "CheckLatency", true);
+    cfg.reset_on_logon = bool_key(map, "ResetOnLogon", &session, cfg.reset_on_logon)?;
+    cfg.reset_on_logout = bool_key(map, "ResetOnLogout", &session, false)?;
+    cfg.reset_on_disconnect = bool_key(map, "ResetOnDisconnect", &session, false)?;
+    cfg.persist_messages = bool_key(map, "PersistMessages", &session, true)?;
+    cfg.check_latency = bool_key(map, "CheckLatency", &session, true)?;
     cfg.max_latency = u32_key(map, "MaxLatency", &session, 120)?;
     cfg.logon_timeout = u32_key(map, "LogonTimeout", &session, 10)?;
     // NEW-89 (feature 009): matches QuickFIX/J's own 2-second default; the previous 10-second
@@ -519,10 +522,10 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.reconnect_interval = reconnect_interval;
     cfg.reconnect_interval_steps = reconnect_interval_steps;
     cfg.resend_request_chunk_size = u32_key(map, "ResendRequestChunkSize", &session, 0)?;
-    cfg.enable_last_msg_seq_num_processed = bool_key(map, "EnableLastMsgSeqNumProcessed", false);
-    cfg.enable_next_expected_msg_seq_num = bool_key(map, "EnableNextExpectedMsgSeqNum", false);
-    cfg.check_comp_id = bool_key(map, "CheckCompID", cfg.check_comp_id);
-    cfg.reject_garbled_message = bool_key(map, "RejectGarbledMessage", cfg.reject_garbled_message);
+    cfg.enable_last_msg_seq_num_processed = bool_key(map, "EnableLastMsgSeqNumProcessed", &session, false)?;
+    cfg.enable_next_expected_msg_seq_num = bool_key(map, "EnableNextExpectedMsgSeqNum", &session, false)?;
+    cfg.check_comp_id = bool_key(map, "CheckCompID", &session, cfg.check_comp_id)?;
+    cfg.reject_garbled_message = bool_key(map, "RejectGarbledMessage", &session, cfg.reject_garbled_message)?;
     cfg.heartbeat_timeout_multiplier = f64_key(
         map,
         "HeartBeatTimeoutMultiplier",
@@ -538,18 +541,18 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.timestamp_precision =
         precision_key(map, "TimeStampPrecision", &session, cfg.timestamp_precision)?;
     cfg.schedule = resolve_schedule(map, &session)?;
-    cfg.send_redundant_resend_requests = bool_key(map, "SendRedundantResendRequests", false);
-    cfg.reset_on_error = bool_key(map, "ResetOnError", false);
-    cfg.disconnect_on_error = bool_key(map, "DisconnectOnError", false);
-    cfg.disable_heart_beat_check = bool_key(map, "DisableHeartBeatCheck", false);
-    cfg.refresh_on_logon = bool_key(map, "RefreshOnLogon", false);
-    cfg.force_resend_when_corrupted_store = bool_key(map, "ForceResendWhenCorruptedStore", false);
-    cfg.continue_initialization_on_error = bool_key(map, "ContinueInitializationOnError", false);
+    cfg.send_redundant_resend_requests = bool_key(map, "SendRedundantResendRequests", &session, false)?;
+    cfg.reset_on_error = bool_key(map, "ResetOnError", &session, false)?;
+    cfg.disconnect_on_error = bool_key(map, "DisconnectOnError", &session, false)?;
+    cfg.disable_heart_beat_check = bool_key(map, "DisableHeartBeatCheck", &session, false)?;
+    cfg.refresh_on_logon = bool_key(map, "RefreshOnLogon", &session, false)?;
+    cfg.force_resend_when_corrupted_store = bool_key(map, "ForceResendWhenCorruptedStore", &session, false)?;
+    cfg.continue_initialization_on_error = bool_key(map, "ContinueInitializationOnError", &session, false)?;
     // 005/T027 (GAP-08/FR-009): the same `RequiresOrigSendingTime` key QuickFIX/J uses also gates
     // the session-layer anti-replay check (state.rs's low-seq+PossDup branch), in addition to the
     // pre-existing dictionary-level `ValidationOptions.requires_orig_sending_time` check below —
     // the two run at different layers (session state machine vs. `validate()`) but share one key.
-    cfg.requires_orig_sending_time_on_low_seq = bool_key(map, "RequiresOrigSendingTime", false);
+    cfg.requires_orig_sending_time_on_low_seq = bool_key(map, "RequiresOrigSendingTime", &session, false)?;
     cfg.logon_tags = resolve_logon_tags(map, &session)?;
     cfg.in_chan_capacity = usize_key(map, "InChanCapacity", &session, None)?;
     // GAP-47/FR-012/FR-013 (feature 005): full session-identity keys.
@@ -578,7 +581,7 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         ConnectionType::Initiator => resolve_failover_addresses(map, &session)?,
         ConnectionType::Acceptor => Vec::new(),
     };
-    let (log, sql_log) = resolve_log(map, &session);
+    let (log, sql_log) = resolve_log(map, &session)?;
     let log_kind = resolve_log_kind(map, &session)?;
     let proxy = resolve_proxy(map, &session)?;
     let trusted_proxy_addresses = resolve_trusted_proxy_addresses(map, &session)?;
@@ -586,10 +589,10 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     let validator = resolve_validator(map, &session)?;
     let fixt_dictionaries = resolve_fixt_dictionaries(map, &session)?;
     let acceptor_template =
-        bool_key(map, "DynamicSession", false) || map.contains_key("AcceptorTemplate");
+        bool_key(map, "DynamicSession", &session, false)? || map.contains_key("AcceptorTemplate");
     let allowed_remote_addresses = resolve_allowed_remote_addresses(map, &session)?;
     // NEW-96 (feature 009): parse the key that was previously registered `Impl` but never read.
-    let log_message_when_session_not_found = bool_key(map, "LogMessageWhenSessionNotFound", false);
+    let log_message_when_session_not_found = bool_key(map, "LogMessageWhenSessionNotFound", &session, false)?;
 
     Ok(ResolvedSession {
         session: cfg,
@@ -658,7 +661,7 @@ fn resolve_validator(
     )>,
     ConfigError,
 > {
-    if !bool_key(map, "UseDataDictionary", false) {
+    if !bool_key(map, "UseDataDictionary", session, false)? {
         return Ok(None);
     }
     let value = map
@@ -671,19 +674,23 @@ fn resolve_validator(
         })?;
     let dict = load_dictionary_value(value, session)?;
     let opts = truefix_dict::ValidationOptions {
-        validate_fields_out_of_order: bool_key(map, "ValidateFieldsOutOfOrder", false),
-        validate_checksum: bool_key(map, "ValidateChecksum", true),
-        validate_incoming_message: bool_key(map, "ValidateIncomingMessage", true),
-        allow_pos_dup: bool_key(map, "AllowPosDup", true),
-        requires_orig_sending_time: bool_key(map, "RequiresOrigSendingTime", false),
+        // NEW-104 (audit 006): default `true`, matching QFJ's `DataDictionary` constructor
+        // (`setCheckFieldsOutOfOrder(true)`) instead of silently accepting misplaced fields.
+        validate_fields_out_of_order: bool_key(map, "ValidateFieldsOutOfOrder", session, true)?,
+        validate_checksum: bool_key(map, "ValidateChecksum", session, true)?,
+        validate_incoming_message: bool_key(map, "ValidateIncomingMessage", session, true)?,
+        // NEW-111 (audit 006): default `false`, matching QFJ's `Session` constructor
+        // (`allowPossDup = false`) instead of silently weakening anti-replay protection.
+        allow_pos_dup: bool_key(map, "AllowPosDup", session, false)?,
+        requires_orig_sending_time: bool_key(map, "RequiresOrigSendingTime", session, false)?,
         // NEW-10 (feature 009): 5 more keys registered as `Impl` in `keys.rs` but never actually
         // read here -- an operator setting any of these to a non-default value saw no effect
         // despite the registry claiming full implementation.
-        validate_fields_have_values: bool_key(map, "ValidateFieldsHaveValues", true),
-        validate_unordered_group_fields: bool_key(map, "ValidateUnorderedGroupFields", true),
-        validate_user_defined_fields: bool_key(map, "ValidateUserDefinedFields", false),
-        allow_unknown_msg_fields: bool_key(map, "AllowUnknownMsgFields", false),
-        first_field_in_group_is_delimiter: bool_key(map, "FirstFieldInGroupIsDelimiter", true),
+        validate_fields_have_values: bool_key(map, "ValidateFieldsHaveValues", session, true)?,
+        validate_unordered_group_fields: bool_key(map, "ValidateUnorderedGroupFields", session, true)?,
+        validate_user_defined_fields: bool_key(map, "ValidateUserDefinedFields", session, false)?,
+        allow_unknown_msg_fields: bool_key(map, "AllowUnknownMsgFields", session, false)?,
+        first_field_in_group_is_delimiter: bool_key(map, "FirstFieldInGroupIsDelimiter", session, true)?,
         ..truefix_dict::ValidationOptions::default()
     };
     Ok(Some((dict, opts)))
@@ -700,7 +707,7 @@ fn resolve_fixt_dictionaries(
     map: &Map,
     session: &str,
 ) -> Result<Option<truefix_dict::FixtDictionaries>, ConfigError> {
-    if !bool_key(map, "UseDataDictionary", false) {
+    if !bool_key(map, "UseDataDictionary", session, false)? {
         return Ok(None);
     }
     let (Some(app_value), Some(transport_value)) = (
@@ -781,7 +788,7 @@ fn resolve_proxy(map: &Map, session: &str) -> Result<Option<ProxySpec>, ConfigEr
 /// Resolve `UseTCPProxy`/`TrustedProxyAddresses` (US12, FR-015): the physical source addresses a
 /// PROXY protocol header is trusted from. Empty when `UseTCPProxy` is unset/`N`.
 fn resolve_trusted_proxy_addresses(map: &Map, session: &str) -> Result<Vec<IpAddr>, ConfigError> {
-    if !bool_key(map, "UseTCPProxy", false) {
+    if !bool_key(map, "UseTCPProxy", session, false)? {
         return Ok(Vec::new());
     }
     match map.get("TrustedProxyAddresses") {
@@ -804,7 +811,7 @@ fn resolve_trusted_proxy_addresses(map: &Map, session: &str) -> Result<Vec<IpAdd
 /// Resolve `SocketSynchronousWrites`/`SocketSynchronousWriteTimeout` (US12, FR-017); `None`
 /// unless synchronous writes are enabled with a configured timeout.
 fn resolve_sync_write_timeout(map: &Map, session: &str) -> Result<Option<Duration>, ConfigError> {
-    if !bool_key(map, "SocketSynchronousWrites", false) {
+    if !bool_key(map, "SocketSynchronousWrites", session, false)? {
         return Ok(None);
     }
     match map.get("SocketSynchronousWriteTimeout") {
@@ -828,7 +835,10 @@ fn resolve_sync_write_timeout(map: &Map, session: &str) -> Result<Option<Duratio
 /// precedence (an explicit, disclosed scope boundary: fanning out to both via `CompositeLog` was
 /// considered and rejected as beyond this feature's "SQL backend selection reachable from `.cfg`"
 /// scope; `CompositeLog` remains available programmatically for that combination).
-fn resolve_log(map: &Map, session: &str) -> (Option<LogSpec>, Option<SqlLogSpec>) {
+fn resolve_log(
+    map: &Map,
+    session: &str,
+) -> Result<(Option<LogSpec>, Option<SqlLogSpec>), ConfigError> {
     if let Some(url) = map.get("JdbcURL") {
         if map.contains_key("FileLogPath") {
             tracing::warn!(
@@ -846,7 +856,7 @@ fn resolve_log(map: &Map, session: &str) -> (Option<LogSpec>, Option<SqlLogSpec>
             map.get("JdbcUser").map(String::as_str),
             map.get("JdbcPassword").map(String::as_str),
         );
-        return (
+        return Ok((
             None,
             Some(SqlLogSpec {
                 url,
@@ -862,22 +872,28 @@ fn resolve_log(map: &Map, session: &str) -> (Option<LogSpec>, Option<SqlLogSpec>
                     .get("JdbcLogEventTable")
                     .cloned()
                     .unwrap_or_else(|| "log_event".to_owned()),
-                include_heartbeats: bool_key(map, "JdbcLogHeartBeats", true),
+                include_heartbeats: bool_key(map, "JdbcLogHeartBeats", session, true)?,
             }),
-        );
+        ));
     }
     let Some(dir) = map.get("FileLogPath") else {
-        return (None, None);
+        return Ok((None, None));
     };
-    (
+    Ok((
         Some(LogSpec {
             dir: PathBuf::from(dir),
-            include_heartbeats: bool_key(map, "FileLogHeartbeats", true),
-            include_timestamp: bool_key(map, "FileIncludeTimeStampForMessages", false),
-            include_milliseconds: bool_key(map, "FileIncludeMilliseconds", false),
+            include_heartbeats: bool_key(map, "FileLogHeartbeats", session, true)?,
+            include_timestamp: bool_key(map, "FileIncludeTimeStampForMessages", session, false)?,
+            include_milliseconds: bool_key(map, "FileIncludeMilliseconds", session, false)?,
+            // NEW-108 (audit 006): opt-in log rotation; absent means unbounded (previous
+            // behavior).
+            max_size_bytes: match map.get("MaxFileLogSize") {
+                None => None,
+                Some(_) => Some(u64::from(u32_key(map, "MaxFileLogSize", session, 0)?)),
+            },
         }),
         None,
-    )
+    ))
 }
 
 /// Resolve the `Log` config key (GAP-21): `Screen`/`Tracing`/`Composite` (case-insensitive) select
@@ -908,11 +924,11 @@ fn resolve_log_kind(map: &Map, session: &str) -> Result<Option<LogKind>, ConfigE
 fn resolve_socket_options(map: &Map, session: &str) -> Result<SocketOptionsSpec, ConfigError> {
     let default = SocketOptionsSpec::default();
     Ok(SocketOptionsSpec {
-        tcp_no_delay: bool_key(map, "SocketTcpNoDelay", default.tcp_no_delay),
-        keep_alive: bool_key(map, "SocketKeepAlive", default.keep_alive),
-        reuse_address: bool_key(map, "SocketReuseAddress", default.reuse_address),
+        tcp_no_delay: bool_key(map, "SocketTcpNoDelay", session, default.tcp_no_delay)?,
+        keep_alive: bool_key(map, "SocketKeepAlive", session, default.keep_alive)?,
+        reuse_address: bool_key(map, "SocketReuseAddress", session, default.reuse_address)?,
         linger: linger_key(map, "SocketLinger", session)?,
-        oob_inline: bool_key(map, "SocketOobInline", default.oob_inline),
+        oob_inline: bool_key(map, "SocketOobInline", session, default.oob_inline)?,
         recv_buffer_size: usize_key(
             map,
             "SocketReceiveBufferSize",
@@ -926,6 +942,7 @@ fn resolve_socket_options(map: &Map, session: &str) -> Result<SocketOptionsSpec,
             default.send_buffer_size,
         )?,
         traffic_class: opt_u32_key(map, "SocketTrafficClass", session)?,
+        backlog: u32_key(map, "SocketBacklog", session, default.backlog)?,
     })
 }
 
@@ -1037,6 +1054,35 @@ fn resolve_local_bind_addr(map: &Map, session: &str) -> Result<Option<SocketAddr
     Ok(Some(addr))
 }
 
+/// Resolve `EnabledProtocols` into a minimum TLS version (FR-017). NEW-112 (audit 006): an
+/// unrecognized value (typo, `SSL3.0`, `TLS1.4`, garbled text) is a typed [`ConfigError`] instead
+/// of silently falling back to `Tls12`.
+fn resolve_enabled_protocols(map: &Map, session: &str) -> Result<Option<TlsVersion>, ConfigError> {
+    let Some(raw) = map.get("EnabledProtocols") else {
+        return Ok(None);
+    };
+    let bad = || ConfigError::InvalidValue {
+        key: "EnabledProtocols".to_owned(),
+        session: session.to_owned(),
+        reason: format!("expected a comma-separated list of TLSv1.2/TLSv1.3, got {raw:?}"),
+    };
+    let mut saw_tls12 = false;
+    let mut saw_tls13 = false;
+    for token in raw.split(',') {
+        let token = token.trim().to_ascii_uppercase().replace("TLSV", "TLS");
+        match token.as_str() {
+            "TLS1.2" | "1.2" => saw_tls12 = true,
+            "TLS1.3" | "1.3" => saw_tls13 = true,
+            _ => return Err(bad()),
+        }
+    }
+    match (saw_tls12, saw_tls13) {
+        (false, false) => Err(bad()),
+        (false, true) => Ok(Some(TlsVersion::Tls13)),
+        (true, _) => Ok(Some(TlsVersion::Tls12)),
+    }
+}
+
 /// Decode a config value as inline PEM bytes (US12, FR-017): `.cfg` is line-oriented (one
 /// `key=value` per line, see `SessionSettings::parse`), so a literal multi-line PEM block can't
 /// appear as-is in a value — a literal `\n` two-character escape sequence stands in for a real
@@ -1048,7 +1094,7 @@ fn pem_bytes_key(map: &Map, key: &str) -> Option<Vec<u8>> {
 /// Resolve TLS settings when `SocketUseSSL=Y` (FR-017): key/trust-store paths (or inline PEM
 /// bytes — US12), mTLS, minimum version, cipher suites, and SNI.
 fn resolve_tls(map: &Map, session: &str) -> Result<Option<TlsSpec>, ConfigError> {
-    if !strict_bool_key(map, "SocketUseSSL", session, false)? {
+    if !bool_key(map, "SocketUseSSL", session, false)? {
         return Ok(None);
     }
     let key_store_bytes = pem_bytes_key(map, "SocketKeyStoreBytes");
@@ -1064,13 +1110,9 @@ fn resolve_tls(map: &Map, session: &str) -> Result<Option<TlsSpec>, ConfigError>
     };
     let trust_store_bytes = pem_bytes_key(map, "SocketTrustStoreBytes");
     let trust_store_path = map.get("SocketTrustStore").map(PathBuf::from);
-    let need_client_auth = bool_key(map, "NeedClientAuth", false);
-    let min_version = match map.get("EnabledProtocols").map(String::as_str) {
-        None => None,
-        Some(v) if v.contains("1.3") && !v.contains("1.2") => Some(TlsVersion::Tls13),
-        Some(_) => Some(TlsVersion::Tls12),
-    };
-    let server_name = if bool_key(map, "UseSNI", false) {
+    let need_client_auth = bool_key(map, "NeedClientAuth", session, false)?;
+    let min_version = resolve_enabled_protocols(map, session)?;
+    let server_name = if bool_key(map, "UseSNI", session, false)? {
         Some(
             map.get("SNIHostName")
                 .cloned()
@@ -1115,7 +1157,9 @@ fn resolve_address(
         ),
         ConnectionType::Initiator => (
             required(map, "SocketConnectHost", session)?,
-            "SocketConnectHost/Port",
+            // NEW-128 (audit 006): name the actual missing/invalid key precisely instead of the
+            // confusing combined label, which read as if `SocketConnectHost` were also missing.
+            "SocketConnectPort",
         ),
     };
     let port_str = match connection {
@@ -1150,7 +1194,11 @@ fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
         return Ok(StoreConfig::Memory);
     };
     let dir = PathBuf::from(dir);
-    let sync = bool_key(map, "FileStoreSync", true);
+    let sync = bool_key(map, "FileStoreSync", session, true)?;
+    // NEW-108 (audit 006): opt-in body-record retention bound; `None`/absent preserves the
+    // previous unbounded behavior. See `FileStoreOptions::max_body_records`'s doc for the
+    // resend/recovery trade-off this key accepts once set.
+    let max_body_records = usize_key(map, "FileStoreMaxBodyRecords", session, Some(0))?.unwrap_or(0);
     Ok(match map.get("FileStoreMaxCachedMsgs") {
         Some(_) => {
             let max_cached_msgs =
@@ -1160,6 +1208,7 @@ fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
                 options: truefix_store::FileStoreOptions {
                     sync,
                     max_cached_msgs,
+                    max_body_records,
                 },
             }
         }
@@ -1168,6 +1217,7 @@ fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
             options: truefix_store::FileStoreOptions {
                 sync,
                 max_cached_msgs: 0,
+                max_body_records,
             },
         },
     })
@@ -1419,7 +1469,7 @@ fn mssql_store_config(_map: &Map, url: &str, session: &str) -> Result<StoreConfi
 /// [`Schedule`] (FR-018/FR-E1). `None` means no schedule restriction (always active), matching the
 /// engine's pre-existing default when no schedule keys are given.
 fn resolve_schedule(map: &Map, session: &str) -> Result<Option<Schedule>, ConfigError> {
-    if bool_key(map, "NonStopSession", false) {
+    if bool_key(map, "NonStopSession", session, false)? {
         return Ok(Some(Schedule::non_stop()));
     }
     let start_time = map

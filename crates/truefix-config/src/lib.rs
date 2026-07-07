@@ -102,6 +102,16 @@ pub enum ConfigError {
         /// The shared bind address every session in the ambiguous group targets.
         addr: std::net::SocketAddr,
     },
+    /// NEW-129 (audit 006): two `[SESSION]` blocks resolve to an identical FIX session identity
+    /// (`BeginString`+`SenderCompID`+`SenderSubID`+`SenderLocationID`+`TargetCompID`+
+    /// `TargetSubID`+`TargetLocationID`+`SessionQualifier`) — matching QFJ's `SessionID`, which
+    /// naturally deduplicates via map-keyed storage. Two identical `[SESSION]` blocks previously
+    /// silently created two session instances instead of erroring.
+    #[error("duplicate [SESSION] identity: {identity}")]
+    DuplicateSession {
+        /// The duplicated session identity, formatted for diagnostics.
+        identity: String,
+    },
     /// Two sessions in one acceptor group (sharing a `SocketAcceptPort`) would produce an
     /// identical wire-extractable routing key — distinguished only by `SessionQualifier`, which
     /// has no wire tag and so cannot disambiguate a live inbound connection (BUG-07/FR-011,
@@ -176,9 +186,13 @@ impl SessionSettings {
             resolved_sessions.push(interpolate_map(&merged, &merged)?);
         }
 
+        let sessions: Vec<BTreeMap<String, String>> =
+            resolved_sessions.into_iter().map(strip_lines).collect();
+        check_duplicate_sessions(&sessions)?;
+
         Ok(Self {
             default: strip_lines(default),
-            sessions: resolved_sessions.into_iter().map(strip_lines).collect(),
+            sessions,
         })
     }
 
@@ -200,6 +214,37 @@ type RawSection = BTreeMap<String, (String, usize)>;
 
 fn strip_lines(map: RawSection) -> BTreeMap<String, String> {
     map.into_iter().map(|(k, (v, _))| (k, v)).collect()
+}
+
+/// NEW-129 (audit 006): reject two `[SESSION]` blocks that resolve to an identical FIX session
+/// identity, mirroring QFJ's `SessionID`-keyed storage (which naturally deduplicates).
+fn check_duplicate_sessions(sessions: &[BTreeMap<String, String>]) -> Result<(), ConfigError> {
+    let identity_of = |m: &BTreeMap<String, String>| -> Vec<String> {
+        [
+            "BeginString",
+            "SenderCompID",
+            "SenderSubID",
+            "SenderLocationID",
+            "TargetCompID",
+            "TargetSubID",
+            "TargetLocationID",
+            "SessionQualifier",
+        ]
+        .into_iter()
+        .map(|k| m.get(k).cloned().unwrap_or_default())
+        .collect()
+    };
+    let mut seen: Vec<Vec<String>> = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let identity = identity_of(session);
+        if seen.contains(&identity) {
+            return Err(ConfigError::DuplicateSession {
+                identity: identity.join("/"),
+            });
+        }
+        seen.push(identity);
+    }
+    Ok(())
 }
 
 fn flush_section(

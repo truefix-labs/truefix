@@ -289,17 +289,36 @@ impl MessageStore for MongoStore {
         Ok(out)
     }
     async fn reset(&self) -> Result<(), StoreError> {
+        // NEW-116 (audit 006): a real transaction, mirroring `save_and_advance_sender`'s existing
+        // NEW-08 atomicity pattern -- previously a crash between the delete and the update left
+        // messages deleted but sequence numbers at their pre-reset values.
+        let mut txn_session = self.client.start_session().await.map_err(backend)?;
+        txn_session.start_transaction().await.map_err(backend)?;
+
         let filter = doc! { "session_id": &self.session_id };
-        self.messages
+        if let Err(e) = self
+            .messages
             .delete_many(filter.clone())
+            .session(&mut txn_session)
             .await
-            .map_err(backend)?;
+        {
+            let _ = txn_session.abort_transaction().await;
+            return Err(backend(e));
+        }
+
         let update =
             doc! { "$set": { "sender": 1i64, "target": 1i64, "creation_time": now_unix() } };
-        self.sessions
+        if let Err(e) = self
+            .sessions
             .update_one(filter, update)
+            .session(&mut txn_session)
             .await
-            .map_err(backend)?;
+        {
+            let _ = txn_session.abort_transaction().await;
+            return Err(backend(e));
+        }
+
+        txn_session.commit_transaction().await.map_err(backend)?;
         Ok(())
     }
     async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {

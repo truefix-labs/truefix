@@ -411,6 +411,29 @@ impl DataDictionary {
         self.trailer.contains(&tag)
     }
 
+    /// Header fields universally required by the FIX message-structure spec (Volume 1), regardless
+    /// of dictionary version (NEW-127, audit 006): `BeginString`/`BodyLength` frame the message,
+    /// `MsgType` selects its definition. QFJ's `DataDictionary.checkHasRequired()` checks required
+    /// fields for `HEADER_ID`/`TRAILER_ID` as well as the message body; this dictionary's
+    /// `header`/`trailer` sets have no per-field required/optional split (every bundled `.fixdict`
+    /// would need an identical declaration for these three tags anyway), so they're exposed
+    /// directly here instead. The codec layer (`truefix_core::decode`) already guarantees all three
+    /// are present before a message ever reaches `validate()` — this makes that guarantee explicit
+    /// and tested rather than structurally unenforceable.
+    pub fn header_required_tags(&self) -> &'static [u32] {
+        &[
+            truefix_core::tags::BEGIN_STRING,
+            truefix_core::tags::BODY_LENGTH,
+            truefix_core::tags::MSG_TYPE,
+        ]
+    }
+
+    /// Trailer fields universally required by the FIX message-structure spec (NEW-127, audit 006):
+    /// see [`Self::header_required_tags`]'s doc for the rationale.
+    pub fn trailer_required_tags(&self) -> &'static [u32] {
+        &[truefix_core::tags::CHECK_SUM]
+    }
+
     /// Number of defined fields.
     pub fn field_count(&self) -> usize {
         self.fields.len()
@@ -694,6 +717,13 @@ pub struct ValidationOptions {
     /// Require `OrigSendingTime(122)` on any message carrying `PossDupFlag(43)=Y`
     /// (`RequiresOrigSendingTime`). Default `false` — matches today's behaviour (not required).
     pub requires_orig_sending_time: bool,
+    /// Check that [`DataDictionary::header_required_tags`]/[`DataDictionary::trailer_required_tags`]
+    /// are present (NEW-127, audit 006). Default `false`: these envelope-framing fields are always
+    /// guaranteed present by construction for any message that actually went through
+    /// `truefix_core::decode`/`Message::encode`, so this is a defense-in-depth check, not a gap in
+    /// today's real-traffic behavior — kept opt-in so it doesn't reject messages built directly
+    /// (bypassing the codec envelope) by other library consumers or existing test fixtures.
+    pub check_required_envelope_fields: bool,
 }
 
 impl Default for ValidationOptions {
@@ -713,6 +743,7 @@ impl Default for ValidationOptions {
             validate_incoming_message: true,
             allow_pos_dup: true,
             requires_orig_sending_time: false,
+            check_required_envelope_fields: false,
         }
     }
 }

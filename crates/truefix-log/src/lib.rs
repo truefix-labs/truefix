@@ -4,6 +4,12 @@
 //! **event** logging (session lifecycle, errors). Implementations: [`ScreenLog`], [`FileLog`],
 //! [`TracingLog`], and [`CompositeLog`] (fan-out).
 //!
+//! Audit 006 additions: [`FileLogOptions::max_size_bytes`] rotates `messages.log`/`event.log`
+//! once either exceeds the configured size (NEW-108); [`FileLog`] always timestamps event lines
+//! and surfaces write failures instead of discarding them silently (NEW-124, NEW-125); and
+//! `LogConfig` (in `truefix-config`) threads file-backend options through generic log
+//! configuration (NEW-126).
+//!
 //! Design: `specs/001-fix-engine-parity/`.
 #![cfg_attr(
     not(test),
@@ -107,6 +113,11 @@ pub enum LogConfig {
     File {
         /// Directory holding the log files.
         dir: PathBuf,
+        /// Output switches (`FileLogHeartbeats`/`FileIncludeTimeStampForMessages`/
+        /// `FileIncludeMilliseconds`; NEW-126, audit 006) — previously this variant carried only a
+        /// directory, so every `LogConfig`-based construction path silently ignored these options
+        /// and always built a hardcoded-default `FileLog`.
+        options: FileLogOptions,
     },
     /// Log via the `tracing` facade.
     Tracing,
@@ -118,7 +129,7 @@ pub enum LogConfig {
 pub fn build_log(config: &LogConfig) -> Result<Box<dyn Log>, LogError> {
     Ok(match config {
         LogConfig::Screen => Box::new(ScreenLog::new()),
-        LogConfig::File { dir } => Box::new(FileLog::open(dir)?),
+        LogConfig::File { dir, options } => Box::new(FileLog::open_with_options(dir, *options)?),
         LogConfig::Tracing => Box::new(TracingLog::new()),
         LogConfig::Composite(parts) => {
             let mut logs: Vec<Box<dyn Log>> = Vec::with_capacity(parts.len());

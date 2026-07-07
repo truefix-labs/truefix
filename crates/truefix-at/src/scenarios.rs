@@ -67,14 +67,14 @@ fn valid_logon(v: &str) -> Scenario {
     )
 }
 
-/// 1a — a Logon whose MsgSeqNum is too high logs on, then a ResendRequest is issued.
+/// 1a — a Logon whose MsgSeqNum is too high requests the missing range before the acceptor
+/// transitions to LoggedOn.
 fn logon_seq_too_high(v: &str) -> Scenario {
     scenario(
         "1a_ValidLogonMsgSeqNumTooHigh",
         v,
         vec![
             Step::Send(logon(v, 10, false)), // no reset; expected is 1
-            Step::Expect(ExpectMsg::of("A")),
             Step::Expect(ExpectMsg::of("2").field(7, "1")), // ResendRequest BeginSeqNo=1
         ],
     )
@@ -561,6 +561,13 @@ fn missing_msg_seq_num(v: &str) -> Scenario {
 }
 
 /// 0_idle — after the negotiated heartbeat interval of silence, the acceptor emits a Heartbeat.
+///
+/// NEW-103 (audit 006): `TestRequestDelayMultiplier` defaults to `0.5` (QFJ parity), strictly
+/// less than the idle-heartbeat-send threshold's `1.0`, so a totally silent peer now draws the
+/// liveness-probing TestRequest *before* the next idle Heartbeat, on every tick after the first
+/// — not after it, as the previous (non-parity) `1.0` default happened to produce. Sending the
+/// TestRequest also resets this session's own "time since last sent" clock (`send_stored`), which
+/// is why the Heartbeat that follows lands a full tick later rather than on the same tick.
 fn idle_heartbeat_emitted(v: &str) -> Scenario {
     let mut lo = logon(v, 1, true);
     lo.body.set(Field::int(108, 1)); // 1-second heartbeat so the timer fires quickly
@@ -570,13 +577,17 @@ fn idle_heartbeat_emitted(v: &str) -> Scenario {
         vec![
             Step::Send(lo),
             Step::Expect(ExpectMsg::of("A")),
-            Step::Expect(ExpectMsg::of("0")), // unprompted Heartbeat from the idle timer
+            Step::Expect(ExpectMsg::of("1").field(112, "TEST")), // silent-peer probe fires first
+            Step::Expect(ExpectMsg::of("0")), // unprompted Heartbeat from the idle-send timer
         ],
     )
 }
 
-/// 4_silence — after the counterparty is silent past the heartbeat interval, the acceptor issues a
-/// TestRequest (TestReqID=TEST).
+/// 4_silence — continued silence past the initial TestRequest probe draws further idle
+/// Heartbeats (on this session's own send cadence, unrelated to the now-outstanding probe) until
+/// `HeartBeatTimeoutMultiplier` disconnects the unresponsive peer (see
+/// [`idle_heartbeat_emitted`]'s doc for why the probe itself now fires first under NEW-103's
+/// parity default).
 fn test_request_on_silence(v: &str) -> Scenario {
     let mut lo = logon(v, 1, true);
     lo.body.set(Field::int(108, 1));
@@ -586,9 +597,10 @@ fn test_request_on_silence(v: &str) -> Scenario {
         vec![
             Step::Send(lo),
             Step::Expect(ExpectMsg::of("A")),
-            Step::Expect(ExpectMsg::of("0")), // first idle Heartbeat
-            // Continued silence → the acceptor probes liveness with a TestRequest.
-            Step::Expect(ExpectMsg::of("1").field(112, "TEST")),
+            Step::Expect(ExpectMsg::of("1").field(112, "TEST")), // liveness probe
+            Step::Expect(ExpectMsg::of("0")), // idle Heartbeat, still on its own cadence
+            Step::Expect(ExpectMsg::of("0")), // another idle Heartbeat tick later
+            Step::ExpectDisconnect,           // peer never answers -> heartbeat-timeout disconnect
         ],
     )
 }

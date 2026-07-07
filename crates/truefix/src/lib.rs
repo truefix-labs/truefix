@@ -4,6 +4,11 @@
 //! Implement [`Application`] for your callbacks, build a [`SessionConfig`], and run an
 //! [`Acceptor`] or [`connect_initiator`].
 //!
+//! Audit 006 additions: [`Engine::shutdown`] cancels already-accepted acceptor session tasks, not
+//! only listener loops (NEW-149); [`Engine::skipped_sessions`] reports which configured sessions
+//! failed to start and why (NEW-143); and dynamic acceptor identities each get their own
+//! per-identity store/services factory rather than sharing state (NEW-148).
+//!
 //! Design: `specs/001-fix-engine-parity/`.
 #![deny(missing_docs)]
 #![cfg_attr(
@@ -24,7 +29,7 @@ pub use truefix_session::{
     self as session, Action, Application, Event, Role, Session, SessionConfig, SessionId,
     SessionState,
 };
-pub use truefix_transport::{self as transport, Acceptor, SessionHandle, connect_initiator};
+pub use truefix_transport::{self as transport, Acceptor, Monitor, SessionHandle, connect_initiator};
 
 pub use truefix_config as config;
 pub use truefix_dict as dict;
@@ -72,6 +77,7 @@ fn to_transport_socket_options(spec: SocketOptionsSpec) -> SocketOptions {
         recv_buffer_size: spec.recv_buffer_size,
         send_buffer_size: spec.send_buffer_size,
         traffic_class: spec.traffic_class,
+        backlog: spec.backlog,
     }
 }
 
@@ -140,6 +146,7 @@ fn build_log(
             include_heartbeats: spec.include_heartbeats,
             include_timestamp: spec.include_timestamp,
             include_milliseconds: spec.include_milliseconds,
+            max_size_bytes: spec.max_size_bytes,
         },
     )
     .map_err(|e| EngineError::Log(e.to_string()))?;
@@ -153,11 +160,9 @@ fn build_log(
 /// `Composite` fans out to `Screen` + `Tracing`, plus `File` when `file_spec` is also present
 /// (`truefix_log::build_log`'s pre-existing `LogConfig::Composite` already does the fan-out; this
 /// only needed a `.cfg`-reachable trigger, confirmed via `truefix_log::LogConfig` before assuming
-/// new backend code was needed — GAP-21's own framing). The `Composite` branch's `File` component
-/// uses `FileLog::open`'s defaults (heartbeats/timestamp/milliseconds), not `file_spec`'s own
-/// output-switch values — `truefix_log::LogConfig::File` only carries a directory, and threading
-/// those switches through would mean extending `LogConfig` itself, out of scope for this narrow,
-/// carried-forward gap.
+/// new backend code was needed — GAP-21's own framing). NEW-126 (audit 006): the `Composite`
+/// branch's `File` component now threads `file_spec`'s own output-switch values through
+/// `LogConfig::File`'s `options` field, instead of always building a hardcoded-default `FileLog`.
 fn build_log_kind(
     kind: truefix_config::LogKind,
     file_spec: &Option<truefix_config::LogSpec>,
@@ -174,6 +179,12 @@ fn build_log_kind(
             if let Some(spec) = file_spec {
                 parts.push(truefix_log::LogConfig::File {
                     dir: spec.dir.clone(),
+                    options: truefix_log::FileLogOptions {
+                        include_heartbeats: spec.include_heartbeats,
+                        include_timestamp: spec.include_timestamp,
+                        include_milliseconds: spec.include_milliseconds,
+                        max_size_bytes: spec.max_size_bytes,
+                    },
                 });
             }
             truefix_log::LogConfig::Composite(parts)
@@ -300,6 +311,16 @@ pub struct Engine {
     /// the existing `initiators()`-then-`.logout().await` pattern for a graceful plain-initiator
     /// stop, since `Engine::shutdown()`/`Drop` both stay synchronous by design (BUG-21/FR-023).
     logs: Vec<Arc<dyn truefix_log::Log>>,
+    /// Operational monitor shared by every session this `Engine` started (NEW-122/NEW-123, audit
+    /// 006) — every acceptor and initiator session (static, dynamic, or grouped) is registered
+    /// here, giving a caller session-state query (`status`/`is_connected`/`sessions`) and control
+    /// (`force_logout`/`reset`/`send_app`) addressable by `SessionId`, including acceptor sessions
+    /// that previously had no per-session handle at all.
+    monitor: Monitor,
+    /// Sessions skipped at configuration-resolution time via `ContinueInitializationOnError=Y`
+    /// (NEW-143, audit 006) — previously only logged via `tracing::error!` and then discarded, with
+    /// no programmatic access for a caller that wants to enumerate what failed to start.
+    skipped_sessions: Vec<(String, ConfigError)>,
 }
 
 impl Engine {
@@ -326,6 +347,9 @@ impl Engine {
                 "skipping session after a configuration-resolution error (ContinueInitializationOnError=Y)"
             );
         }
+        // NEW-123 (audit 006): a single `Monitor` shared by every session this `Engine` starts,
+        // so `Engine::monitor()` can query/control any of them by `SessionId` after start.
+        let monitor = Monitor::new();
         let mut acceptors = Vec::new();
         let mut initiators = Vec::new();
         let mut failover_initiators = Vec::new();
@@ -475,6 +499,7 @@ impl Engine {
                     // group-wide).
                     store: Some(primary_store.clone()),
                     socket_options: to_transport_socket_options(primary.socket_options),
+                    monitor: Some(monitor.clone()),
                     log,
                     trusted_proxy_addresses: primary.trusted_proxy_addresses.clone(),
                     sync_write_timeout: primary.sync_write_timeout,
@@ -518,7 +543,80 @@ impl Engine {
                 }
                 for m in members {
                     if m.acceptor_template {
-                        builder = builder.with_dynamic_template(m.session);
+                        let template_session = m.session.clone();
+                        let dynamic_store = m.store.clone();
+                        let dynamic_log_kind = m.log_kind;
+                        let dynamic_log = m.log.clone();
+                        let dynamic_sql_log = m.sql_log.clone();
+                        let dynamic_socket_options = m.socket_options;
+                        let dynamic_trusted_proxy_addresses = m.trusted_proxy_addresses.clone();
+                        let dynamic_sync_write_timeout = m.sync_write_timeout;
+                        let dynamic_validator = m.validator.clone();
+                        let dynamic_fixt_dictionaries = m.fixt_dictionaries.clone();
+                        let dynamic_log_message_when_session_not_found =
+                            m.log_message_when_session_not_found;
+                        let dynamic_monitor = monitor.clone();
+                        builder = builder
+                            .with_dynamic_template(template_session)
+                            .with_dynamic_services_factory(move |sid, _config| {
+                                let store = dynamic_store.clone();
+                                let log_kind = dynamic_log_kind;
+                                let log = dynamic_log.clone();
+                                let sql_log = dynamic_sql_log.clone();
+                                let socket_options = dynamic_socket_options;
+                                let trusted_proxy_addresses =
+                                    dynamic_trusted_proxy_addresses.clone();
+                                let validator = dynamic_validator.clone();
+                                let fixt_dictionaries = dynamic_fixt_dictionaries.clone();
+                                let monitor = dynamic_monitor.clone();
+                                async move {
+                                    let store: Arc<dyn truefix_store::MessageStore> = Arc::from(
+                                        truefix_store::build_store(&store)
+                                            .await
+                                            .map_err(|e| e.to_string())?,
+                                    );
+                                    let session_id = sid.to_string();
+                                    let log = if let Some(kind) = log_kind {
+                                        Some(
+                                            build_log_kind(kind, &log, &session_id)
+                                                .map_err(|e| e.to_string())?,
+                                        )
+                                    } else if let Some(spec) = &sql_log {
+                                        Some(
+                                            build_sql_log(spec, &session_id)
+                                                .await
+                                                .map_err(|e| e.to_string())?,
+                                        )
+                                    } else if let Some(spec) = &log {
+                                        Some(
+                                            build_log(spec, &session_id)
+                                                .map_err(|e| e.to_string())?,
+                                        )
+                                    } else {
+                                        None
+                                    };
+                                    let fixt_dictionaries = fixt_dictionaries.map(|dicts| {
+                                        let opts = validator.as_ref().map_or_else(
+                                            truefix_dict::ValidationOptions::default,
+                                            |(_, opts)| *opts,
+                                        );
+                                        (dicts, opts)
+                                    });
+                                    Ok(Services {
+                                        store: Some(store),
+                                        socket_options: to_transport_socket_options(socket_options),
+                                        monitor: Some(monitor),
+                                        log,
+                                        trusted_proxy_addresses,
+                                        sync_write_timeout: dynamic_sync_write_timeout,
+                                        validator,
+                                        fixt_dictionaries,
+                                        log_message_when_session_not_found:
+                                            dynamic_log_message_when_session_not_found,
+                                        ..Services::default()
+                                    })
+                                }
+                            });
                     } else {
                         let member_session_id = m.session.session_id();
                         // Give every statically-registered member its own store: reuse the
@@ -573,6 +671,7 @@ impl Engine {
                                     log: member_log,
                                     validator: m.validator.clone(),
                                     fixt_dictionaries: member_fixt_dictionaries,
+                                    monitor: Some(monitor.clone()),
                                     ..Services::default()
                                 },
                             );
@@ -637,6 +736,7 @@ impl Engine {
                 let services = Services {
                     store: Some(Arc::from(store)),
                     socket_options: to_transport_socket_options(rs.socket_options),
+                    monitor: Some(monitor.clone()),
                     log,
                     trusted_proxy_addresses: rs.trusted_proxy_addresses.clone(),
                     sync_write_timeout: rs.sync_write_timeout,
@@ -819,6 +919,8 @@ impl Engine {
             initiators,
             failover_initiators,
             logs,
+            monitor,
+            skipped_sessions: skipped,
         })
     }
 
@@ -843,6 +945,25 @@ impl Engine {
     /// graceful plain-initiator stop calls `.logout().await` on each of [`Engine::initiators`].
     pub fn logs(&self) -> &[Arc<dyn truefix_log::Log>] {
         &self.logs
+    }
+
+    /// The operational monitor shared by every session this `Engine` started (NEW-122/NEW-123,
+    /// audit 006): `monitor().sessions()` lists every currently-connected `SessionId` (acceptor or
+    /// initiator, static or dynamically-instantiated), `monitor().status(id)`/`is_connected(id)`
+    /// query a specific one, and `monitor().force_logout(id)`/`reset(id)`/`send_app(id, msg)`
+    /// control it — including acceptor sessions, which previously had no per-session handle from
+    /// `Engine` at all.
+    pub fn monitor(&self) -> &Monitor {
+        &self.monitor
+    }
+
+    /// Sessions skipped at configuration-resolution time via a session's own
+    /// `ContinueInitializationOnError=Y` (NEW-143, audit 006): each entry pairs the session's label
+    /// (`SenderCompID->TargetCompID`) with the [`ConfigError`] that caused it to be skipped.
+    /// Previously only logged via `tracing::error!` inside [`Engine::start`] and then discarded,
+    /// with no programmatic access for a caller wanting to enumerate what failed to start.
+    pub fn skipped_sessions(&self) -> &[(String, ConfigError)] {
+        &self.skipped_sessions
     }
 
     /// Abort all acceptor listeners, stop all failover-initiator reconnect loops, and (BUG-27/

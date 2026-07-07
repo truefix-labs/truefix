@@ -55,6 +55,7 @@ fn file_log_heartbeat_filter_excludes_heartbeats_only() {
             include_heartbeats: false,
             include_timestamp: false,
             include_milliseconds: false,
+            max_size_bytes: None,
         },
     )
     .unwrap();
@@ -91,6 +92,7 @@ fn file_log_timestamp_switch_controls_prefix() {
             include_heartbeats: true,
             include_timestamp: true,
             include_milliseconds: true,
+            max_size_bytes: None,
         },
     )
     .unwrap();

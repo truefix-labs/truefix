@@ -436,27 +436,59 @@ impl MessageStore for MssqlStore {
         Ok(out)
     }
     async fn reset(&self) -> Result<(), StoreError> {
+        // NEW-116 (audit 006): a real BEGIN/COMMIT transaction, mirroring
+        // `save_and_advance_sender`'s existing GAP-39/FR-018 pattern (including its BUG-41
+        // rollback-on-failure discipline) -- previously a crash between the DELETE and the UPDATE
+        // left messages deleted but sequence numbers at their pre-reset values.
         let sessions = &self.sessions_table;
         let messages = &self.messages_table;
+        let now = now_unix();
         let mut client = self.client.lock().await;
         client
-            .execute(
-                format!("DELETE FROM {messages} WHERE session_id = @P1"),
-                &[&self.session_id],
-            )
+            .simple_query("BEGIN TRANSACTION")
             .await
             .map_err(backend)?;
-        client
-            .execute(
-                format!(
-                    "UPDATE {sessions} SET sender = 1, target = 1, creation_time = @P1 \
-                     WHERE session_id = @P2"
-                ),
-                &[&now_unix(), &self.session_id],
-            )
-            .await
-            .map_err(backend)?;
-        Ok(())
+        let result = async {
+            client
+                .execute(
+                    format!("DELETE FROM {messages} WHERE session_id = @P1"),
+                    &[&self.session_id],
+                )
+                .await
+                .map_err(backend)?;
+            client
+                .execute(
+                    format!(
+                        "UPDATE {sessions} SET sender = 1, target = 1, creation_time = @P1 \
+                         WHERE session_id = @P2"
+                    ),
+                    &[&now, &self.session_id],
+                )
+                .await
+                .map_err(backend)?;
+            Ok::<(), StoreError>(())
+        }
+        .await;
+        match result {
+            Ok(()) => {
+                let commit_err = client
+                    .simple_query("COMMIT TRANSACTION")
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
+                match commit_err {
+                    None => Ok(()),
+                    Some(msg) => {
+                        let _ = client.simple_query("ROLLBACK TRANSACTION").await;
+                        Err(StoreError::Backend(msg))
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = client.simple_query("ROLLBACK TRANSACTION").await;
+                Err(e)
+            }
+        }
     }
     async fn creation_time(&self) -> Result<Option<time::OffsetDateTime>, StoreError> {
         let sessions = &self.sessions_table;

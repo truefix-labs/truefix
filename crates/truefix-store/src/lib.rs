@@ -5,6 +5,13 @@
 //! Implementations: [`MemoryStore`], [`FileStore`], [`CachedFileStore`], [`NoopStore`], and a
 //! SQL-backed store behind the `sql` feature.
 //!
+//! Audit 006 additions: [`MessageStore::contains`] exposes duplicate-sequence detection without
+//! changing `save()`'s existing overwrite-on-conflict contract (NEW-137);
+//! [`FileStoreOptions::max_body_records`] bounds a file-backed store's body-log index while
+//! preserving resend/recovery semantics (NEW-108); Mongo/SQL/MSSQL `reset()` is atomic across
+//! messages and sequence numbers (NEW-116); and `NoopStore` tracks sequence numbers in memory for
+//! the session lifetime (NEW-118).
+//!
 //! Design: `specs/001-fix-engine-parity/`.
 #![cfg_attr(
     not(test),
@@ -96,6 +103,15 @@ pub trait MessageStore: Send + Sync {
         self.save(seq, message).await?;
         self.set_next_sender_seq(seq + 1).await
     }
+    /// Whether a message is already saved under `seq` (NEW-137, audit 006): a way for callers to
+    /// observe duplicate sequence usage without changing `save()`'s existing overwrite-on-conflict
+    /// contract (deliberately kept separate rather than having `save()` itself return an
+    /// overwrote-something flag, to avoid a breaking signature change across every backend).
+    /// Default `Ok(false)` for any backend that doesn't override it.
+    async fn contains(&self, seq: u64) -> Result<bool, StoreError> {
+        let _ = seq;
+        Ok(false)
+    }
 }
 
 /// Which store backend to construct.
@@ -178,7 +194,7 @@ pub async fn build_store(config: &StoreConfig) -> Result<Box<dyn MessageStore>, 
         StoreConfig::CachedFile { dir, options } => {
             Box::new(CachedFileStore::open_with_options(dir, *options)?)
         }
-        StoreConfig::Noop => Box::new(NoopStore),
+        StoreConfig::Noop => Box::new(NoopStore::new()),
         #[cfg(feature = "sql")]
         StoreConfig::Sql {
             url,

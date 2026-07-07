@@ -24,6 +24,14 @@ pub trait Application: Send + Sync {
     /// Called when the session logs out or disconnects.
     async fn on_logout(&self, _session: &SessionId) {}
 
+    /// Called when a previously logged-on connection is disconnecting and the application should
+    /// issue any operator-visible cancel-on-disconnect workflow it owns.
+    ///
+    /// The session layer deliberately does not track open order state or synthesize business
+    /// cancels. Applications that need cancel-on-disconnect parity should implement this hook and
+    /// use their own order source/routing policy.
+    async fn on_cancel_on_disconnect(&self, _session: &SessionId) {}
+
     /// Called immediately before a full reset (explicit `Session::reset()`, or an internally
     /// triggered one — logon-time `ResetSeqNumFlag`, `ResetOnLogout`/`ResetOnDisconnect`,
     /// `ForceResendWhenCorruptedStore`) clears the durable store, so an integrator can capture or

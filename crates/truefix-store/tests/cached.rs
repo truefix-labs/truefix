@@ -42,6 +42,7 @@ async fn bounded_cache_evicts_oldest_but_get_still_returns_everything() {
     let options = FileStoreOptions {
         sync: true,
         max_cached_msgs: 3,
+        max_body_records: 0,
     };
     let s = CachedFileStore::open_with_options(&dir, options).unwrap();
     for i in 1..=10u64 {
@@ -78,6 +79,7 @@ async fn fsync_disabled_still_persists_and_survives_restart() {
     let options = FileStoreOptions {
         sync: false,
         max_cached_msgs: 0,
+        max_body_records: 0,
     };
     {
         let s = FileStore::open_with_options(&dir, options).unwrap();

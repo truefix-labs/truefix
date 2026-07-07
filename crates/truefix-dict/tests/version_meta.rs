@@ -75,13 +75,27 @@ fn a_mismatched_begin_string_is_rejected() {
 }
 
 #[test]
-fn no_version_meta_means_the_check_is_a_no_op() {
-    // spec.md Edge Case: a dictionary without version-meta never rejects on BeginString mismatch
-    // via this mechanism, regardless of what BeginString the message carries.
+fn no_version_meta_falls_back_to_the_plain_version_directive_and_still_rejects_a_mismatch() {
+    // NEW-145 (audit 006): previously a no-op whenever `version_meta` was absent -- true for
+    // every bundled dictionary, since none declares a `version-meta` directive, making the check
+    // always skipped in practice (this test used to assert exactly that no-op). It now falls back
+    // to parsing `self.version` (the plain `version FIX.M.N` directive `dict_without_meta` does
+    // declare, here `FIX.4.4`), so a genuinely mismatched BeginString is still rejected.
+    let d = parse(&dict_without_meta()).unwrap();
+    assert!(d.version_meta().is_none());
+    let err = d
+        .validate(&heartbeat("FIX.9.9"), &ValidationOptions::default())
+        .unwrap_err();
+    assert_eq!(err.reason, RejectReason::ValueIsIncorrect);
+    assert_eq!(err.ref_tag, Some(8));
+}
+
+#[test]
+fn no_version_meta_fallback_still_accepts_a_matching_begin_string() {
     let d = parse(&dict_without_meta()).unwrap();
     assert!(d.version_meta().is_none());
     assert!(
-        d.validate(&heartbeat("FIX.9.9"), &ValidationOptions::default())
+        d.validate(&heartbeat("FIX.4.4"), &ValidationOptions::default())
             .is_ok()
     );
 }

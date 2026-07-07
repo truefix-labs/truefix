@@ -103,18 +103,26 @@ impl Field {
     }
 
     /// The value as an integer.
+    ///
+    /// NEW-101 (audit 006): the raw wire value is parsed as-is, without trimming whitespace --
+    /// `i64::from_str` already rejects leading/trailing whitespace on its own, so the previous
+    /// `.trim()` call was the only thing making a whitespace-padded value like `" 123 "` parse
+    /// successfully, silently accepting a malformed wire value FIX never produces.
     pub fn as_int(&self) -> Result<i64, FieldError> {
         let s = self.as_str()?;
-        s.trim().parse().map_err(|_| FieldError::NotInt {
+        s.parse().map_err(|_| FieldError::NotInt {
             tag: self.tag,
             value: s.to_owned(),
         })
     }
 
     /// The value as a fixed-precision decimal (FIX Price/Qty/Amt).
+    ///
+    /// NEW-101 (audit 006): see [`Self::as_int`]'s doc -- the same whitespace-padding leniency is
+    /// closed here.
     pub fn as_decimal(&self) -> Result<Decimal, FieldError> {
         let s = self.as_str()?;
-        s.trim().parse().map_err(|_| FieldError::NotDecimal {
+        s.parse().map_err(|_| FieldError::NotDecimal {
             tag: self.tag,
             value: s.to_owned(),
         })
@@ -138,9 +146,16 @@ impl Field {
         match self.value.as_slice() {
             b"Y" => Ok(true),
             b"N" => Ok(false),
+            // NEW-138 (audit 006): a lossless UTF-8 decode when possible, falling back to a hex
+            // representation for genuinely invalid UTF-8 -- `String::from_utf8_lossy` would
+            // otherwise silently substitute U+FFFD replacement characters into the diagnostic,
+            // discarding the actual invalid bytes a caller might need to see.
             _ => Err(FieldError::NotBool {
                 tag: self.tag,
-                value: String::from_utf8_lossy(&self.value).into_owned(),
+                value: match core::str::from_utf8(&self.value) {
+                    Ok(s) => s.to_owned(),
+                    Err(_) => format!("0x{}", hex_encode(&self.value)),
+                },
             }),
         }
     }
@@ -155,6 +170,17 @@ impl Field {
             value: s.to_owned(),
         })
     }
+}
+
+/// Hex-encode `bytes` (NEW-138, audit 006): a lossless fallback representation for a diagnostic
+/// message when the value isn't valid UTF-8, avoiding `String::from_utf8_lossy`'s replacement
+/// characters, which would discard the actual invalid bytes.
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }
 
 /// Format `dt` as a FIX UTCTimestamp `YYYYMMDD-HH:MM:SS.sss` at millisecond precision.

@@ -154,7 +154,19 @@ fn test_request_is_answered_with_heartbeat() {
 
 #[test]
 fn heartbeat_emitted_after_idle_tick() {
-    let mut s = logged_on_acceptor();
+    // NEW-103 (audit 006) lowered the default `test_request_delay_multiplier` to 0.5 (matching
+    // QFJ); with this test's `hb=1`, that default would also satisfy the TestRequest condition on
+    // this same idle tick (`ticks_since_recv=1 > hb*0.5=0.5`) -- and since sending *any* message
+    // resets `ticks_since_send`, a TestRequest firing first would suppress the very Heartbeat this
+    // test is about, on this tick. Set the multiplier back to keep the two concerns (test-request
+    // timing vs. heartbeat cadence) isolated, matching this test's original intent.
+    let mut c = cfg(Role::Acceptor);
+    c.test_request_delay_multiplier = 1.0;
+    let mut s = Session::new(c);
+    s.handle(Event::Connected);
+    s.handle(Event::Received(inbound("A", 1, Some(1), None)));
+    assert_eq!(s.state(), SessionState::LoggedOn);
+
     let actions = s.handle(Event::Tick); // hb interval = 1
     assert_eq!(first_send(&actions).and_then(Message::msg_type), Some("0"));
 }

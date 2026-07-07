@@ -19,6 +19,7 @@ use truefix_transport::{Acceptor, Monitor};
 #[derive(Default)]
 struct Counts {
     before_reset: AtomicU32,
+    cancel_on_disconnect: AtomicU32,
     logged_on: AtomicU32,
 }
 
@@ -33,6 +34,9 @@ impl Application for App {
     }
     async fn on_before_reset(&self, _s: &SessionId) {
         self.c.before_reset.fetch_add(1, Ordering::SeqCst);
+    }
+    async fn on_cancel_on_disconnect(&self, _s: &SessionId) {
+        self.c.cancel_on_disconnect.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -166,5 +170,61 @@ async fn on_before_reset_fires_for_an_internally_triggered_reset() {
         )
         .await,
         "on_before_reset should fire for the ResetOnLogout-triggered internal reset"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn on_cancel_on_disconnect_fires_for_a_logged_on_connection_teardown() {
+    let mut acc_cfg = SessionConfig::new("FIX.4.4", "SERVER", "CLIENT", Role::Acceptor);
+    acc_cfg.heartbeat_interval = 5;
+    let mut init_cfg = SessionConfig::new("FIX.4.4", "CLIENT", "SERVER", Role::Initiator);
+    init_cfg.heartbeat_interval = 5;
+
+    let acc_counts = Arc::new(Counts::default());
+    let init_counts = Arc::new(Counts::default());
+
+    let acceptor = Acceptor::bind_with(
+        "127.0.0.1:0".parse().unwrap(),
+        acc_cfg,
+        Arc::new(App {
+            c: acc_counts.clone(),
+        }),
+        truefix_transport::Services::default(),
+    )
+    .await
+    .unwrap();
+    let addr = acceptor.local_addr().unwrap();
+    acceptor.serve();
+
+    let handle = truefix_transport::connect_initiator(
+        addr,
+        init_cfg,
+        Arc::new(App {
+            c: init_counts.clone(),
+        }),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        wait_until(
+            || acc_counts.logged_on.load(Ordering::SeqCst) > 0
+                && init_counts.logged_on.load(Ordering::SeqCst) > 0,
+            Duration::from_secs(5),
+        )
+        .await,
+        "both sides should log on"
+    );
+
+    handle.logout().await;
+
+    assert!(
+        wait_until(
+            || acc_counts.cancel_on_disconnect.load(Ordering::SeqCst) > 0
+                && init_counts.cancel_on_disconnect.load(Ordering::SeqCst) > 0,
+            Duration::from_secs(5),
+        )
+        .await,
+        "cancel-on-disconnect hook should fire on both logged-on connection teardowns"
     );
 }

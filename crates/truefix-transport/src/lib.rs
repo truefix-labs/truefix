@@ -5,6 +5,13 @@
 //! sessions, allow-listing, reconnect, optional [`Services`] (persistent [`MessageStore`], [`Log`],
 //! socket options, [`Monitor`]), and an operational monitoring surface.
 //!
+//! Audit 006 additions: `Engine::shutdown` (in the `truefix` crate) now cancels already-accepted
+//! session tasks, not just listener loops (NEW-149); TLS handshakes honor a configured timeout on
+//! both acceptor and initiator paths (NEW-151); inbound application staging stays bounded under
+//! `InChanCapacity` (NEW-150); scheduled initiators support TLS (NEW-134); listener backlog is
+//! configurable (NEW-135); and [`SessionHandle::session_id`] plus [`Monitor`]'s session-state
+//! queries give callers addressable, queryable session handles (NEW-121–NEW-123).
+//!
 //! Design: `specs/001-fix-engine-parity/`.
 #![cfg_attr(
     not(test),
@@ -26,8 +33,10 @@ pub use tls_config::{
 };
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::future::pending;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -35,7 +44,7 @@ use std::time::Duration;
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{MissedTickBehavior, interval};
 
 use truefix_config::SocketEndpoint;
@@ -46,6 +55,10 @@ use truefix_session::{
     SessionStatus,
 };
 use truefix_store::MessageStore;
+
+type DynamicServicesFuture = Pin<Box<dyn Future<Output = Result<Services, String>> + Send>>;
+type DynamicServicesFactory =
+    Arc<dyn Fn(SessionId, SessionConfig) -> DynamicServicesFuture + Send + Sync>;
 
 // B30 (feature 006): `truefix-transport` previously carried its own near-identical copy of
 // `frame_length` — de-duplicated in favor of `truefix-core`'s (already public and already used by
@@ -72,6 +85,10 @@ pub struct SocketOptions {
     pub send_buffer_size: Option<usize>,
     /// IP_TOS / traffic class (`SocketTrafficClass`); `None` leaves the OS default.
     pub traffic_class: Option<u32>,
+    /// Listener backlog (NEW-135, audit 006): the pending-connection queue depth passed to
+    /// `listen()`. Acceptor-only; has no effect on an initiator or an already-accepted stream.
+    /// Defaults to `1024`, matching the previous hardcoded value.
+    pub backlog: u32,
 }
 
 impl Default for SocketOptions {
@@ -85,40 +102,61 @@ impl Default for SocketOptions {
             recv_buffer_size: None,
             send_buffer_size: None,
             traffic_class: None,
+            backlog: 1024,
         }
     }
 }
 
 impl SocketOptions {
-    /// Apply the connection-level options to a connected/accepted stream (best-effort: each
-    /// option that fails to apply — e.g. unsupported on the platform — is silently skipped rather
-    /// than aborting the connection).
+    /// Apply the connection-level options to a connected/accepted stream. NEW-132 (audit 006):
+    /// each option that fails to apply — e.g. unsupported on the platform, or a requested buffer
+    /// size beyond an OS-imposed limit — is now logged as a `tracing::warn!` instead of being
+    /// silently discarded; the connection still proceeds (best-effort), matching prior behavior.
     pub fn apply(&self, stream: &TcpStream) {
-        let _ = stream.set_nodelay(self.tcp_no_delay);
+        if let Err(e) = stream.set_nodelay(self.tcp_no_delay) {
+            tracing::warn!(error = %e, "failed to apply SocketTcpNoDelay");
+        }
         let sock = socket2::SockRef::from(stream);
-        let _ = sock.set_keepalive(self.keep_alive);
-        if let Some(linger) = self.linger {
-            let _ = sock.set_linger(Some(linger));
+        if let Err(e) = sock.set_keepalive(self.keep_alive) {
+            tracing::warn!(error = %e, "failed to apply SocketKeepAlive");
         }
-        let _ = sock.set_out_of_band_inline(self.oob_inline);
-        if let Some(size) = self.recv_buffer_size {
-            let _ = sock.set_recv_buffer_size(size);
+        if let Some(linger) = self.linger
+            && let Err(e) = sock.set_linger(Some(linger))
+        {
+            tracing::warn!(error = %e, "failed to apply SocketLinger");
         }
-        if let Some(size) = self.send_buffer_size {
-            let _ = sock.set_send_buffer_size(size);
+        if let Err(e) = sock.set_out_of_band_inline(self.oob_inline) {
+            tracing::warn!(error = %e, "failed to apply SocketOobInline");
         }
-        if let Some(tos) = self.traffic_class {
-            let _ = sock.set_tos(tos);
+        if let Some(size) = self.recv_buffer_size
+            && let Err(e) = sock.set_recv_buffer_size(size)
+        {
+            tracing::warn!(error = %e, size, "failed to apply SocketReceiveBufferSize");
         }
-        // `reuse_address` applies to a listener at bind time (see `bind_listener_with_options`),
-        // not to an already-connected stream.
+        if let Some(size) = self.send_buffer_size
+            && let Err(e) = sock.set_send_buffer_size(size)
+        {
+            tracing::warn!(error = %e, size, "failed to apply SocketSendBufferSize");
+        }
+        if let Some(tos) = self.traffic_class
+            && let Err(e) = sock.set_tos(tos)
+        {
+            tracing::warn!(error = %e, tos, "failed to apply SocketTrafficClass");
+        }
+        // `reuse_address`/`backlog` apply to a listener at bind time (see
+        // `bind_listener_with_options`), not to an already-connected stream.
     }
 }
 
-/// Bind a `TcpListener`, optionally setting `SO_REUSEADDR` before binding (`SocketReuseAddress`).
-/// Plain `TcpListener::bind` cannot express this — the option must be set on the raw socket
-/// before the bind syscall.
-fn bind_listener_with_options(addr: SocketAddr, reuse_address: bool) -> io::Result<TcpListener> {
+/// Bind a `TcpListener`, optionally setting `SO_REUSEADDR` before binding (`SocketReuseAddress`)
+/// and a configurable listen backlog (`SocketBacklog`, NEW-135/audit 006 — previously hardcoded to
+/// `1024`). Plain `TcpListener::bind` cannot express either — both must be set on the raw socket
+/// before/at the bind/listen syscalls.
+fn bind_listener_with_options(
+    addr: SocketAddr,
+    reuse_address: bool,
+    backlog: u32,
+) -> io::Result<TcpListener> {
     let domain = if addr.is_ipv4() {
         socket2::Domain::IPV4
     } else {
@@ -130,7 +168,7 @@ fn bind_listener_with_options(addr: SocketAddr, reuse_address: bool) -> io::Resu
     }
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
-    socket.listen(1024)?;
+    socket.listen(backlog as i32)?;
     TcpListener::from_std(socket.into())
 }
 
@@ -189,6 +227,21 @@ where
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "connect attempt timed out",
+            ))
+        }),
+    }
+}
+
+async fn with_tls_handshake_timeout<F, T>(dur: Option<Duration>, fut: F) -> io::Result<T>
+where
+    F: std::future::Future<Output = io::Result<T>>,
+{
+    match dur {
+        None => fut.await,
+        Some(dur) => tokio::time::timeout(dur, fut).await.unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "tls handshake timed out",
             ))
         }),
     }
@@ -387,11 +440,19 @@ impl Monitor {
 
 /// A handle to a running session task.
 pub struct SessionHandle {
+    session_id: SessionId,
     control: mpsc::Sender<Control>,
     task: JoinHandle<()>,
 }
 
 impl SessionHandle {
+    /// The FIX session identity this handle addresses (NEW-121, audit 006) — lets a caller with
+    /// multiple handles correlate each one to its session without relying on config-order
+    /// stability.
+    pub fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+
     /// Request a graceful logout.
     pub async fn logout(&self) {
         let _ = self.control.send(Control::Logout).await;
@@ -468,7 +529,9 @@ where
     let tcp = tcp_connect(addr, config.local_bind_addr, config.connect_timeout).await?;
     services.socket_options.apply(&tcp);
     let connector = tokio_rustls::TlsConnector::from(tls);
-    let stream = connector.connect(server_name, tcp).await?;
+    let stream =
+        with_tls_handshake_timeout(config.connect_timeout, connector.connect(server_name, tcp))
+            .await?;
     Ok(spawn_session_io(stream, config, app, services))
 }
 
@@ -541,10 +604,10 @@ where
             .await?;
     services.socket_options.apply(&tcp);
     let connector = tokio_rustls::TlsConnector::from(tls);
-    let stream = connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(ProxyError::Io)?;
+    let stream =
+        with_tls_handshake_timeout(config.connect_timeout, connector.connect(server_name, tcp))
+            .await
+            .map_err(ProxyError::Io)?;
     Ok(spawn_session_io(stream, config, app, services))
 }
 
@@ -589,7 +652,11 @@ impl<A: Application + 'static> Acceptor<A> {
         app: Arc<A>,
         services: Services,
     ) -> io::Result<Self> {
-        let listener = bind_listener_with_options(addr, services.socket_options.reuse_address)?;
+        let listener = bind_listener_with_options(
+            addr,
+            services.socket_options.reuse_address,
+            services.socket_options.backlog,
+        )?;
         Ok(Self {
             listener,
             config,
@@ -616,7 +683,20 @@ impl<A: Application + 'static> Acceptor<A> {
         let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         let active: SingleSessionActive = Arc::new(std::sync::Mutex::new(false));
         tokio::spawn(async move {
-            while let Ok((mut stream, peer)) = self.listener.accept().await {
+            let mut accepted = AbortAcceptedOnDrop(JoinSet::new());
+            loop {
+                // NEW-115 (audit 006): a transient accept error (e.g. `EMFILE`/`ECONNABORTED`/
+                // `ENFILE`) must not silently kill the whole accept loop -- log and keep accepting.
+                // This task is itself cancelled from the outside (engine shutdown aborts the
+                // returned `JoinHandle`), so looping forever here is safe and matches QFJ/Mina's
+                // own accept-loop behavior of only stopping on intentional shutdown.
+                let (mut stream, peer) = match self.listener.accept().await {
+                    Ok(accepted) => accepted,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "accept() failed; continuing to accept");
+                        continue;
+                    }
+                };
                 // PROXY protocol (FR-015): a single-session acceptor has no allow-list to gate
                 // on, but a trusted upstream's header is still stripped so its bytes are never
                 // mistaken for the start of the FIX stream.
@@ -659,19 +739,42 @@ impl<A: Application + 'static> Acceptor<A> {
                 match &tls {
                     Some(acceptor) => {
                         let acceptor = acceptor.clone();
-                        tokio::spawn(async move {
+                        accepted.0.spawn(async move {
                             let _guard = guard;
-                            if let Ok(tls_stream) = acceptor.accept(stream).await {
-                                let handle = spawn_session_io(tls_stream, config, app, services);
-                                let _ = handle.task.await;
+                            if let Ok(tls_stream) = with_tls_handshake_timeout(
+                                config.connect_timeout,
+                                acceptor.accept(stream),
+                            )
+                            .await
+                            {
+                                let (control_tx, control_rx) = mpsc::channel(8);
+                                run_connection(
+                                    tls_stream,
+                                    config,
+                                    app,
+                                    services,
+                                    control_tx,
+                                    control_rx,
+                                    Vec::new(),
+                                )
+                                .await;
                             }
                         });
                     }
                     None => {
-                        tokio::spawn(async move {
+                        accepted.0.spawn(async move {
                             let _guard = guard;
-                            let handle = spawn_session_io(stream, config, app, services);
-                            let _ = handle.task.await;
+                            let (control_tx, control_rx) = mpsc::channel(8);
+                            run_connection(
+                                stream,
+                                config,
+                                app,
+                                services,
+                                control_tx,
+                                control_rx,
+                                Vec::new(),
+                            )
+                            .await;
                         });
                     }
                 }
@@ -703,6 +806,7 @@ where
     A: Application + 'static,
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let session_id = config.session_id();
     let (control_tx, control_rx) = mpsc::channel(8);
     let task = {
         let control_tx = control_tx.clone();
@@ -720,6 +824,7 @@ where
         })
     };
     SessionHandle {
+        session_id,
         control: control_tx,
         task,
     }
@@ -1007,6 +1112,13 @@ async fn run_connection<A, S>(
     )
     .await;
 
+    if logged_on {
+        app.on_cancel_on_disconnect(&id).await;
+        if let Some(log) = &services.log {
+            log.on_event(&format!("{id}: cancel-on-disconnect hook"));
+        }
+    }
+
     let _ = write_half.shutdown().await;
     if let Some(monitor) = &services.monitor {
         monitor.mark_disconnected(&id);
@@ -1108,6 +1220,7 @@ async fn read_loop<S: AsyncRead + Unpin>(
             }
         }
     };
+    let pending_app_limit = app_tx.max_capacity().max(1);
 
     loop {
         tokio::select! {
@@ -1122,7 +1235,7 @@ async fn read_loop<S: AsyncRead + Unpin>(
                     Err(_) => return, // the processing loop's application receiver was dropped
                 }
             }
-            read = read_half.read(&mut chunk) => match read {
+            read = read_half.read(&mut chunk), if pending_app.len() < pending_app_limit => match read {
                 Ok(0) | Err(_) => return,
                 Ok(n) => {
                     if let Some(slice) = chunk.get(..n) {
@@ -1161,7 +1274,12 @@ async fn classify_buffered(
     loop {
         match frame_length(buf) {
             Ok(Some(total)) => {
-                let raw: Vec<u8> = buf.drain(..total).collect();
+                // NEW-133 (audit 006): decode/log directly against a `&buf[..total]` slice view
+                // instead of first copying it into a freshly `collect()`ed `Vec<u8>` -- this was
+                // an unconditional heap allocation on every single message in the hottest read
+                // path. `buf.drain(..total)` below (its `Drain` dropped without collecting) still
+                // removes the consumed prefix, but that's an in-place shift of the remaining
+                // buffered bytes, not an allocation.
                 // GAP-26/FR-032 (feature 006): when a dictionary is attached, decode with group
                 // awareness (`decode_with_groups`, already correct since feature 005 but never
                 // invoked from any production path until now) so a header/trailer repeating group
@@ -1179,20 +1297,31 @@ async fn classify_buffered(
                 // see `run_connection`'s `session.set_fixt_dictionaries` call) -- so this dispatch
                 // must also check `fixt_dictionaries`, or header/trailer repeating groups (e.g.
                 // NoHops) never get group-aware decoding under FIXT 1.1 at all.
-                let decoded = match (&services.validator, &services.fixt_dictionaries) {
-                    (Some((dict, _)), _) => {
-                        decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dict))
+                let decoded = {
+                    // `total` is always `<= buf.len()` here (`frame_length` only ever returns a
+                    // length it verified fits within `buf`), so `.get(..total)` never actually
+                    // falls back to `&[]` in practice -- but this crate forbids panicking
+                    // indexing on critical paths (Constitution Principle I) even where a panic is
+                    // believed unreachable today.
+                    let raw = buf.get(..total).unwrap_or(&[]);
+                    match (&services.validator, &services.fixt_dictionaries) {
+                        (Some((dict, _)), _) => {
+                            decode_with_groups(raw, &HeaderTrailerGroupsOnly(dict))
+                        }
+                        (None, Some((dicts, _))) => {
+                            decode_with_groups(raw, &HeaderTrailerGroupsOnly(dicts.transport()))
+                        }
+                        (None, None) => decode(raw),
                     }
-                    (None, Some((dicts, _))) => {
-                        decode_with_groups(&raw, &HeaderTrailerGroupsOnly(dicts.transport()))
-                    }
-                    (None, None) => decode(&raw),
                 };
-                if let Ok(msg) = decoded {
+                if decoded.is_ok() {
                     metrics_export::record_received(id);
                     if let Some(log) = &services.log {
-                        log.on_incoming(&String::from_utf8_lossy(&raw));
+                        log.on_incoming(&String::from_utf8_lossy(buf.get(..total).unwrap_or(&[])));
                     }
+                }
+                buf.drain(..total);
+                if let Ok(msg) = decoded {
                     if !has_app_channel || is_admin(&msg) {
                         admin_tx.send(Inbound::Message(msg)).await.map_err(|_| ())?;
                     } else {
@@ -1631,12 +1760,21 @@ struct Registry {
     /// file instead. `store` is deliberately excluded here — already independently handled by
     /// `session_stores` above (BUG-07, feature 006).
     session_services: HashMap<SessionId, Services>,
+    dynamic_services_factory: Option<DynamicServicesFactory>,
     /// BUG-32/FR-008 (feature 007): `SessionId`s with a currently-active connection — checked and
     /// inserted in `route_and_run` before a second connection presenting the same identity is
     /// routed, removed once that connection ends. Without this, a second connection for an
     /// already-connected `SessionId` was accepted as a competing session, corrupting sequence-
     /// number bookkeeping shared between the two.
     active: std::sync::Mutex<std::collections::HashSet<SessionId>>,
+}
+
+struct AbortAcceptedOnDrop(JoinSet<()>);
+
+impl Drop for AbortAcceptedOnDrop {
+    fn drop(&mut self) {
+        self.0.abort_all();
+    }
 }
 
 /// Builds and serves a multi-session acceptor with optional dynamic sessions and allow-listing.
@@ -1650,6 +1788,7 @@ pub struct AcceptorBuilder<A: Application + 'static> {
     tls: Option<Arc<rustls::ServerConfig>>,
     session_stores: HashMap<SessionId, Arc<dyn MessageStore>>,
     session_services: HashMap<SessionId, Services>,
+    dynamic_services_factory: Option<DynamicServicesFactory>,
 }
 
 impl<A: Application + 'static> AcceptorBuilder<A> {
@@ -1663,7 +1802,11 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
 
     /// Bind a multi-session acceptor with services available before the listener is created.
     pub async fn bind_with(addr: SocketAddr, app: Arc<A>, services: Services) -> io::Result<Self> {
-        let listener = bind_listener_with_options(addr, services.socket_options.reuse_address)?;
+        let listener = bind_listener_with_options(
+            addr,
+            services.socket_options.reuse_address,
+            services.socket_options.backlog,
+        )?;
         Ok(Self {
             listener,
             app,
@@ -1674,6 +1817,7 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
             tls: None,
             session_stores: HashMap::new(),
             session_services: HashMap::new(),
+            dynamic_services_factory: None,
         })
     }
 
@@ -1736,6 +1880,21 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         self
     }
 
+    /// Attach a services factory for dynamic sessions. It is invoked after the inbound Logon's
+    /// concrete identity has been resolved, so persistent stores/logs can be keyed per dynamic
+    /// [`SessionId`] instead of sharing the template's group-wide services.
+    #[must_use]
+    pub fn with_dynamic_services_factory<F, Fut>(mut self, factory: F) -> Self
+    where
+        F: Fn(SessionId, SessionConfig) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Services, String>> + Send + 'static,
+    {
+        self.dynamic_services_factory = Some(Arc::new(move |sid, config| {
+            Box::pin(factory(sid, config)) as DynamicServicesFuture
+        }));
+        self
+    }
+
     /// Set a dynamic-session template: connections that don't match a static session are accepted
     /// using this template (AcceptorTemplate / DynamicSession).
     #[must_use]
@@ -1780,6 +1939,7 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
             allowed_remotes: self.allowed_remotes,
             session_stores: self.session_stores,
             session_services: self.session_services,
+            dynamic_services_factory: self.dynamic_services_factory,
             active: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let app = self.app;
@@ -1787,7 +1947,17 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
         let listener = self.listener;
         let tls = self.tls.map(tokio_rustls::TlsAcceptor::from);
         tokio::spawn(async move {
-            while let Ok((mut stream, peer)) = listener.accept().await {
+            let mut accepted = AbortAcceptedOnDrop(JoinSet::new());
+            loop {
+                // NEW-115 (audit 006): see the single-session `serve()`'s matching comment -- a
+                // transient accept error must not silently kill the whole accept loop.
+                let (mut stream, peer) = match listener.accept().await {
+                    Ok(accepted) => accepted,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "accept() failed; continuing to accept");
+                        continue;
+                    }
+                };
                 // PROXY protocol (FR-015): only a physically-trusted upstream's header is parsed;
                 // otherwise `effective_ip` is just the physical peer address, unchanged.
                 let effective_ip = proxy::strip_trusted_proxy_header(
@@ -1809,14 +1979,17 @@ impl<A: Application + 'static> AcceptorBuilder<A> {
                 match &tls {
                     Some(acceptor) => {
                         let acceptor = acceptor.clone();
-                        tokio::spawn(async move {
-                            if let Ok(tls_stream) = acceptor.accept(stream).await {
+                        let timeout = registry_acceptor_tls_timeout(&registry);
+                        accepted.0.spawn(async move {
+                            if let Ok(tls_stream) =
+                                with_tls_handshake_timeout(timeout, acceptor.accept(stream)).await
+                            {
                                 route_and_run(tls_stream, app, registry, services).await;
                             }
                         });
                     }
                     None => {
-                        tokio::spawn(async move {
+                        accepted.0.spawn(async move {
                             route_and_run(stream, app, registry, services).await;
                         });
                     }
@@ -1842,6 +2015,15 @@ fn prelogon_read_timeout(registry: &Registry) -> Duration {
         .max()
         .unwrap_or(default);
     Duration::from_secs(u64::from(max_configured.max(1)))
+}
+
+fn registry_acceptor_tls_timeout(registry: &Registry) -> Option<Duration> {
+    registry
+        .sessions
+        .values()
+        .chain(registry.template.iter())
+        .filter_map(|c| c.connect_timeout)
+        .max()
 }
 
 /// NEW-93 (feature 009): a defensive cap on the pre-Logon buffer, independent of the
@@ -1922,7 +2104,9 @@ async fn route_and_run<A, S>(
               // enforced at config-resolve time instead (Engine::start).
     );
 
-    let config = registry.sessions.get(&sid).cloned().or_else(|| {
+    let static_config = registry.sessions.get(&sid).cloned();
+    let is_dynamic = static_config.is_none();
+    let config = static_config.or_else(|| {
         registry.template.as_ref().map(|t| {
             dynamic_config(
                 t,
@@ -1957,7 +2141,23 @@ async fn route_and_run<A, S>(
     // silently corrupts each session's own sequence-number bookkeeping (each is independent
     // per-session state, unlike socket options/TLS material, which are legitimately group-wide).
     let mut services = services;
-    if let Some(store) = registry.session_stores.get(&sid) {
+    if is_dynamic {
+        if let Some(factory) = &registry.dynamic_services_factory {
+            match factory(sid.clone(), config.clone()).await {
+                Ok(dynamic_services) => {
+                    services = dynamic_services;
+                }
+                Err(err) => {
+                    if let Some(log) = &services.log {
+                        log.on_event(&format!(
+                            "dynamic services factory failed for session {sid:?}: {err}"
+                        ));
+                    }
+                    return;
+                }
+            }
+        }
+    } else if let Some(store) = registry.session_stores.get(&sid) {
         services.store = Some(store.clone());
     }
 
@@ -1977,7 +2177,7 @@ async fn route_and_run<A, S>(
     // function or unsafe raw-fd handling (forbidden by this project's `unsafe_code = "forbid"`).
     // Socket options remain governed by the group-wide `Services`, applied once at accept time
     // (before any session identity is known) — a narrower, disclosed limitation of this fix.
-    if let Some(overrides) = registry.session_services.get(&sid) {
+    if !is_dynamic && let Some(overrides) = registry.session_services.get(&sid) {
         let store = services.store.take();
         services.log = overrides.log.clone();
         services.validator = overrides.validator.clone();
@@ -2077,6 +2277,7 @@ fn dynamic_config(
 
 /// Handle to a reconnecting initiator loop.
 pub struct ReconnectHandle {
+    session_id: SessionId,
     stop: Arc<AtomicBool>,
     task: JoinHandle<()>,
     /// BUG-50/FR-043 (feature 007): an abort handle for the currently-active connection's own
@@ -2109,6 +2310,11 @@ impl ReconnectHandle {
     /// Wait for the loop to finish.
     pub async fn join(self) {
         let _ = self.task.await;
+    }
+
+    /// The FIX session identity this handle addresses (NEW-121, audit 006).
+    pub fn session_id(&self) -> &SessionId {
+        &self.session_id
     }
 }
 
@@ -2183,6 +2389,7 @@ where
         Arc::new(std::sync::Mutex::new(None));
     let loop_current = current.clone();
     let id = config.session_id();
+    let session_id = id.clone();
     let task = tokio::spawn(async move {
         let mut connected_before = false;
         let mut next_endpoint = 0usize;
@@ -2259,6 +2466,7 @@ where
         }
     });
     ReconnectHandle {
+        session_id,
         stop,
         task,
         current,
@@ -2305,6 +2513,7 @@ where
         Arc::new(std::sync::Mutex::new(None));
     let loop_current = current.clone();
     let id = config.session_id();
+    let session_id = id.clone();
     let connector = tokio_rustls::TlsConnector::from(tls);
     let task = tokio::spawn(async move {
         let mut connected_before = false;
@@ -2324,7 +2533,12 @@ where
             .await
             {
                 services.socket_options.apply(&tcp);
-                if let Ok(stream) = connector.connect(server_name.clone(), tcp).await {
+                if let Ok(stream) = with_tls_handshake_timeout(
+                    config.connect_timeout,
+                    connector.connect(server_name.clone(), tcp),
+                )
+                .await
+                {
                     if connected_before {
                         metrics_export::record_reconnect(&id);
                     }
@@ -2371,6 +2585,7 @@ where
         }
     });
     ReconnectHandle {
+        session_id,
         stop,
         task,
         current,
@@ -2383,6 +2598,7 @@ where
 
 /// Handle to a scheduled initiator loop.
 pub struct ScheduledHandle {
+    session_id: SessionId,
     stop: Arc<AtomicBool>,
     task: JoinHandle<()>,
 }
@@ -2397,7 +2613,17 @@ impl ScheduledHandle {
     pub async fn join(self) {
         let _ = self.task.await;
     }
+
+    /// The FIX session identity this handle addresses (NEW-121, audit 006).
+    pub fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
 }
+
+/// A single connect attempt used by [`run_scheduled_initiator`]/[`run_scheduled_initiator_tls`]
+/// (NEW-134, audit 006): boxed so both the plain-TCP and TLS variants can share one loop
+/// implementation, differing only in how a connection is actually established.
+type ScheduledConnectFut = Pin<Box<dyn Future<Output = io::Result<SessionHandle>> + Send>>;
 
 /// NEW-14 (feature 009): polls `loop_stop` and the schedule's in-session status every 200ms
 /// (matching `run_scheduled_initiator`'s own poll cadence), resolving as soon as either the stop
@@ -2435,9 +2661,61 @@ pub fn run_scheduled_initiator<A>(
 where
     A: Application + 'static,
 {
+    let connect_config = config.clone();
+    let connect_services = services.clone();
+    run_scheduled_initiator_generic(config, services, schedule, move || {
+        let connect_config = connect_config.clone();
+        let connect_services = connect_services.clone();
+        let app = app.clone();
+        Box::pin(async move {
+            connect_initiator_with(addr, connect_config, app, connect_services).await
+        }) as ScheduledConnectFut
+    })
+}
+
+/// As [`run_scheduled_initiator`], but performs a TLS handshake on every connection attempt
+/// (NEW-134, audit 006) — mirroring [`connect_initiator_reconnecting_endpoints_tls`]'s TLS
+/// reconnect loop, but gated by `schedule` instead of reconnecting unconditionally.
+pub fn run_scheduled_initiator_tls<A>(
+    addr: SocketAddr,
+    config: SessionConfig,
+    app: Arc<A>,
+    services: Services,
+    schedule: Schedule,
+    tls: Arc<rustls::ClientConfig>,
+    server_name: rustls::pki_types::ServerName<'static>,
+) -> ScheduledHandle
+where
+    A: Application + 'static,
+{
+    let connect_config = config.clone();
+    let connect_services = services.clone();
+    run_scheduled_initiator_generic(config, services, schedule, move || {
+        let connect_config = connect_config.clone();
+        let connect_services = connect_services.clone();
+        let app = app.clone();
+        let tls = tls.clone();
+        let server_name = server_name.clone();
+        Box::pin(async move {
+            connect_initiator_tls(addr, connect_config, app, connect_services, tls, server_name)
+                .await
+        }) as ScheduledConnectFut
+    })
+}
+
+/// Shared loop implementation behind [`run_scheduled_initiator`]/[`run_scheduled_initiator_tls`]
+/// (NEW-134, audit 006): identical schedule-boundary/backoff/retry behavior, differing only in how
+/// `connect` establishes a single connection attempt (plain TCP vs. TLS).
+fn run_scheduled_initiator_generic(
+    config: SessionConfig,
+    services: Services,
+    schedule: Schedule,
+    connect: impl Fn() -> ScheduledConnectFut + Send + 'static,
+) -> ScheduledHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let loop_stop = stop.clone();
     let id = config.session_id();
+    let session_id = id.clone();
     let task = tokio::spawn(async move {
         let mut current: Option<SessionHandle> = None;
         // BUG-09/GAP-48 (feature 006): seed `was_in_session` from the store's persisted
@@ -2503,8 +2781,7 @@ where
                 // `connect_timeout` configured (the default), a hanging/black-holed connect
                 // blocked `loop_stop`/schedule-boundary observation indefinitely, defeating the
                 // 200ms poll cadence for as long as the connect attempt was outstanding.
-                let connect_fut =
-                    connect_initiator_with(addr, config.clone(), app.clone(), services.clone());
+                let connect_fut = connect();
                 let abandoned =
                     wait_for_stop_or_schedule_change(&loop_stop, &schedule, was_in_session);
                 tokio::select! {
@@ -2539,7 +2816,11 @@ where
             handle.logout().await;
         }
     });
-    ScheduledHandle { stop, task }
+    ScheduledHandle {
+        session_id,
+        stop,
+        task,
+    }
 }
 
 #[cfg(test)]

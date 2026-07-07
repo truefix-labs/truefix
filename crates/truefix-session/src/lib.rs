@@ -5,6 +5,12 @@
 //! Sequence-gap recovery, persistence, scheduling, and the remaining session semantics arrive
 //! in later stages.
 //!
+//! Audit 006 additions: inbound `PossResend(97)` reaches [`Application::from_app`]/
+//! [`Application::from_admin`] unfiltered (NEW-106 — the session layer never pre-filters it), and
+//! [`Application::on_cancel_on_disconnect`] gives integrators an operator-visible hook to run
+//! their own cancel-on-disconnect workflow using their own order source (NEW-105 — the session
+//! layer deliberately does not track open-order state or synthesize business cancels itself).
+//!
 //! Design: `specs/001-fix-engine-parity/`.
 #![cfg_attr(
     not(test),

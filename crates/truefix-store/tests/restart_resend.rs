@@ -97,12 +97,22 @@ async fn cached_file_store_survives_restart() {
 }
 
 #[tokio::test]
-async fn noop_store_is_inert() {
-    let s = NoopStore;
+async fn noop_store_tracks_sequence_numbers_in_memory_but_saves_nothing() {
+    // NEW-118 (audit 006): NoopStore now tracks sequence numbers in memory for the session's
+    // lifetime, matching QFJ's own NoopStore -- previously `set_next_sender_seq` was silently
+    // discarded and `next_sender_seq` always reported 1, breaking any session using it after the
+    // very first message.
+    let s = NoopStore::new();
     s.save(1, b"x").await.unwrap();
     s.set_next_sender_seq(9).await.unwrap();
-    assert_eq!(s.next_sender_seq().await.unwrap(), 1);
+    assert_eq!(s.next_sender_seq().await.unwrap(), 9);
+    s.set_next_target_seq(4).await.unwrap();
+    assert_eq!(s.next_target_seq().await.unwrap(), 4);
+    // Message bodies are still never persisted.
     assert!(s.get(1, 10).await.unwrap().is_empty());
+    s.reset().await.unwrap();
+    assert_eq!(s.next_sender_seq().await.unwrap(), 1);
+    assert_eq!(s.next_target_seq().await.unwrap(), 1);
 }
 
 #[tokio::test]

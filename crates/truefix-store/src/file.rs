@@ -61,6 +61,17 @@ fn poisoned() -> StoreError {
     StoreError::Backend("poisoned lock".into())
 }
 
+/// Drop the lowest-sequence entries from `index` until at most `max_records` remain (NEW-108,
+/// audit 006). `BodyIndex` is a `BTreeMap`, so its keys are already sequence-ordered.
+fn evict_oldest(index: &mut BodyIndex, max_records: usize) {
+    while index.len() > max_records {
+        let Some(&oldest) = index.keys().next() else {
+            break;
+        };
+        index.remove(&oldest);
+    }
+}
+
 /// Options shared by [`FileStore`] and [`CachedFileStore`] (FR-025).
 #[derive(Debug, Clone, Copy)]
 pub struct FileStoreOptions {
@@ -70,6 +81,16 @@ pub struct FileStoreOptions {
     /// bodies held in memory; `0` means unbounded (cache every message saved this session, the
     /// original pre-FR-025 behavior).
     pub max_cached_msgs: usize,
+    /// `FileStoreMaxBodyRecords` (NEW-108, audit 006): bound the body log's *index* to at most
+    /// this many of the most-recently-appended records; `0` (the default) means unbounded, the
+    /// original behavior. When set, the oldest indexed records are dropped from the index (never
+    /// physically truncated from the file -- like a corrupt-tail's unindexed bytes, they simply
+    /// become unreachable) once the bound is exceeded. This is an explicit, opt-in trade-off: a
+    /// bounded store can no longer serve a resend request for a sequence number old enough to have
+    /// aged out of the index, so only enable it when the deployment's own reset/rollover cadence
+    /// (or downstream reconciliation) makes that acceptable -- unlike log rotation, this changes
+    /// resend/recovery semantics, not just disk footprint.
+    pub max_body_records: usize,
 }
 
 impl Default for FileStoreOptions {
@@ -77,6 +98,7 @@ impl Default for FileStoreOptions {
         Self {
             sync: true,
             max_cached_msgs: 0,
+            max_body_records: 0,
         }
     }
 }
@@ -91,16 +113,39 @@ struct BodyLog {
     path: PathBuf,
     index: Mutex<BodyIndex>,
     sync: bool,
+    /// `FileStoreMaxBodyRecords` (NEW-108, audit 006); `0` = unbounded. See
+    /// [`FileStoreOptions::max_body_records`]'s doc for the resend/recovery trade-off.
+    max_records: usize,
 }
 
 impl BodyLog {
-    fn open(path: PathBuf, sync: bool) -> Result<(Self, bool), StoreError> {
-        let (index, corrupted) = load_index(&path)?;
+    fn open_with_max_records(
+        path: PathBuf,
+        sync: bool,
+        max_records: usize,
+    ) -> Result<(Self, bool), StoreError> {
+        let (mut index, corrupted, clean_len) = load_index(&path)?;
+        if corrupted {
+            let f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(&path)
+                .map_err(io_err)?;
+            f.set_len(clean_len).map_err(io_err)?;
+            if sync {
+                f.sync_data().map_err(io_err)?;
+            }
+        }
+        if max_records > 0 {
+            evict_oldest(&mut index, max_records);
+        }
         Ok((
             Self {
                 path,
                 index: Mutex::new(index),
                 sync,
+                max_records,
             },
             corrupted,
         ))
@@ -133,6 +178,12 @@ impl BodyLog {
             f.sync_data().map_err(io_err)?;
         }
         guard.insert(seq, (offset, len));
+        // NEW-108 (audit 006): drop the oldest indexed record(s) once the bound is exceeded --
+        // the physical bytes stay on disk (like an unindexed corrupt-tail record, they're simply
+        // never read again), so this never rewrites/truncates the file on the hot append path.
+        if self.max_records > 0 {
+            evict_oldest(&mut guard, self.max_records);
+        }
         Ok(())
     }
 
@@ -158,6 +209,11 @@ impl BodyLog {
     /// The sequence numbers indexed within `[begin, end]`, in order (no disk read).
     fn seqs_in_range(&self, begin: u64, end: u64) -> Result<Vec<u64>, StoreError> {
         Ok(self.lock()?.range(begin..=end).map(|(s, _)| *s).collect())
+    }
+
+    /// Whether `seq` is already indexed (NEW-137, audit 006).
+    fn contains(&self, seq: u64) -> Result<bool, StoreError> {
+        Ok(self.lock()?.contains_key(&seq))
     }
 
     /// T174/T175/T176 (feature 009, NEW-41): a multi-message resend previously opened (and
@@ -263,13 +319,15 @@ impl SeqFile {
     }
 
     fn set_sender(&self, seq: u64) -> Result<(), StoreError> {
+        write_seq_value(&self.sender_path, seq, self.sync)?;
         self.lock()?.0 = seq;
-        write_seq_value(&self.sender_path, seq, self.sync)
+        Ok(())
     }
 
     fn set_target(&self, seq: u64) -> Result<(), StoreError> {
+        write_seq_value(&self.target_path, seq, self.sync)?;
         self.lock()?.1 = seq;
-        write_seq_value(&self.target_path, seq, self.sync)
+        Ok(())
     }
 
     fn reset(&self) -> Result<(), StoreError> {
@@ -365,7 +423,8 @@ impl FileStore {
     pub fn open_with_options(dir: &Path, options: FileStoreOptions) -> Result<Self, StoreError> {
         fs::create_dir_all(dir).map_err(io_err)?;
         let seq = SeqFile::open(dir, options.sync)?;
-        let (body, corrupted) = BodyLog::open(dir.join("body"), options.sync)?;
+        let (body, corrupted) =
+            BodyLog::open_with_max_records(dir.join("body"), options.sync, options.max_body_records)?;
         let creation_time_path = dir.join("session");
         let creation_time = creation_time_file(&creation_time_path)?;
         Ok(Self {
@@ -404,15 +463,21 @@ impl MessageStore for FileStore {
         self.body.range(begin, end)
     }
     async fn reset(&self) -> Result<(), StoreError> {
-        // B17/FR-016 (feature 006): reset `seq` (the durability anchor, per
-        // `save_and_advance_sender`'s ordering rationale above) *before* `body` — a crash
-        // mid-reset then leaves `seqnums` already at the post-reset `(1,1)` with `body` still
-        // holding harmless, unindexed pre-reset data, never the reverse (which was previously
-        // possible and unrecoverable: `body` empty but `seqnums` still reporting the old,
-        // advanced values, with no way to serve a resend for messages the old sequence numbers
-        // claimed existed).
-        self.seq.reset()?;
+        // NEW-136 (audit 006): truncate `body` *before* resetting `seq` -- the reverse of
+        // `save_and_advance_sender`'s ordering, and deliberately so: these two operations protect
+        // against different failure modes. B17/FR-016 (feature 006) originally reset `seq` first
+        // reasoning that a crash would leave harmless, unindexed pre-reset body bytes; but
+        // `load_index()` on the next `open()` unconditionally replays every complete record in
+        // `body` from scratch, so a crash between `seq.reset()` succeeding and `body.reset()`
+        // truncating leaves `next_sender_seq()`/`next_target_seq()` already reporting `1` while
+        // `get()` still returns the stale pre-reset messages a fresh restart re-indexed from the
+        // not-yet-truncated body file -- silently wrong data, not a safely-recoverable gap.
+        // Truncating `body` first instead means a crash before `seq.reset()` completes leaves the
+        // store looking not-yet-reset (old sequence numbers) over an already-empty body, which is
+        // just the ordinary "missing stored message" case `build_resend`'s gap-fill path already
+        // handles safely.
         self.body.reset()?;
+        self.seq.reset()?;
         self.corrupted.store(false, Ordering::SeqCst);
         let now = reset_creation_time_file(&self.creation_time_path)?;
         *self.creation_time.lock().map_err(|_| poisoned())? = now;
@@ -425,17 +490,24 @@ impl MessageStore for FileStore {
         Ok(Some(*self.creation_time.lock().map_err(|_| poisoned())?))
     }
     async fn save_and_advance_sender(&self, seq: u64, message: &[u8]) -> Result<(), StoreError> {
-        // GAP-49/FR-015 (feature 006): unlike the SQL/MSSQL/Redb overrides (feature 005), a
-        // two-separate-file backend has no cross-file transaction to make this fully atomic.
-        // The safest achievable ordering advances the durable sequence-number record FIRST: if a
-        // crash occurs before the body write completes, `next_out_seq()` on restart already
-        // reflects this message as sent (matching what the counterparty may already have
-        // received over the wire), and the missing body is safely recoverable via the existing
-        // gap-fill path (`build_resend` already treats a missing stored message as a gap to
-        // fill) — the reverse order would instead risk generating a brand-new, differently-
-        // content message under an already-transmitted sequence number on restart.
+        // GAP-49/FR-015 (feature 006); re-affirmed under NEW-117 (audit 006): unlike the
+        // SQL/MSSQL/Redb overrides (feature 005), a two-separate-file backend has no cross-file
+        // transaction to make this fully atomic. The safest achievable ordering advances the
+        // durable sequence-number record FIRST: if a crash occurs before the body write
+        // completes, `next_out_seq()` on restart already reflects this message as sent (matching
+        // what the counterparty may already have received over the wire -- `persist_sent` in
+        // `truefix-transport` is only called *after* the wire write already succeeded), and the
+        // missing body is safely recoverable via the existing gap-fill path (`build_resend`
+        // already treats a missing stored message as a gap to fill, a sanctioned FIX recovery
+        // mechanism) -- the reverse order (body-first) would instead risk the store reporting an
+        // unadvanced sequence number for a message the peer has already received, so the next
+        // real send after restart would reuse that same MsgSeqNum for different content, which
+        // no gap-fill can repair and is a strictly worse failure than a recoverable missing body.
         self.seq.set_sender(seq + 1)?;
         self.body.append(seq, message)
+    }
+    async fn contains(&self, seq: u64) -> Result<bool, StoreError> {
+        self.body.contains(seq)
     }
 }
 
@@ -500,7 +572,8 @@ impl CachedFileStore {
     pub fn open_with_options(dir: &Path, options: FileStoreOptions) -> Result<Self, StoreError> {
         fs::create_dir_all(dir).map_err(io_err)?;
         let seq = SeqFile::open(dir, options.sync)?;
-        let (body, corrupted) = BodyLog::open(dir.join("body"), options.sync)?;
+        let (body, corrupted) =
+            BodyLog::open_with_max_records(dir.join("body"), options.sync, options.max_body_records)?;
         let mut cache = CacheState::new(options.max_cached_msgs);
         // BUG-81/FR-031 (feature 007): warm the cache by reading only the (at most)
         // `max_cached_msgs` most-recent bodies, not every body ever stored -- previously
@@ -591,11 +664,10 @@ impl MessageStore for CachedFileStore {
         Ok(out)
     }
     async fn reset(&self) -> Result<(), StoreError> {
-        // B17/FR-016 (feature 006): see FileStore's identical override for the ordering
-        // rationale (sequence-number-first, matching `save_and_advance_sender`'s durability
-        // anchor).
-        self.seq.reset()?;
+        // NEW-136 (audit 006): see FileStore's identical override for the ordering rationale
+        // (body-truncate-first, avoiding stale post-reset replay on a crash mid-reset).
         self.body.reset()?;
+        self.seq.reset()?;
         self.corrupted.store(false, Ordering::SeqCst);
         self.cache.lock().map_err(|_| poisoned())?.clear();
         let now = reset_creation_time_file(&self.creation_time_path)?;
@@ -620,6 +692,9 @@ impl MessageStore for CachedFileStore {
             .insert(seq, message.to_vec());
         Ok(())
     }
+    async fn contains(&self, seq: u64) -> Result<bool, StoreError> {
+        self.body.contains(seq)
+    }
 }
 
 /// Replays record headers (not bodies) into an offset index, seeking past each record's body
@@ -628,10 +703,10 @@ impl MessageStore for CachedFileStore {
 /// just to walk its 12-byte record headers, allocating memory proportional to the whole message
 /// history rather than to the (tiny, fixed-size-per-record) index being rebuilt. Returns the
 /// index and whether a corrupt trailing record was found.
-fn load_index(path: &Path) -> Result<(BodyIndex, bool), StoreError> {
+fn load_index(path: &Path) -> Result<(BodyIndex, bool, u64), StoreError> {
     let mut f = match File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok((BTreeMap::new(), false)),
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok((BTreeMap::new(), false, 0)),
         Err(e) => return Err(io_err(e)),
     };
     let file_len = f.metadata().map_err(io_err)?.len();
@@ -639,10 +714,10 @@ fn load_index(path: &Path) -> Result<(BodyIndex, bool), StoreError> {
     let mut pos: u64 = 0;
     loop {
         if pos == file_len {
-            return Ok((index, false));
+            return Ok((index, false, pos));
         }
         if file_len - pos < 12 {
-            return Ok((index, true)); // trailing bytes too short for a full header
+            return Ok((index, true, pos)); // trailing bytes too short for a full header
         }
         // Read the two header fields into their own exactly-sized buffers, rather than one
         // 12-byte buffer sliced afterward — this crate forbids `unwrap`/`expect`/indexing
@@ -656,10 +731,10 @@ fn load_index(path: &Path) -> Result<(BodyIndex, bool), StoreError> {
         let len = u32::from_le_bytes(len_bytes);
         let body_start = pos + 12;
         let Some(body_end) = body_start.checked_add(u64::from(len)) else {
-            return Ok((index, true));
+            return Ok((index, true, pos));
         };
         if body_end > file_len {
-            return Ok((index, true)); // declared body length runs past actual EOF
+            return Ok((index, true, pos)); // declared body length runs past actual EOF
         }
         index.insert(seq, (pos, len));
         f.seek(SeekFrom::Start(body_end)).map_err(io_err)?;

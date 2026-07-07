@@ -78,4 +78,7 @@ impl MessageStore for MemoryStore {
         *s = State::default();
         Ok(())
     }
+    async fn contains(&self, seq: u64) -> Result<bool, StoreError> {
+        Ok(lock(&self.state)?.messages.contains_key(&seq))
+    }
 }

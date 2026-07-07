@@ -99,6 +99,7 @@ fn opening_a_cached_file_store_with_a_small_bound_does_not_read_every_body_to_wa
         truefix_store::FileStoreOptions {
             sync: false,
             max_cached_msgs: 10, // tiny bound -- only ~10 bodies' worth should ever be read
+            max_body_records: 0,
         },
     )
     .expect("open must succeed against the large history");

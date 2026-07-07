@@ -516,15 +516,21 @@ impl MessageStore for SqlStore {
         }
     }
     async fn reset(&self) -> Result<(), StoreError> {
+        // NEW-116 (audit 006): both statements now run in a single transaction, matching
+        // `save_and_advance_sender`'s existing GAP-39/FR-018 pattern -- previously a crash between
+        // the DELETE and the UPDATE left messages deleted but sequence numbers at their pre-reset
+        // values (a resend would then serve gap-fills for sequences the session state believed
+        // were still real messages).
         let sessions = &self.sessions_table;
         let messages = &self.messages_table;
         match &self.pool {
             Pool::Sqlite(pool) => {
+                let mut tx = pool.begin().await.map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "DELETE FROM {messages} WHERE session_id = ?"
                 )))
                 .bind(&self.session_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -532,16 +538,18 @@ impl MessageStore for SqlStore {
                 )))
                 .bind(now_unix())
                 .bind(&self.session_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(backend)?;
+                tx.commit().await.map_err(backend)?;
             }
             Pool::Postgres(pool) => {
+                let mut tx = pool.begin().await.map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "DELETE FROM {messages} WHERE session_id = $1"
                 )))
                 .bind(&self.session_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -549,16 +557,18 @@ impl MessageStore for SqlStore {
                 )))
                 .bind(now_unix())
                 .bind(&self.session_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(backend)?;
+                tx.commit().await.map_err(backend)?;
             }
             Pool::MySql(pool) => {
+                let mut tx = pool.begin().await.map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "DELETE FROM {messages} WHERE session_id = ?"
                 )))
                 .bind(&self.session_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(backend)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -566,9 +576,10 @@ impl MessageStore for SqlStore {
                 )))
                 .bind(now_unix())
                 .bind(&self.session_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(backend)?;
+                tx.commit().await.map_err(backend)?;
             }
         }
         Ok(())

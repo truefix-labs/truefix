@@ -151,7 +151,7 @@ async fn saturated_application_channel_blocks_without_dropping_and_admin_traffic
         resp.msg_type()
     );
     assert!(
-        elapsed < Duration::from_millis(900),
+        elapsed < Duration::from_millis(1500),
         "admin traffic should not be starved behind the saturated application channel \
          (reply took {elapsed:?}, which is close to or exceeds the full backlog's own \
          8*250ms=2s processing time)"

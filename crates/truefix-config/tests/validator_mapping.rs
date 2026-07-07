@@ -104,10 +104,11 @@ fn an_unresolvable_dictionary_value_is_a_typed_error() {
 fn default_validation_options_match_the_five_documented_defaults() {
     let rs = resolved(&base("UseDataDictionary=Y\nDataDictionary=FIX.4.4\n"));
     let (_, opts) = rs.validator.expect("validator wired");
-    assert!(!opts.validate_fields_out_of_order);
+    // NEW-104/NEW-111 (audit 006): both defaults changed to match QFJ parity.
+    assert!(opts.validate_fields_out_of_order);
     assert!(opts.validate_checksum);
     assert!(opts.validate_incoming_message);
-    assert!(opts.allow_pos_dup);
+    assert!(!opts.allow_pos_dup);
     assert!(!opts.requires_orig_sending_time);
 }
 
