@@ -61,3 +61,39 @@ fn error_messages_name_the_offending_path() {
             .contains("truefix-does-not-exist-67890.fixdict")
     );
 }
+
+/// T027 (US3, feature 011, FR-011/FR-014): a vendor-published dictionary XML file loads directly
+/// via `load_from_file` — content-sniffed and converted automatically, no separate format flag —
+/// when `dict-tooling` is enabled.
+#[cfg(feature = "dict-tooling")]
+#[test]
+fn vendor_xml_file_loads_directly_when_dict_tooling_is_enabled() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/vendor_dict_sample.xml");
+    let dict = load_from_file(&path).unwrap();
+    assert_eq!(dict.version(), "FIX.4.4");
+    assert!(dict.message("D").is_some());
+    assert!(dict.message("XCN").is_some());
+}
+
+/// A malformed vendor XML file loads with a typed `DictLoadError::VendorXml`, never a silent
+/// partial dictionary (FR-016/SC-005), when `dict-tooling` is enabled.
+#[cfg(feature = "dict-tooling")]
+#[test]
+fn malformed_vendor_xml_file_is_a_typed_vendor_xml_error() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/vendor_dict_malformed/missing_version.xml");
+    let err = load_from_file(&path).unwrap_err();
+    assert!(matches!(err, DictLoadError::VendorXml { .. }));
+}
+
+/// Without `dict-tooling`, the same vendor-XML-shaped file falls through to the ordinary
+/// `.fixdict`-syntax `Parse` error — never a silent partial load either way (FR-016).
+#[cfg(not(feature = "dict-tooling"))]
+#[test]
+fn vendor_xml_file_is_a_typed_parse_error_without_dict_tooling() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/vendor_dict_sample.xml");
+    let err = load_from_file(&path).unwrap_err();
+    assert!(matches!(err, DictLoadError::Parse { .. }));
+}

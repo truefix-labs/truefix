@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fix type="FIX" major="4" minor="4" servicepack="0">
+  <header>
+    <field name="BeginString" required="Y"/>
+    <field name="BodyLength" required="Y"/>
+    <field name="MsgType" required="Y"/>
+    <field name="SenderCompID" required="Y"/>
+    <field name="TargetCompID" required="Y"/>
+    <field name="MsgSeqNum" required="Y"/>
+    <field name="SendingTime" required="Y"/>
+  </header>
+  <trailer>
+    <field name="CheckSum" required="Y"/>
+  </trailer>
+  <messages>
+    <message name="NewOrderSingle" msgtype="D" msgcat="app">
+      <field name="ClOrdID" required="Y"/>
+      <component name="Instrument" required="Y"/>
+      <field name="Side" required="Y"/>
+      <field name="OrderQty" required="Y"/>
+      <field name="OrdType" required="Y"/>
+      <field name="Price" required="N"/>
+      <group name="NoPartyIDs" required="N">
+        <field name="PartyID" required="Y"/>
+        <field name="PartyIDSource" required="N"/>
+        <field name="PartyRole" required="N"/>
+      </group>
+    </message>
+    <message name="TestCustomConfirmation" msgtype="XCN" msgcat="app">
+      <field name="ClOrdID" required="Y"/>
+      <field name="ExecID" required="Y"/>
+      <group name="NoMiscFees" required="N">
+        <field name="MiscFeeAmt" required="Y"/>
+        <field name="MiscFeeCurr" required="N"/>
+        <group name="NoNestedFeeDetails" required="N">
+          <field name="NestedFeeType" required="Y"/>
+        </group>
+      </group>
+    </message>
+  </messages>
+  <components>
+    <component name="Instrument">
+      <field name="Symbol" required="Y"/>
+      <field name="SecurityID" required="N"/>
+    </component>
+  </components>
+  <fields>
+    <field number="1" name="Account" type="STRING"/>
+    <field number="8" name="BeginString" type="STRING"/>
+    <field number="9" name="BodyLength" type="LENGTH"/>
+    <field number="10" name="CheckSum" type="STRING"/>
+    <field number="11" name="ClOrdID" type="STRING"/>
+    <field number="17" name="ExecID" type="STRING"/>
+    <field number="34" name="MsgSeqNum" type="SEQNUM"/>
+    <field number="35" name="MsgType" type="STRING"/>
+    <field number="38" name="OrderQty" type="QTY"/>
+    <field number="40" name="OrdType" type="CHAR">
+      <value enum="1" description="MARKET"/>
+      <value enum="2" description="LIMIT"/>
+    </field>
+    <field number="44" name="Price" type="PRICE"/>
+    <field number="48" name="SecurityID" type="STRING"/>
+    <field number="49" name="SenderCompID" type="STRING"/>
+    <field number="52" name="SendingTime" type="UTCTIMESTAMP"/>
+    <field number="54" name="Side" type="CHAR">
+      <value enum="1" description="BUY"/>
+      <value enum="2" description="SELL"/>
+    </field>
+    <field number="55" name="Symbol" type="STRING"/>
+    <field number="56" name="TargetCompID" type="STRING"/>
+    <field number="136" name="NoMiscFees" type="NUMINGROUP"/>
+    <field number="137" name="MiscFeeAmt" type="AMT"/>
+    <field number="138" name="MiscFeeCurr" type="CURRENCY"/>
+    <field number="447" name="PartyIDSource" type="CHAR"/>
+    <field number="448" name="PartyID" type="STRING"/>
+    <field number="452" name="PartyRole" type="INT"/>
+    <field number="453" name="NoPartyIDs" type="NUMINGROUP"/>
+    <field number="9001" name="NoNestedFeeDetails" type="NUMINGROUP"/>
+    <field number="9002" name="NestedFeeType" type="STRING"/>
+  </fields>
+</fix>

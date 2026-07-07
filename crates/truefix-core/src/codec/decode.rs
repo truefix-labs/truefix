@@ -107,6 +107,57 @@ pub fn decode_with_groups(input: &[u8], spec: &dyn GroupSpec) -> Result<Message,
     Ok(msg)
 }
 
+/// Re-group an already-decoded, flat [`FieldMap`] against `spec` — the in-memory counterpart to
+/// [`decode_with_groups`]'s wire-level grouping (feature 011, FR-008). Needed because a FIXT 1.1
+/// application dictionary is only resolvable *after* this crate's decode step already ran (its
+/// selection depends on session state — the negotiated `ApplVerID` — that this crate has no
+/// visibility into; see `truefix-session`'s post-decode restructuring call site): `map` is first
+/// flattened back to a plain token stream (recursively, so a `Member::Group` entry from some
+/// *other* already-applied `spec` is flattened too, not left half-structured) and then re-grouped
+/// via [`decode_section_with_groups`] — the exact same boundary-detection algorithm
+/// `decode_with_groups` itself uses, so the two paths can never diverge (Constitution Principle
+/// IV). A tag `spec` doesn't recognize as a group ends up a plain field, exactly like
+/// `decode_with_groups`. Calling this on an already-correctly-structured map (relative to `spec`)
+/// is a safe, idempotent no-op (flattening then immediately re-grouping the same content the same
+/// way).
+pub fn restructure_groups(map: &mut FieldMap, spec: &dyn GroupSpec) -> Result<(), DecodeError> {
+    let mut tokens: Vec<Token> = Vec::new();
+    flatten_to_tokens(map, &mut tokens);
+    let mut rebuilt = FieldMap::new();
+    decode_section_with_groups(&tokens, spec, &mut rebuilt)?;
+    *map = rebuilt;
+    Ok(())
+}
+
+/// Recursively flatten `map`'s members back into wire-order tokens — the inverse of
+/// [`decode_section_with_groups`]/`build_group`, used by [`restructure_groups`] to get a uniform
+/// starting point regardless of whether `map` is currently fully flat or already partially
+/// structured by some other [`GroupSpec`].
+fn flatten_to_tokens(map: &FieldMap, out: &mut Vec<Token>) {
+    for member in map.members() {
+        match member {
+            crate::field_map::MemberRef::Field(f) => {
+                out.push((f.tag(), f.value_bytes().to_vec(), 0));
+            }
+            crate::field_map::MemberRef::Group {
+                count_tag,
+                entries,
+                declared_count,
+            } => {
+                // Mirrors `encode.rs`'s `group_count_to_emit`: the wire-declared count when one
+                // was recorded (even if it didn't match `entries.len()`), else the real entry
+                // count.
+                let count =
+                    declared_count.map_or_else(|| entries.len().to_string(), |n| n.to_string());
+                out.push((count_tag, count.into_bytes(), 0));
+                for entry in entries {
+                    flatten_to_tokens(entry, out);
+                }
+            }
+        }
+    }
+}
+
 /// Decode one wire section's (header/body/trailer) tokens into `out`, consuming a delimiter-led
 /// repeating group wherever `spec.group_of` matches a token's tag (nested groups recurse via
 /// `build_group`); every other token becomes a plain field.

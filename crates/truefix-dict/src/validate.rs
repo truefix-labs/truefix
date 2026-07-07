@@ -1,6 +1,6 @@
 //! Runtime message validation against a [`DataDictionary`].
 
-use truefix_core::{Field, FieldMap, GroupSpec, Message};
+use truefix_core::{Field, FieldMap, GroupSpec, MemberRef, Message};
 
 use crate::model::{
     DataDictionary, GroupDef, RejectReason, ValidationError, ValidationOptions, VersionMeta,
@@ -16,6 +16,31 @@ impl GroupSpec for DataDictionary {
 
 /// The first user-defined-field tag (UDFs occupy 5000–9999 in FIX).
 const UDF_START: u32 = 5000;
+
+/// Find the first `Member::Group` in `map` whose count tag is `count_tag`, returning its entries,
+/// declared wire count, and the member immediately following it in `map`'s own member sequence, if
+/// any (feature 011) — the structured-group counterpart to `FieldMap::group()`, which discards
+/// both `declared_count` and sibling position. The trailing sibling is what lets
+/// `validate_structured_group` tell a genuine short count apart from a missing-delimiter entry
+/// (see its doc).
+fn find_structured_group_with_next(
+    map: &FieldMap,
+    count_tag: u32,
+) -> Option<(&[FieldMap], Option<i64>, Option<MemberRef<'_>>)> {
+    let mut members = map.members().peekable();
+    while let Some(m) = members.next() {
+        if let MemberRef::Group {
+            count_tag: ct,
+            entries,
+            declared_count,
+        } = m
+            && ct == count_tag
+        {
+            return Some((entries, declared_count, members.peek().copied()));
+        }
+    }
+    None
+}
 
 impl DataDictionary {
     /// BUG-62/FR-035 (feature 007): whether this dictionary's version is FIX.4.0/4.1 — QFJ skips
@@ -274,33 +299,44 @@ impl DataDictionary {
         Ok(())
     }
 
-    /// Validate repeating-group structure in the (flat, wire-ordered) message body: the NoXxx count
-    /// must match the number of delimiter-led entries, each entry must begin with its delimiter
+    /// Validate repeating-group structure in the message body: the NoXxx count must match the
+    /// number of delimiter-led entries, each entry must begin with its delimiter
     /// (FirstFieldInGroupIsDelimiter), and members must be in order (ValidateUnorderedGroupFields).
     /// Nested groups are validated recursively (FR-004/FR-005).
+    ///
+    /// Two independent representations of a group both reach this method and are both checked
+    /// (feature 011: confirmed by running the existing flat-message-fixture test suite — see
+    /// `group_validation.rs`/`header_group_validation.rs` — after attempting to remove the flat
+    /// path below; several tests regressed, proving it is *not* dead code):
+    /// - **Structured** (`Member::Group`, produced by `decode_with_groups`/`restructure_groups`
+    ///   whenever a production receive path has a dictionary attached — now the body case too, not
+    ///   just header/trailer, since feature 011 FR-003): validated via `validate_structured_group`.
+    /// - **Flat** (`Member::Field`, produced by a plain `decode()` with no `GroupSpec`, or by a
+    ///   caller building a `Message` directly via `FieldMap::add_field` without ever going through
+    ///   `add_group`/`decode_with_groups` — `DataDictionary::validate` is a general-purpose public
+    ///   API, not exclusively fed by the structured production receive path): validated via
+    ///   `validate_group`'s position-scanning walk, which only ever sees content
+    ///   `FieldMap::fields()` still exposes — i.e. exactly the tags the structured loop above
+    ///   didn't already consume as a `Member::Group`, so the two paths never double-process the
+    ///   same group occurrence.
     fn validate_groups(
         &self,
         message: &Message,
         opts: &ValidationOptions,
     ) -> Result<(), ValidationError> {
-        // BUG-55/FR-034 (feature 007): first, structurally validate any body-level group this
-        // message already carries as `Member::Group` — reachable when `decode_with_groups` was
-        // called with a `GroupSpec` covering body groups too (the production transport path scopes
-        // it to header/trailer groups only via `HeaderTrailerGroupsOnly`, but `decode_with_groups`
-        // and `DataDictionary`'s own unrestricted `GroupSpec` impl are both public APIs a caller
-        // can combine directly). `FieldMap::fields()` (the flat walk below) skips `Member::Group`
-        // entirely, so without this, such a message's group entries would never be validated at
-        // all — not even a structural/count check, let alone type/enum or required-field checks.
         // NEW-19 (feature 009): the standard header can itself declare a repeating group (e.g.
         // NoHops(627) — `header ... 627` / `group 627 NoHops ...` in every bundled dictionary) --
-        // previously only `message.body` was scanned here, so a header-level group's structure
-        // (count/delimiter/order) was never checked at all, unlike the identical body-level case.
+        // checked here identically to the body case.
         for &count_tag in self.groups.keys() {
-            if let Some(entries) = message.header.group(count_tag) {
-                self.validate_structured_group(entries, count_tag, opts)?;
+            if let Some((entries, declared_count, next)) =
+                find_structured_group_with_next(&message.header, count_tag)
+            {
+                self.validate_structured_group(entries, declared_count, next, count_tag, opts)?;
             }
-            if let Some(entries) = message.body.group(count_tag) {
-                self.validate_structured_group(entries, count_tag, opts)?;
+            if let Some((entries, declared_count, next)) =
+                find_structured_group_with_next(&message.body, count_tag)
+            {
+                self.validate_structured_group(entries, declared_count, next, count_tag, opts)?;
             }
         }
 
@@ -339,30 +375,113 @@ impl DataDictionary {
         }
     }
 
-    /// BUG-55/FR-034 (feature 007): structural counterpart to [`Self::validate_group`] for a body
-    /// group that's already `Member::Group`-structured (see [`Self::validate_groups`]'s doc for
-    /// when this is reachable). Each entry's own fields are type/enum-checked and its required
-    /// fields (`gdef.required`, BUG-54) are confirmed present; nested groups recurse via the
-    /// entry's own [`FieldMap::group`].
+    /// BUG-55/FR-034 (feature 007); count/order checks added feature 011 (see research.md R4's
+    /// "known pre-existing gap" note — until this fix, a structured group's declared wire count
+    /// and member order were never checked at all here, only by the flat `validate_group` path;
+    /// this surfaced as 3 real AT-scenario regressions once feature 011 made body-level
+    /// structuring routine, proving the gap live rather than theoretical): structural counterpart
+    /// to [`Self::validate_group`] for a group that's already `Member::Group`-structured (see
+    /// [`Self::validate_groups`]'s doc for when this is reachable). Checks, per entry: the
+    /// declared wire count (`Group::declared_count`, via `MemberRef`) against the actual entry
+    /// count (`IncorrectNumInGroupCount`); each member's position, walked in the entry's own
+    /// actual field order, against `gdef.members`' declared order
+    /// (`RepeatingGroupFieldsOutOfOrder`, gated on `validate_unordered_group_fields` — this also
+    /// catches an entry not starting with its delimiter, since the delimiter is always index 0);
+    /// each field's type/enum validity; and required-field presence (`gdef.required`, BUG-54).
+    /// Nested groups recurse via the entry's own [`FieldMap::members`].
     fn validate_structured_group(
         &self,
         entries: &[FieldMap],
+        declared_count: Option<i64>,
+        next_sibling: Option<MemberRef<'_>>,
         count_tag: u32,
         opts: &ValidationOptions,
     ) -> Result<(), ValidationError> {
         let Some(gdef) = self.groups.get(&count_tag) else {
             return Ok(());
         };
+        if let Some(declared) = declared_count
+            && declared != entries.len() as i64
+        {
+            // QFJ934: when there are fewer entries than declared, `decode_with_groups`/
+            // `restructure_groups` (`build_group`) most likely stopped collecting entries because
+            // the position where the next entry should have started held a member field instead
+            // of the delimiter — the wire-level "entry doesn't begin with its delimiter" violation
+            // — rather than the wire genuinely just declaring the wrong count. `build_group`
+            // itself discards *why* it stopped short, but the symptom survives one level up: the
+            // member that would have continued this group ends up as this group's very next
+            // sibling in the parent's own member sequence instead. Recognizing that reconstructs
+            // QFJ's `FirstFieldInGroupIsDelimiter` signal (reason 15) instead of a generic count
+            // mismatch (reason 16), matching the flat path's behavior for the identical input.
+            if (declared as usize) > entries.len()
+                && let Some(next) = next_sibling
+            {
+                let next_tag = match next {
+                    MemberRef::Field(f) => f.tag(),
+                    MemberRef::Group { count_tag: ct, .. } => ct,
+                };
+                if opts.first_field_in_group_is_delimiter && gdef.members.contains(&next_tag) {
+                    return Err(ValidationError::session(
+                        RejectReason::RepeatingGroupFieldsOutOfOrder,
+                        Some(gdef.delimiter),
+                        "group entry does not begin with its delimiter",
+                    ));
+                }
+            }
+            return Err(ValidationError::session(
+                RejectReason::IncorrectNumInGroupCount,
+                Some(count_tag),
+                "NoXxx count does not match the number of group entries",
+            ));
+        }
         for entry in entries {
-            for &tag in &gdef.members {
-                if self.groups.contains_key(&tag) {
-                    if let Some(nested_entries) = entry.group(tag) {
-                        self.validate_structured_group(nested_entries, tag, opts)?;
+            let mut last_idx = 0usize;
+            let mut members = entry.members().peekable();
+            while let Some(member) = members.next() {
+                let tag = match member {
+                    MemberRef::Field(f) => f.tag(),
+                    MemberRef::Group { count_tag: ct, .. } => ct,
+                };
+                let Some(idx) = gdef.members.iter().position(|&m| m == tag) else {
+                    continue; // not declared as a member of this group (defensive; e.g. a UDF)
+                };
+                if opts.validate_unordered_group_fields && idx < last_idx {
+                    return Err(ValidationError::session(
+                        RejectReason::RepeatingGroupFieldsOutOfOrder,
+                        Some(tag),
+                        "repeating-group fields out of order",
+                    ));
+                }
+                last_idx = idx;
+                match member {
+                    MemberRef::Group {
+                        count_tag: ct,
+                        entries: nested_entries,
+                        declared_count: nested_declared,
+                    } => {
+                        // If this nested group is the last member of its enclosing entry, the
+                        // true next wire-order token (needed to detect QFJ934-style deeply-nested
+                        // delimiter violations) escaped this entry entirely and instead follows
+                        // wherever the *enclosing* group itself ends — i.e. this call's own
+                        // `next_sibling` — since `build_group` unwinds every enclosing scope in
+                        // one pass once a token fails a scope's membership check. Falling back to
+                        // it is always safe even when not exactly precise (e.g. more entries
+                        // remain in the enclosing group): the check below only ever matches a tag
+                        // that's a genuine member of *this* nested group's own definition.
+                        self.validate_structured_group(
+                            nested_entries,
+                            nested_declared,
+                            members.peek().copied().or(next_sibling),
+                            ct,
+                            opts,
+                        )?;
                     }
-                } else if (opts.check_field_types || opts.validate_fields_have_values)
-                    && let Some(field) = entry.get(tag)
-                {
-                    self.check_group_field_value(gdef, field, opts)?;
+                    MemberRef::Field(field)
+                        if opts.check_field_types || opts.validate_fields_have_values =>
+                    {
+                        self.check_group_field_value(gdef, field, opts)?;
+                    }
+                    MemberRef::Field(_) => {}
                 }
             }
             if opts.check_required_fields {
@@ -583,8 +702,20 @@ fn parse_version_suffix(suffix: &mut &str, marker: &str) -> Option<Option<u8>> {
     Some(Some(value))
 }
 
+/// Whether `tag` is present at the top level of `message`'s header, body, or trailer — a plain
+/// field lookup, except when `tag` is itself a group's count tag, in which case presence means
+/// that group is `Member::Group`-structured in this section (feature 011: `FieldMap::get()`/
+/// `contains()` only match `Member::Field`, so without this, a dictionary-required group's own
+/// count tag would be invisible to `validate()`'s `mdef.required`/header/trailer-required checks
+/// once that group is structured, even though the group is genuinely present).
 fn present(message: &Message, tag: u32) -> bool {
-    message.header.get(tag).is_some()
-        || message.body.get(tag).is_some()
-        || message.trailer.get(tag).is_some()
+    fn present_in(map: &FieldMap, tag: u32) -> bool {
+        map.members().any(|m| match m {
+            MemberRef::Field(f) => f.tag() == tag,
+            MemberRef::Group { count_tag, .. } => count_tag == tag,
+        })
+    }
+    present_in(&message.header, tag)
+        || present_in(&message.body, tag)
+        || present_in(&message.trailer, tag)
 }

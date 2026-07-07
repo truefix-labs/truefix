@@ -56,3 +56,32 @@ fn group_entries_are_typed_and_nestable() {
     assert_eq!(entries[0].party_role(), Some(1));
     assert!(entries[0].no_party_sub_ids().is_empty());
 }
+
+/// T009 (US1, feature 011, FR-007): the real defect the external proposal identified — a
+/// codegen-generated body-group accessor reading a message that was *decoded* (not built via the
+/// typed API) with more than one entry must return every entry, not silently empty (the bug
+/// `truefix_dict::FieldMap::group()` had before body groups were structured on receive).
+#[test]
+fn a_decoded_multi_entry_body_group_is_fully_visible_through_the_generated_accessor() {
+    let dict = truefix_dict::load_fix44().expect("FIX44 dictionary");
+    let body = b"35=D\x0134=1\x0149=A\x0156=B\x0152=20240101-00:00:00\x0111=O1\x0154=1\x0160=20240101-00:00:00\x0140=2\x01453=2\x01448=P1\x01447=D\x01452=1\x01448=P2\x01447=D\x01452=3\x01";
+    let mut msg = Vec::new();
+    msg.extend_from_slice(b"8=FIX.4.4\x01");
+    msg.extend_from_slice(format!("9={}\x01", body.len()).as_bytes());
+    msg.extend_from_slice(body);
+    let sum: u32 = msg.iter().map(|&b| u32::from(b)).sum::<u32>() & 0xFF;
+    msg.extend_from_slice(format!("10={sum:03}\x01").as_bytes());
+
+    let decoded = truefix_core::decode_with_groups(&msg, &dict).expect("decode_with_groups");
+    let order = NewOrderSingle(decoded);
+
+    let entries = order.no_party_ids();
+    assert_eq!(
+        entries.len(),
+        2,
+        "both decoded PartyID entries must be visible through the generated accessor, not just \
+         the first (or none)"
+    );
+    assert_eq!(entries[0].party_id(), Some("P1"));
+    assert_eq!(entries[1].party_id(), Some("P2"));
+}

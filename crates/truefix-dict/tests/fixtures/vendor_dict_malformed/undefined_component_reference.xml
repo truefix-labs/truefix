@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fix type="FIX" major="4" minor="4">
+  <header>
+    <field name="BeginString" required="Y"/>
+  </header>
+  <trailer>
+    <field name="CheckSum" required="Y"/>
+  </trailer>
+  <messages>
+    <message name="NewOrderSingle" msgtype="D" msgcat="app">
+      <field name="ClOrdID" required="Y"/>
+      <component name="Instrument" required="Y"/>
+    </message>
+  </messages>
+  <components/>
+  <fields>
+    <field number="8" name="BeginString" type="STRING"/>
+    <field number="10" name="CheckSum" type="STRING"/>
+    <field number="11" name="ClOrdID" type="STRING"/>
+  </fields>
+</fix>

@@ -30,12 +30,12 @@ pub mod group;
 pub mod message;
 pub mod tags;
 
-pub use codec::{decode, decode_with_groups, encode, encode_with_order};
+pub use codec::{decode, decode_with_groups, encode, encode_with_order, restructure_groups};
 pub use cracker::MessageCracker;
 pub use error::{BusinessReject, DecodeError, DoNotSend, FieldError, Reject};
 pub use factory::MessageFactory;
 pub use field::Field;
-pub use field_map::FieldMap;
+pub use field_map::{FieldMap, MemberRef};
 pub use framing::{MAX_BODY_LEN, frame_length};
 pub use group::{Group, GroupSpec};
 pub use message::Message;

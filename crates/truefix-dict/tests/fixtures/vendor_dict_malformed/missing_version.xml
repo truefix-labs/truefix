@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fix type="FIX">
+  <header>
+    <field name="BeginString" required="Y"/>
+  </header>
+  <trailer>
+    <field name="CheckSum" required="Y"/>
+  </trailer>
+  <messages>
+    <message name="Heartbeat" msgtype="0" msgcat="admin">
+      <field name="TestReqID" required="N"/>
+    </message>
+  </messages>
+  <components/>
+  <fields>
+    <field number="8" name="BeginString" type="STRING"/>
+    <field number="10" name="CheckSum" type="STRING"/>
+    <field number="112" name="TestReqID" type="STRING"/>
+  </fields>
+</fix>
