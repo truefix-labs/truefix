@@ -6,9 +6,10 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
 ![Status](https://img.shields.io/badge/status-implemented-brightgreen.svg)
-![Rust](https://img.shields.io/badge/rust-edition%202021-informational.svg)
+![Rust](https://img.shields.io/badge/rust-edition%202024-informational.svg)
 
-**Status**: QuickFIX/J parity is implemented across three specs:
+**Status**: QuickFIX/J parity is implemented, followed by four independent post-parity audit
+remediation passes, across nine specs:
 [`specs/001-fix-engine-parity/`](specs/001-fix-engine-parity/) (foundation: codec, session state
 machine, recovery/resend, data dictionary, storage/logging, multi/dynamic sessions, all FIX
 versions + codegen, TLS/auth/monitoring, the AT suite),
@@ -35,7 +36,27 @@ local bind + connect timeout, store creation-time + atomic save, structured log 
 identity columns, and full dictionary/codec model completeness — 11 new field types, open enums,
 per-group child dictionaries, repeating-group CRUD, header/trailer groups, custom field order,
 dictionary version metadata, value labels, and QuickFIX/J-scale bundled dictionary content across
-all 9 FIX versions — the full 373/373-scenario AT suite).
+all 9 FIX versions — the full 373/373-scenario AT suite),
+[`specs/006-audit-remediation/`](specs/006-audit-remediation/) (a five-independent-review audit
+plus a supplementary Chinese-language pass: session anti-replay/desync fixes, SubID/LocationID/
+Qualifier routing correctness, silent store-failure/spurious-reset fixes, orphaned-task cleanup,
+JDBC-grammar and FileStore-atomicity fixes, and a dormant-dictionary-feature/stale-provenance
+sweep — 405/405-scenario AT suite),
+[`specs/007-second-audit-remediation/`](specs/007-second-audit-remediation/) (a second-pass audit
+of defects not already covered by 006: data-loss, protocol-breaking-handshake, resource-leak, and
+DoS-adjacent fixes; a QuickFIX/J/Go-parity split two-file sequence-number store layout with
+transparent single-file auto-migration; and trading-hours schedule awareness — 424/424-scenario AT
+suite),
+[`specs/009-audit-005-remediation/`](specs/009-audit-005-remediation/) (a four-pass cross-referenced
+audit: a Mongo sequence-persistence total-failure fix, an unauthenticated multi-session-acceptor
+pre-Logon DoS close, `BeginSeqNo=0`/acceptor-`ResetOnLogon`/gap-fill-verification-bypass fixes,
+FIXT 1.1 header/decode gaps, a native-cert-backed TLS default trust store, and dictionary-tooling/
+AT-harness-coverage hardening — 444/444-scenario AT suite), and
+[`specs/010-audit-006-remediation/`](specs/010-audit-006-remediation/) (session lifecycle/
+`SequenceReset`/`PossResend`/cancel-on-disconnect fixes, per-dynamic-identity acceptor persistence,
+config-default/store/transport/log operational parity with QuickFIX/J, and core codec/dictionary
+strictness plus file log/store growth bounds and duplicate-sequence detection — 483/483-scenario AT
+suite).
 
 ## Why TrueFix
 
@@ -48,7 +69,7 @@ to be the first Rust FIX engine that is:
 - **Acceptor-first** — the sell-side/acceptor is a first-class citizen, on equal footing with the
   initiator (multi-session, dynamic sessions).
 - **Conformance-gated** — protocol correctness is verified by a ported FIX **Acceptance Test (AT)** suite
-  (373/373 scenario runs across all 9 targeted FIX versions), which is the hard release gate.
+  (483/483 scenario runs across all 9 targeted FIX versions), which is the hard release gate.
 
 ## Quick start
 
@@ -260,13 +281,43 @@ G1 Correctness bugs (# truncation, Signature/93) ─▶ G2 .cfg keys that misrep
    (release gate: 373/373-scenario AT suite — grew from 353, a deliberate disclosed floor bump)
 ```
 
+### Post-parity audit remediation
+
+001-005 closed out QuickFIX/J feature parity; every feature since has been an independent
+source-vs-QuickFIX/J/Go audit pass (own `docs/todo/00N.md` finding inventory, own
+`/speckit-clarify` scope decisions, own release-gated AT-suite regression floor) rather than a new
+staged roadmap, so these are listed by finding-inventory source instead of a stage diagram:
+
+- **006** (see [`plan.md`](specs/006-audit-remediation/plan.md)): `docs/todo/003.md` — 5
+  independent deep-dive reviews plus a supplementary Chinese-language pass (`B1`-`B30`); session
+  anti-replay/desync, SubID/LocationID/Qualifier routing, silent store failures, orphaned-task
+  leaks, JDBC grammar, and FileStore atomicity (release gate: 405/405-scenario AT suite).
+- **007** (see [`plan.md`](specs/007-second-audit-remediation/plan.md)): `docs/todo/004.md` —
+  defects not already closed by 006; data loss, protocol-breaking handshakes, resource leaks, a
+  DoS-adjacent malformed-input acceptance, a QuickFIX/J/Go-parity split sequence-number store with
+  transparent auto-migration, and trading-hours schedule awareness (release gate: 424/424-scenario
+  AT suite).
+- **009** (see [`plan.md`](specs/009-audit-005-remediation/plan.md)): `docs/todo/005.md` — a
+  four-pass cross-referenced audit of all 9 crates; a Mongo sequence-persistence total failure, an
+  unauthenticated multi-session-acceptor pre-Logon DoS, `BeginSeqNo=0`/`ResetOnLogon`/gap-fill
+  verification-bypass fixes, FIXT 1.1 header/decode gaps, a native-cert-backed TLS default trust
+  store, and dictionary-tooling/AT-harness-coverage hardening (release gate: 444/444-scenario AT
+  suite).
+- **010** (see [`plan.md`](specs/010-audit-006-remediation/plan.md)): `docs/todo/006.md` — session
+  lifecycle/`SequenceReset`/`PossResend`/cancel-on-disconnect fixes, per-dynamic-identity acceptor
+  persistence, config-default/store/transport/log operational parity with QuickFIX/J, and core
+  codec/dictionary strictness plus file log/store growth bounds and duplicate-sequence detection
+  (release gate: 483/483-scenario AT suite).
+
+(There is no `specs/008-*`: that slot was not used.)
+
 ## Testing & conformance
 
 - Table-driven unit tests for the codec and session state machine.
 - Two-process integration tests (real initiator ↔ acceptor) for handshake, heartbeat, resend, TLS/mTLS,
   failover, restart-survivable persistence, and metrics export.
 - The **AT suite** (`truefix-at`) ports QuickFIX/QuickFIX-J acceptance scenarios as black-box behavior
-  contracts — **373/373 scenario runs** across all 9 targeted FIX versions (fix40/41/42/43/44/50/50SP1/
+  contracts — **483/483 scenario runs** across all 9 targeted FIX versions (fix40/41/42/43/44/50/50SP1/
   50SP2/fixLatest), plus 3 independently-gated special-category suites (`validateChecksum`,
   `timestamps`, `resynch`) and a CI-enforced coverage-regression floor — and is the hard release gate
   (`cargo test -p truefix-at --test conformance`).
@@ -298,7 +349,7 @@ cargo bench -p truefix-session                                # session round-tr
 cargo deny check        # license/advisory gate (requires cargo-deny)
 ```
 
-- **Edition**: 2021. **MSRV**: Rust **1.96** (declared in `workspace.package.rust-version`; build toolchain
+- **Edition**: 2024. **MSRV**: Rust **1.96** (declared in `workspace.package.rust-version`; build toolchain
   pinned in `rust-toolchain.toml`). The MSRV floor is raised only deliberately and noted here when it
   changes.
 - `unsafe` code is forbidden workspace-wide (`unsafe_code = "forbid"`); `unwrap`/`expect`/`panic`/indexing
