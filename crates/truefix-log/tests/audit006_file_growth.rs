@@ -74,7 +74,10 @@ fn audit006_default_options_never_rotate() {
 
     assert!(!dir.join("messages.log.1").exists());
     let current_len = fs::metadata(dir.join("messages.log")).unwrap().len();
-    assert!(current_len > 200, "expected unbounded growth without a size limit");
+    assert!(
+        current_len > 200,
+        "expected unbounded growth without a size limit"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

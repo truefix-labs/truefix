@@ -45,7 +45,10 @@ async fn audit006_file_store_bounds_body_index_to_max_records() {
     };
     let store = FileStore::open_with_options(&dir, opts).unwrap();
     for seq in 1..=5u64 {
-        store.save(seq, format!("msg-{seq}").as_bytes()).await.unwrap();
+        store
+            .save(seq, format!("msg-{seq}").as_bytes())
+            .await
+            .unwrap();
     }
 
     // Only the 3 most-recently-appended records (3, 4, 5) remain indexed.
@@ -67,7 +70,10 @@ async fn audit006_file_store_unbounded_by_default() {
     let dir = temp_dir("filestore-unbounded");
     let store = FileStore::open(&dir).unwrap();
     for seq in 1..=5u64 {
-        store.save(seq, format!("msg-{seq}").as_bytes()).await.unwrap();
+        store
+            .save(seq, format!("msg-{seq}").as_bytes())
+            .await
+            .unwrap();
     }
     for seq in 1..=5u64 {
         assert!(store.contains(seq).await.unwrap());
@@ -84,7 +90,10 @@ async fn audit006_cached_file_store_contains_and_bounded_index_match_file_store(
     };
     let store = CachedFileStore::open_with_options(&dir, opts).unwrap();
     for seq in 1..=4u64 {
-        store.save(seq, format!("msg-{seq}").as_bytes()).await.unwrap();
+        store
+            .save(seq, format!("msg-{seq}").as_bytes())
+            .await
+            .unwrap();
     }
     assert!(!store.contains(1).await.unwrap());
     assert!(!store.contains(2).await.unwrap());

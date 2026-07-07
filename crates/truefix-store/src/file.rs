@@ -423,8 +423,11 @@ impl FileStore {
     pub fn open_with_options(dir: &Path, options: FileStoreOptions) -> Result<Self, StoreError> {
         fs::create_dir_all(dir).map_err(io_err)?;
         let seq = SeqFile::open(dir, options.sync)?;
-        let (body, corrupted) =
-            BodyLog::open_with_max_records(dir.join("body"), options.sync, options.max_body_records)?;
+        let (body, corrupted) = BodyLog::open_with_max_records(
+            dir.join("body"),
+            options.sync,
+            options.max_body_records,
+        )?;
         let creation_time_path = dir.join("session");
         let creation_time = creation_time_file(&creation_time_path)?;
         Ok(Self {
@@ -572,8 +575,11 @@ impl CachedFileStore {
     pub fn open_with_options(dir: &Path, options: FileStoreOptions) -> Result<Self, StoreError> {
         fs::create_dir_all(dir).map_err(io_err)?;
         let seq = SeqFile::open(dir, options.sync)?;
-        let (body, corrupted) =
-            BodyLog::open_with_max_records(dir.join("body"), options.sync, options.max_body_records)?;
+        let (body, corrupted) = BodyLog::open_with_max_records(
+            dir.join("body"),
+            options.sync,
+            options.max_body_records,
+        )?;
         let mut cache = CacheState::new(options.max_cached_msgs);
         // BUG-81/FR-031 (feature 007): warm the cache by reading only the (at most)
         // `max_cached_msgs` most-recent bodies, not every body ever stored -- previously

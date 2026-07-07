@@ -123,10 +123,17 @@ async fn audit006_multiple_messages_concatenated_in_one_write_all_decode_correct
     stream.write_all(&batch).await.unwrap();
 
     assert!(
-        wait_until(|| count.load(Ordering::SeqCst) >= 20, Duration::from_secs(5)).await,
+        wait_until(
+            || count.load(Ordering::SeqCst) >= 20,
+            Duration::from_secs(5)
+        )
+        .await,
         "expected all 20 batched messages to be processed, got {}",
         count.load(Ordering::SeqCst)
     );
     let got = received.lock().unwrap().clone();
-    assert_eq!(got, expected, "messages must decode in order with none corrupted/dropped");
+    assert_eq!(
+        got, expected,
+        "messages must decode in order with none corrupted/dropped"
+    );
 }

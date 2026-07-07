@@ -87,7 +87,7 @@ async fn audit006_reset_clears_both_seq_and_body_together() {
 
 #[tokio::test]
 async fn audit006_a_crash_between_body_truncate_and_seq_reset_looks_like_a_safe_gap_not_stale_data()
- {
+{
     // Simulates the exact crash window reset()'s NEW-136 fix targets: body already truncated
     // (this test does it directly, standing in for `BodyLog::reset()` having completed), but the
     // process is killed before `SeqFile::reset()` runs -- so the on-disk sequence files still hold

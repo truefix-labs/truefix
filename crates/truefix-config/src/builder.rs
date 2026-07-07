@@ -522,10 +522,17 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.reconnect_interval = reconnect_interval;
     cfg.reconnect_interval_steps = reconnect_interval_steps;
     cfg.resend_request_chunk_size = u32_key(map, "ResendRequestChunkSize", &session, 0)?;
-    cfg.enable_last_msg_seq_num_processed = bool_key(map, "EnableLastMsgSeqNumProcessed", &session, false)?;
-    cfg.enable_next_expected_msg_seq_num = bool_key(map, "EnableNextExpectedMsgSeqNum", &session, false)?;
+    cfg.enable_last_msg_seq_num_processed =
+        bool_key(map, "EnableLastMsgSeqNumProcessed", &session, false)?;
+    cfg.enable_next_expected_msg_seq_num =
+        bool_key(map, "EnableNextExpectedMsgSeqNum", &session, false)?;
     cfg.check_comp_id = bool_key(map, "CheckCompID", &session, cfg.check_comp_id)?;
-    cfg.reject_garbled_message = bool_key(map, "RejectGarbledMessage", &session, cfg.reject_garbled_message)?;
+    cfg.reject_garbled_message = bool_key(
+        map,
+        "RejectGarbledMessage",
+        &session,
+        cfg.reject_garbled_message,
+    )?;
     cfg.heartbeat_timeout_multiplier = f64_key(
         map,
         "HeartBeatTimeoutMultiplier",
@@ -541,18 +548,22 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     cfg.timestamp_precision =
         precision_key(map, "TimeStampPrecision", &session, cfg.timestamp_precision)?;
     cfg.schedule = resolve_schedule(map, &session)?;
-    cfg.send_redundant_resend_requests = bool_key(map, "SendRedundantResendRequests", &session, false)?;
+    cfg.send_redundant_resend_requests =
+        bool_key(map, "SendRedundantResendRequests", &session, false)?;
     cfg.reset_on_error = bool_key(map, "ResetOnError", &session, false)?;
     cfg.disconnect_on_error = bool_key(map, "DisconnectOnError", &session, false)?;
     cfg.disable_heart_beat_check = bool_key(map, "DisableHeartBeatCheck", &session, false)?;
     cfg.refresh_on_logon = bool_key(map, "RefreshOnLogon", &session, false)?;
-    cfg.force_resend_when_corrupted_store = bool_key(map, "ForceResendWhenCorruptedStore", &session, false)?;
-    cfg.continue_initialization_on_error = bool_key(map, "ContinueInitializationOnError", &session, false)?;
+    cfg.force_resend_when_corrupted_store =
+        bool_key(map, "ForceResendWhenCorruptedStore", &session, false)?;
+    cfg.continue_initialization_on_error =
+        bool_key(map, "ContinueInitializationOnError", &session, false)?;
     // 005/T027 (GAP-08/FR-009): the same `RequiresOrigSendingTime` key QuickFIX/J uses also gates
     // the session-layer anti-replay check (state.rs's low-seq+PossDup branch), in addition to the
     // pre-existing dictionary-level `ValidationOptions.requires_orig_sending_time` check below —
     // the two run at different layers (session state machine vs. `validate()`) but share one key.
-    cfg.requires_orig_sending_time_on_low_seq = bool_key(map, "RequiresOrigSendingTime", &session, false)?;
+    cfg.requires_orig_sending_time_on_low_seq =
+        bool_key(map, "RequiresOrigSendingTime", &session, false)?;
     cfg.logon_tags = resolve_logon_tags(map, &session)?;
     cfg.in_chan_capacity = usize_key(map, "InChanCapacity", &session, None)?;
     // GAP-47/FR-012/FR-013 (feature 005): full session-identity keys.
@@ -592,7 +603,8 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
         bool_key(map, "DynamicSession", &session, false)? || map.contains_key("AcceptorTemplate");
     let allowed_remote_addresses = resolve_allowed_remote_addresses(map, &session)?;
     // NEW-96 (feature 009): parse the key that was previously registered `Impl` but never read.
-    let log_message_when_session_not_found = bool_key(map, "LogMessageWhenSessionNotFound", &session, false)?;
+    let log_message_when_session_not_found =
+        bool_key(map, "LogMessageWhenSessionNotFound", &session, false)?;
 
     Ok(ResolvedSession {
         session: cfg,
@@ -687,10 +699,20 @@ fn resolve_validator(
         // read here -- an operator setting any of these to a non-default value saw no effect
         // despite the registry claiming full implementation.
         validate_fields_have_values: bool_key(map, "ValidateFieldsHaveValues", session, true)?,
-        validate_unordered_group_fields: bool_key(map, "ValidateUnorderedGroupFields", session, true)?,
+        validate_unordered_group_fields: bool_key(
+            map,
+            "ValidateUnorderedGroupFields",
+            session,
+            true,
+        )?,
         validate_user_defined_fields: bool_key(map, "ValidateUserDefinedFields", session, false)?,
         allow_unknown_msg_fields: bool_key(map, "AllowUnknownMsgFields", session, false)?,
-        first_field_in_group_is_delimiter: bool_key(map, "FirstFieldInGroupIsDelimiter", session, true)?,
+        first_field_in_group_is_delimiter: bool_key(
+            map,
+            "FirstFieldInGroupIsDelimiter",
+            session,
+            true,
+        )?,
         ..truefix_dict::ValidationOptions::default()
     };
     Ok(Some((dict, opts)))
@@ -1198,7 +1220,8 @@ fn resolve_store(map: &Map, session: &str) -> Result<StoreConfig, ConfigError> {
     // NEW-108 (audit 006): opt-in body-record retention bound; `None`/absent preserves the
     // previous unbounded behavior. See `FileStoreOptions::max_body_records`'s doc for the
     // resend/recovery trade-off this key accepts once set.
-    let max_body_records = usize_key(map, "FileStoreMaxBodyRecords", session, Some(0))?.unwrap_or(0);
+    let max_body_records =
+        usize_key(map, "FileStoreMaxBodyRecords", session, Some(0))?.unwrap_or(0);
     Ok(match map.get("FileStoreMaxCachedMsgs") {
         Some(_) => {
             let max_cached_msgs =

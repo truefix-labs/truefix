@@ -29,7 +29,9 @@ pub use truefix_session::{
     self as session, Action, Application, Event, Role, Session, SessionConfig, SessionId,
     SessionState,
 };
-pub use truefix_transport::{self as transport, Acceptor, Monitor, SessionHandle, connect_initiator};
+pub use truefix_transport::{
+    self as transport, Acceptor, Monitor, SessionHandle, connect_initiator,
+};
 
 pub use truefix_config as config;
 pub use truefix_dict as dict;

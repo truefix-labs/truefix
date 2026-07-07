@@ -2697,8 +2697,15 @@ where
         let tls = tls.clone();
         let server_name = server_name.clone();
         Box::pin(async move {
-            connect_initiator_tls(addr, connect_config, app, connect_services, tls, server_name)
-                .await
+            connect_initiator_tls(
+                addr,
+                connect_config,
+                app,
+                connect_services,
+                tls,
+                server_name,
+            )
+            .await
         }) as ScheduledConnectFut
     })
 }

@@ -64,7 +64,8 @@ async fn audit006_acceptor_serves_several_sequential_connections() {
 
     for i in 0..3 {
         let flag = Arc::new(AtomicBool::new(false));
-        let mut init = SessionConfig::new("FIX.4.4", format!("CLIENT{i}"), "SERVER", Role::Initiator);
+        let mut init =
+            SessionConfig::new("FIX.4.4", format!("CLIENT{i}"), "SERVER", Role::Initiator);
         init.check_latency = false;
         let handle = connect_initiator_with(
             addr,
