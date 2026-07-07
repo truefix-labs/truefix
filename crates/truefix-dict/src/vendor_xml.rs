@@ -434,6 +434,11 @@ fn render(parser: Parser) -> Result<String, VendorXmlError> {
         .iter()
         .map(|(name, _)| name.clone())
         .collect();
+    let components_by_name: BTreeMap<&str, &Vec<MemberEntry>> = parser
+        .raw_components
+        .iter()
+        .map(|(name, members)| (name.as_str(), members))
+        .collect();
 
     let mut out = String::new();
     out.push_str(
@@ -488,6 +493,7 @@ fn render(parser: Parser) -> Result<String, VendorXmlError> {
             members,
             &field_by_name,
             &component_names,
+            &components_by_name,
             &mut groups_out,
             &mut emitted_groups,
         )?;
@@ -516,6 +522,7 @@ fn render(parser: Parser) -> Result<String, VendorXmlError> {
             &req_entries,
             &field_by_name,
             &component_names,
+            &components_by_name,
             &mut groups_out,
             &mut emitted_groups,
         )?;
@@ -523,6 +530,7 @@ fn render(parser: Parser) -> Result<String, VendorXmlError> {
             &opt_entries,
             &field_by_name,
             &component_names,
+            &components_by_name,
             &mut groups_out,
             &mut emitted_groups,
         )?;
@@ -603,6 +611,7 @@ fn resolve_members(
     entries: &[MemberEntry],
     field_by_name: &BTreeMap<String, u32>,
     component_names: &BTreeSet<String>,
+    components_by_name: &BTreeMap<&str, &Vec<MemberEntry>>,
     groups_out: &mut Vec<String>,
     emitted_groups: &mut BTreeSet<u32>,
 ) -> Result<Vec<String>, VendorXmlError> {
@@ -640,6 +649,7 @@ fn resolve_members(
                         &group.members,
                         field_by_name,
                         component_names,
+                        components_by_name,
                         groups_out,
                         emitted_groups,
                     )?;
@@ -656,13 +666,22 @@ fn resolve_members(
                         &required_entries,
                         field_by_name,
                         component_names,
+                        components_by_name,
                         groups_out,
                         emitted_groups,
                     )?;
-                    let delimiter = member_tokens
-                        .first()
-                        .and_then(|t| t.parse::<u32>().ok())
-                        .unwrap_or(count_tag);
+                    // The delimiter is whichever tag is emitted *first* on the wire for this
+                    // group's entries — not necessarily `member_tokens.first()` verbatim, since a
+                    // `<component>` reference (unlike a plain field or a nested group, both of
+                    // which already resolve to a bare tag number) renders as a `component:Name`
+                    // token here. Recursing into that component's own first member (arbitrarily
+                    // deep, e.g. a component whose first member is itself another component) finds
+                    // the real first field tag; falling back to `count_tag` (the group's own count
+                    // tag, which by construction never repeats inside an entry) would silently
+                    // produce a group definition that matches zero entries on decode.
+                    let delimiter =
+                        first_member_tag(&group.members, field_by_name, components_by_name)?
+                            .unwrap_or(count_tag);
                     let mut line = format!(
                         "group {} {} {} {}",
                         count_tag,
@@ -682,6 +701,46 @@ fn resolve_members(
         tokens.push(token);
     }
     Ok(tokens)
+}
+
+/// The tag of the first field this member list would emit on the wire, resolving through
+/// `<component>` references recursively (a component's first member may itself be a component). A
+/// nested `<group>` as the first member resolves to its own count tag, matching the token
+/// `resolve_members` itself emits for a `Group` entry. `Ok(None)` only for an empty member list
+/// (a degenerate, otherwise-unreachable dictionary shape).
+fn first_member_tag(
+    members: &[MemberEntry],
+    field_by_name: &BTreeMap<String, u32>,
+    components_by_name: &BTreeMap<&str, &Vec<MemberEntry>>,
+) -> Result<Option<u32>, VendorXmlError> {
+    let Some(first) = members.first() else {
+        return Ok(None);
+    };
+    match &first.kind {
+        MemberKind::Field(name) => field_by_name.get(name).copied().map(Some).ok_or_else(|| {
+            VendorXmlError::UnknownReference {
+                kind: "field",
+                name: name.clone(),
+            }
+        }),
+        MemberKind::Group(group) => field_by_name
+            .get(&group.name)
+            .copied()
+            .map(Some)
+            .ok_or_else(|| VendorXmlError::UnknownReference {
+                kind: "field",
+                name: group.name.clone(),
+            }),
+        MemberKind::Component(name) => {
+            let inner = components_by_name.get(name.as_str()).ok_or_else(|| {
+                VendorXmlError::UnknownReference {
+                    kind: "component",
+                    name: name.clone(),
+                }
+            })?;
+            first_member_tag(inner, field_by_name, components_by_name)
+        }
+    }
 }
 
 fn local_name(e: &quick_xml::events::BytesStart<'_>) -> String {
