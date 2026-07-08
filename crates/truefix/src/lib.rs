@@ -40,6 +40,7 @@ pub use truefix_transport::{
     self as transport, Acceptor, Monitor, SessionHandle, connect_initiator,
 };
 
+pub use truefix_binary as binary;
 pub use truefix_config as config;
 pub use truefix_dict as dict;
 

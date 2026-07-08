@@ -1,0 +1,5 @@
+<templates>
+  <template id="2" name="Secondary">
+    <field id="100" name="TestField" type="uInt32"/>
+  </template>
+</templates>

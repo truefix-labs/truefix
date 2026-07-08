@@ -244,6 +244,7 @@ Async-first engine on **tokio** (TLS via **rustls**), organized as a layered car
 | `truefix-session` | Session state machine, sequence management, admin messages, weekly scheduling + reset semantics, resend/gap-fill, `NextExpectedMsgSeqNum`, chunked resend, typed callback outcomes, reverse-route |
 | `truefix-store` | `MessageStore` trait + Memory / File (disk-only reads) / CachedFile (bounded in-memory cache + fsync toggle) / SQL (PostgreSQL/MySQL/SQLite via sqlx, `--features sql`) / MSSQL (via tiberius, `--features mssql`) / `Redb` (embedded transactional KV via `redb`, `--features redb`) / `Mongo` (via the `mongodb` driver, `--features mongodb`) / Noop |
 | `truefix-log` | `Log` trait + Screen / File / Tracing / SQL (PostgreSQL/MySQL/SQLite, `--features sql`) / MSSQL (`--features mssql`) / `Redb` (`--features redb`) / `Mongo` (`--features mongodb`) / Composite, output switches (heartbeat filter, timestamps, visibility), `SessionPrefixLog` decorator |
+| `truefix-binary` | FAST/SBE binary protocol codecs, schema/template parsing models, typed binary decode errors, and `Message` conversion helpers |
 | `truefix-transport` | Initiator + Acceptor, multi/dynamic sessions, reconnect + multi-endpoint failover, full socket-option set, rustls TLS/mTLS (file or inline PEM bytes, configurable cipher suites), PROXY protocol v1/v2 (trusted-upstream-gated) + forward proxy (SOCKS4/SOCKS5+auth/HTTP CONNECT) for initiators, synchronous-write timeouts, bounded inbound application-message backpressure (`InChanCapacity`, admin traffic never starved), `metrics`-facade export |
 | `truefix-config` | `SessionSettings`, `.cfg` parsing with `${name}` interpolation, `resolve()` into a runnable `Engine`-ready configuration, Appendix A key-stance registry |
 | `truefix` | Facade: re-exports + `Application` trait + `MessageCracker` + `Engine::start` (one-shot `.cfg`-driven start) |
@@ -435,6 +436,7 @@ cargo test -p truefix-store -p truefix-log --features mssql   # MSSQL gated on a
 cargo test -p truefix-store -p truefix-log --features redb    # embedded, runs unconditionally
 cargo test -p truefix-store -p truefix-log --features mongodb # MongoDB gated on availability
 cargo test -p truefix-dict --features dict-tooling         # Orchestra conversion tool + CLI
+cargo test -p truefix-binary                               # FAST/SBE binary codecs
 cargo test -p truefix-at --test conformance                  # AT suite (release gate)
 cargo bench -p truefix-core                                   # codec throughput (non-gating)
 cargo bench -p truefix-session                                # session round-trip latency (non-gating)
@@ -446,6 +448,9 @@ cargo deny check        # license/advisory gate (requires cargo-deny)
   changes.
 - `unsafe` code is forbidden workspace-wide (`unsafe_code = "forbid"`); `unwrap`/`expect`/`panic`/indexing
   are denied on non-test builds of every crate (Constitution Principle I).
+- Session `.cfg` defaults to `Protocol=SOH`. `Protocol=FAST` requires `FastTemplatePath`, and
+  `Protocol=SBE` requires `SbeSchemaPath`; both paths are resolved during config loading so binary
+  sessions fail fast when the selected schema/template input is missing.
 
 ## Governance
 

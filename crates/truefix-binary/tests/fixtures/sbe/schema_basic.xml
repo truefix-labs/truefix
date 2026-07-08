@@ -1,0 +1,10 @@
+<messageSchema id="7">
+  <message id="1" name="Basic" blockLength="8">
+    <field name="SeqNum" id="34" type="uint32" offset="0"/>
+    <field name="Price" id="44" type="int32" offset="4"/>
+    <group name="Entries" id="268" blockLength="1" dimensionOffset="8">
+      <field name="EntryType" id="269" type="char" offset="0"/>
+    </group>
+    <data name="Text" id="58" lengthFieldSize="1"/>
+  </message>
+</messageSchema>

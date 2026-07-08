@@ -1,0 +1,19 @@
+[package]
+name = "truefix-binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FAST and SBE binary protocol codecs for TrueFix."
+publish = false
+
+[dependencies]
+truefix-core.workspace = true
+truefix-dict = { workspace = true, features = ["dict-tooling"] }
+thiserror.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+
+[lints]
+workspace = true

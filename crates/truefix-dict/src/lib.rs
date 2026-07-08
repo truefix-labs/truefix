@@ -23,6 +23,8 @@
 
 pub mod codegen;
 #[cfg(feature = "dict-tooling")]
+pub mod fast_template;
+#[cfg(feature = "dict-tooling")]
 pub mod fix_repository;
 pub mod fixt;
 mod hash;
@@ -30,6 +32,8 @@ pub mod model;
 #[cfg(feature = "dict-tooling")]
 pub mod orchestra;
 pub mod parser;
+#[cfg(feature = "dict-tooling")]
+pub mod sbe_schema;
 mod validate;
 #[cfg(feature = "dict-tooling")]
 pub mod vendor_xml;

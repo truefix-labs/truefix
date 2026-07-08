@@ -11,6 +11,18 @@ pub enum Role {
     Acceptor,
 }
 
+/// Static wire protocol selected for a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Protocol {
+    /// Standard SOH-delimited FIX tag-value messages.
+    #[default]
+    Soh,
+    /// FAST binary encoding.
+    Fast,
+    /// SBE binary encoding.
+    Sbe,
+}
+
 /// Minimal session configuration needed for the S2 logon/heartbeat/logout flow.
 ///
 /// Sequence recovery, persistence, scheduling, and the full Appendix A key surface arrive in
@@ -154,6 +166,12 @@ pub struct SessionConfig {
     /// Bound an initiator's connect attempt (GAP-16/FR-016, feature 005; `SocketConnectTimeout`).
     /// `None` (the default) preserves today's unbounded-wait behavior.
     pub connect_timeout: Option<std::time::Duration>,
+    /// Static wire protocol for this session. Defaults to SOH for existing configurations.
+    pub protocol: Protocol,
+    /// FAST template XML path, required when [`Self::protocol`] is [`Protocol::Fast`].
+    pub fast_template_path: Option<String>,
+    /// SBE schema XML path, required when [`Self::protocol`] is [`Protocol::Sbe`].
+    pub sbe_schema_path: Option<String>,
 }
 
 /// Sub-second precision of emitted SendingTime timestamps (TimeStampPrecision; FR-009).
@@ -225,6 +243,9 @@ impl SessionConfig {
             reconnect_interval_steps: Vec::new(),
             local_bind_addr: None,
             connect_timeout: None,
+            protocol: Protocol::Soh,
+            fast_template_path: None,
+            sbe_schema_path: None,
         }
     }
 
