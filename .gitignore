@@ -27,3 +27,12 @@ Thumbs.db
 # Env
 .env*
 .codely-cli
+
+# binance example: runtime log output (redb databases / FileLog dirs), any private key placed
+# alongside the example rather than referenced via BINANCE_FIX_PRIVATE_KEY, and env.example itself
+# -- despite the name, this one carries real (if testnet-scoped) credentials copied from a
+# developer's local setup, not placeholder values, so it MUST NOT be committed.
+/log/
+crates/truefix/examples/binance/log/
+crates/truefix/examples/binance/*.pem
+crates/truefix/examples/binance/env.example
