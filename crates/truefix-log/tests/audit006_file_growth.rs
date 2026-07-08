@@ -3,6 +3,10 @@
 //! output — this is log rotation only, distinct from message-store body retention (which must
 //! preserve resend/recovery semantics; covered separately by
 //! `truefix-store/tests/audit006_growth_duplicate.rs`).
+//!
+//! NEW-156 (feature 012) made `FileLog`'s writes channel + background-task backed, so these tests
+//! now run on `#[tokio::test]` and call `log.shutdown().await` before reading the files back, to
+//! deterministically wait for the background writer to flush.
 
 use std::fs;
 
@@ -19,19 +23,21 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     ))
 }
 
-#[test]
-fn audit006_messages_log_rotates_once_max_size_is_reached() {
+#[tokio::test]
+async fn audit006_messages_log_rotates_once_max_size_is_reached() {
     let dir = temp_dir("messages");
     let opts = FileLogOptions {
         include_heartbeats: true,
         include_timestamp: false,
         include_milliseconds: false,
         max_size_bytes: Some(32),
+        retention: None,
     };
-    let log = FileLog::open_with_options(&dir, opts).unwrap();
+    let log = FileLog::open_with_options(&dir, opts).await.unwrap();
     for i in 0..10 {
         log.on_outgoing(&format!("8=FIX.4.4|35=D|11=ORDER{i}|10=000"));
     }
+    log.shutdown().await;
 
     let backup = dir.join("messages.log.1");
     assert!(backup.exists(), "expected a rotated backup file to exist");
@@ -44,19 +50,21 @@ fn audit006_messages_log_rotates_once_max_size_is_reached() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn audit006_event_log_also_rotates_independently_of_messages_log() {
+#[tokio::test]
+async fn audit006_event_log_also_rotates_independently_of_messages_log() {
     let dir = temp_dir("events");
     let opts = FileLogOptions {
         include_heartbeats: true,
         include_timestamp: false,
         include_milliseconds: false,
         max_size_bytes: Some(16),
+        retention: None,
     };
-    let log = FileLog::open_with_options(&dir, opts).unwrap();
+    let log = FileLog::open_with_options(&dir, opts).await.unwrap();
     for i in 0..10 {
         log.on_event(&format!("session event {i}"));
     }
+    log.shutdown().await;
 
     assert!(dir.join("event.log.1").exists());
     assert!(!dir.join("messages.log.1").exists());
@@ -64,13 +72,14 @@ fn audit006_event_log_also_rotates_independently_of_messages_log() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn audit006_default_options_never_rotate() {
+#[tokio::test]
+async fn audit006_default_options_never_rotate() {
     let dir = temp_dir("unbounded");
-    let log = FileLog::open(&dir).unwrap();
+    let log = FileLog::open(&dir).await.unwrap();
     for i in 0..50 {
         log.on_outgoing(&format!("8=FIX.4.4|35=D|11=ORDER{i}|10=000"));
     }
+    log.shutdown().await;
 
     assert!(!dir.join("messages.log.1").exists());
     let current_len = fs::metadata(dir.join("messages.log")).unwrap().len();

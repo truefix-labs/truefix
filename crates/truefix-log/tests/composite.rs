@@ -46,18 +46,19 @@ fn composite_fans_out_and_separates_streams() {
     }
 }
 
-#[test]
-fn file_log_separates_message_and_event_files() {
+#[tokio::test]
+async fn file_log_separates_message_and_event_files() {
     let dir = std::env::temp_dir().join(format!("truefix-log-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let log = build_log(&LogConfig::File {
         dir: dir.clone(),
         options: FileLogOptions::default(),
     })
+    .await
     .unwrap();
     log.on_incoming("8=FIX.4.4|35=D");
     log.on_event("session reset");
-    drop(log);
+    log.shutdown().await;
 
     let messages = std::fs::read_to_string(dir.join("messages.log")).unwrap();
     let events = std::fs::read_to_string(dir.join("event.log")).unwrap();
@@ -67,12 +68,13 @@ fn file_log_separates_message_and_event_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn factory_builds_composite() {
+#[tokio::test]
+async fn factory_builds_composite() {
     let log = build_log(&LogConfig::Composite(vec![
         LogConfig::Screen,
         LogConfig::Tracing,
     ]))
+    .await
     .unwrap();
     log.on_event("ok"); // must not panic
 }

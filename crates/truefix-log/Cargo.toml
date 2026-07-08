@@ -13,28 +13,39 @@ async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 time.workspace = true
+# NEW-156 (feature 012): FileLog's writes are now channel + background-task backed (mirroring
+# SqlLog/RedbLog), so tokio is a hard dependency of this crate rather than only pulled in by the
+# optional SQL/MSSQL/redb/MongoDB backend features.
+tokio.workspace = true
+# NEW-156 (feature 012): structured observability for background write/flush failures.
+metrics.workspace = true
 sqlx = { workspace = true, optional = true, features = ["sqlite", "postgres", "mysql-rsa"] }
-tokio = { workspace = true, optional = true }
 tiberius = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 redb = { workspace = true, optional = true }
 mongodb = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+# NEW-156 (feature 012, test-only): capture metrics-counter output in tests, matching
+# truefix-transport's existing dev-dependency use of the same crate/feature.
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
+# NEW-156 (feature 012, test-only): capture tracing output in tests. MIT-licensed, tokio-rs org
+# (same maintainers as `tracing` itself) -- Constitution Principle III compatible.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
 [features]
 # SQL-backed log (JDBC-equivalent), bridged to async via a background writer task.
-sql = ["dep:sqlx", "dep:tokio"]
+sql = ["dep:sqlx"]
 # MSSQL support (FR-020), via `tiberius` (a separate driver — sqlx has no official MSSQL
 # support). Independent of `sql`/sqlx's PG/MySQL/SQLite trio, so it can be enabled on its own.
-mssql = ["dep:tiberius", "dep:tokio-util", "dep:tokio"]
+mssql = ["dep:tiberius", "dep:tokio-util"]
 # Embedded transactional log via `redb` (US5, feature 004), bridged to async via a
 # background writer task (redb's own API is synchronous). Independent of `sql`/`mssql`.
-redb = ["dep:redb", "dep:tokio"]
+redb = ["dep:redb"]
 # MongoDB-backed log (US6, feature 004), matching QuickFIX/Go's MongoDB option.
 # Independent of `sql`/`mssql`/`redb`.
-mongodb = ["dep:mongodb", "dep:tokio"]
+mongodb = ["dep:mongodb"]
 
 [lints]
 workspace = true
