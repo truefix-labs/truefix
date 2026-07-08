@@ -1,6 +1,10 @@
 //! NEW-124: FileLog write failures are surfaced (stderr) instead of silently discarded.
 //! NEW-125: FileLog events are always timestamped, independent of `include_timestamp`.
 //! NEW-126: `LogConfig::File` threads `FileLogOptions` through to the built backend.
+//!
+//! NEW-156 (feature 012) made `FileLog`'s writes channel + background-task backed, so these tests
+//! now run on `#[tokio::test]` and call `log.shutdown().await` (rather than a bare `drop(log)`) to
+//! deterministically wait for the background writer to flush before reading the file back.
 
 use truefix_log::{FileLog, FileLogOptions, Log, LogConfig, build_log};
 
@@ -15,8 +19,8 @@ fn unique_dir(name: &str) -> std::path::PathBuf {
 
 // --- NEW-125: events are always timestamped, regardless of include_timestamp ---
 
-#[test]
-fn audit006_event_lines_are_always_timestamped_even_with_include_timestamp_off() {
+#[tokio::test]
+async fn audit006_event_lines_are_always_timestamped_even_with_include_timestamp_off() {
     let dir = unique_dir("event-timestamp");
     let log = FileLog::open_with_options(
         &dir,
@@ -25,11 +29,13 @@ fn audit006_event_lines_are_always_timestamped_even_with_include_timestamp_off()
             include_timestamp: false,
             include_milliseconds: false,
             max_size_bytes: None,
+            retention: None,
         },
     )
+    .await
     .unwrap();
     log.on_event("session started");
-    drop(log);
+    log.shutdown().await;
 
     let events = std::fs::read_to_string(dir.join("event.log")).unwrap();
     let line = events.lines().next().unwrap();
@@ -40,8 +46,8 @@ fn audit006_event_lines_are_always_timestamped_even_with_include_timestamp_off()
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn audit006_message_lines_still_respect_include_timestamp_off() {
+#[tokio::test]
+async fn audit006_message_lines_still_respect_include_timestamp_off() {
     let dir = unique_dir("message-timestamp");
     let log = FileLog::open_with_options(
         &dir,
@@ -50,11 +56,13 @@ fn audit006_message_lines_still_respect_include_timestamp_off() {
             include_timestamp: false,
             include_milliseconds: false,
             max_size_bytes: None,
+            retention: None,
         },
     )
+    .await
     .unwrap();
     log.on_incoming("8=FIX.4.4\u{1}35=D\u{1}");
-    drop(log);
+    log.shutdown().await;
 
     let messages = std::fs::read_to_string(dir.join("messages.log")).unwrap();
     let line = messages.lines().next().unwrap();
@@ -67,8 +75,8 @@ fn audit006_message_lines_still_respect_include_timestamp_off() {
 
 // --- NEW-126: LogConfig::File threads FileLogOptions through ---
 
-#[test]
-fn audit006_log_config_file_threads_heartbeat_filter_option() {
+#[tokio::test]
+async fn audit006_log_config_file_threads_heartbeat_filter_option() {
     let dir = unique_dir("logconfig-options");
     let log = build_log(&LogConfig::File {
         dir: dir.clone(),
@@ -77,12 +85,14 @@ fn audit006_log_config_file_threads_heartbeat_filter_option() {
             include_timestamp: false,
             include_milliseconds: false,
             max_size_bytes: None,
+            retention: None,
         },
     })
+    .await
     .unwrap();
     log.on_incoming("8=FIX.4.4\u{1}35=0\u{1}"); // heartbeat, should be filtered
     log.on_incoming("8=FIX.4.4\u{1}35=D\u{1}");
-    drop(log);
+    log.shutdown().await;
 
     let messages = std::fs::read_to_string(dir.join("messages.log")).unwrap();
     assert!(!messages.contains("35=0"), "heartbeat should be filtered");
@@ -90,8 +100,8 @@ fn audit006_log_config_file_threads_heartbeat_filter_option() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn audit006_log_config_composite_includes_file_options() {
+#[tokio::test]
+async fn audit006_log_config_composite_includes_file_options() {
     let dir = unique_dir("logconfig-composite");
     let log = build_log(&LogConfig::Composite(vec![LogConfig::File {
         dir: dir.clone(),
@@ -100,11 +110,13 @@ fn audit006_log_config_composite_includes_file_options() {
             include_timestamp: true,
             include_milliseconds: false,
             max_size_bytes: None,
+            retention: None,
         },
     }]))
+    .await
     .unwrap();
     log.on_incoming("8=FIX.4.4\u{1}35=0\u{1}");
-    drop(log);
+    log.shutdown().await;
 
     let messages = std::fs::read_to_string(dir.join("messages.log")).unwrap();
     assert!(

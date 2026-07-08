@@ -45,8 +45,8 @@ fn session_prefix_log_prepends_to_every_stream() {
     assert!(evts[0].starts_with("[FIX.4.4:CLIENT->SERVER] logon"));
 }
 
-#[test]
-fn file_log_heartbeat_filter_excludes_heartbeats_only() {
+#[tokio::test]
+async fn file_log_heartbeat_filter_excludes_heartbeats_only() {
     let dir = std::env::temp_dir().join(format!("truefix-log-switches-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let log = FileLog::open_with_options(
@@ -56,12 +56,14 @@ fn file_log_heartbeat_filter_excludes_heartbeats_only() {
             include_timestamp: false,
             include_milliseconds: false,
             max_size_bytes: None,
+            retention: None,
         },
     )
+    .await
     .unwrap();
     log.on_incoming(HEARTBEAT);
     log.on_outgoing(NEWORDER);
-    drop(log);
+    log.shutdown().await;
 
     let messages = std::fs::read_to_string(dir.join("messages.log")).unwrap();
     assert!(!messages.contains("35=0"), "heartbeat should be filtered");
@@ -69,21 +71,21 @@ fn file_log_heartbeat_filter_excludes_heartbeats_only() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn file_log_default_includes_heartbeats() {
+#[tokio::test]
+async fn file_log_default_includes_heartbeats() {
     let dir = std::env::temp_dir().join(format!("truefix-log-switches2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let log = FileLog::open(&dir).unwrap();
+    let log = FileLog::open(&dir).await.unwrap();
     log.on_incoming(HEARTBEAT);
-    drop(log);
+    log.shutdown().await;
 
     let messages = std::fs::read_to_string(dir.join("messages.log")).unwrap();
     assert!(messages.contains("35=0"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn file_log_timestamp_switch_controls_prefix() {
+#[tokio::test]
+async fn file_log_timestamp_switch_controls_prefix() {
     let dir = std::env::temp_dir().join(format!("truefix-log-switches3-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let log = FileLog::open_with_options(
@@ -93,11 +95,13 @@ fn file_log_timestamp_switch_controls_prefix() {
             include_timestamp: true,
             include_milliseconds: true,
             max_size_bytes: None,
+            retention: None,
         },
     )
+    .await
     .unwrap();
     log.on_incoming(NEWORDER);
-    drop(log);
+    log.shutdown().await;
 
     let messages = std::fs::read_to_string(dir.join("messages.log")).unwrap();
     let line = messages.lines().next().unwrap();

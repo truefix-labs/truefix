@@ -154,6 +154,53 @@ impl Application for MyApp {
 See `crates/truefix/examples/` (`executor`, `banzai`, `ordermatch`, `multi_acceptor`) for complete,
 runnable programs.
 
+### Custom `MessageStore`/`Log` backends
+
+The built-in store/log backends (`Memory`/`File`/`CachedFile`/`Noop`/`Sql`/`Mssql`/`Redb`/`Mongo`
+for storage; `Screen`/`File`/`Tracing`/`Composite`/`Sql`/`Mssql` for logging) cover most deployments,
+but `MessageStore` and `Log` are both plain, fully public, object-safe traits — a proprietary audit
+sink or a backend not on the built-in list is a normal trait implementation away, with two supported
+paths from the `.cfg`-driven `Engine::start` entry point (not just the lower-level
+`truefix::transport::Services` API):
+
+1. **`StoreConfig::Custom(Arc<dyn MessageStore>)`** — pass an already-built store through
+   `truefix_store::build_store`/anywhere else a `StoreConfig` is constructed programmatically.
+2. **`Engine::start_with_overrides`** — layers a caller-supplied `Services` (with `store`/`log` set)
+   on top of whatever a session's `.cfg` block would otherwise resolve, keyed by the session's label
+   (`"{BeginString}:{SenderCompID}->{TargetCompID}"`). When both a `.cfg`-driven backend and an
+   override are present for the same session, **the override wins**.
+
+```rust
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use truefix::config::SessionSettings;
+use truefix::transport::Services;
+use truefix::Engine;
+
+let settings = SessionSettings::parse(cfg_text)?;
+let mut overrides = HashMap::new();
+overrides.insert(
+    "FIX.4.4:SERVER->CLIENT".to_owned(),
+    Services {
+        store: Some(my_custom_store as Arc<dyn truefix_store::MessageStore>),
+        log: Some(my_custom_log as Arc<dyn truefix_log::Log>),
+        ..Services::default()
+    },
+);
+let engine = Engine::start_with_overrides(&settings, app, overrides).await?;
+```
+
+Combining an override with a `.cfg` setting that only makes sense for the built-in backend it
+replaces (e.g. a custom `log` override alongside `FileLogPath`'s `MaxFileLogSize`/
+`FileLogMaxGenerations`/`FileLogRollIntervalSecs` tuning keys) is rejected at startup with a typed
+`ConfigError` rather than silently ignoring the now-irrelevant setting. The override mechanism
+currently covers non-grouped acceptor sessions and initiators (one session per port — the common
+case); acceptor-group/dynamic-template sessions still use the lower-level
+`truefix::transport::{AcceptorBuilder, Services}` API directly for the same effect. See
+`crates/truefix/tests/custom_backend_injection.rs` for a complete, runnable example exercising
+every case above (`cargo test -p truefix --test custom_backend_injection`).
+
 ## Supported FIX versions
 
 FIX 4.0 / 4.1 / 4.2 / 4.3 / 4.4 / 5.0 / 5.0SP1 / 5.0SP2 / **FIX Latest** and **FIXT 1.1** (with separate
@@ -227,6 +274,51 @@ per-message field emission order, structured dictionary version metadata (valida
 message's `BeginString`), and value→label lookup. Every bundled dictionary (FIX 4.0 through
 5.0SP2, plus FIXT 1.1) now matches QuickFIX/J's real field/message scale (e.g. FIX 4.4: 953
 fields/92 messages; FIX 5.0SP2: 1610 fields/110 messages) rather than a documented subset.
+
+### `UseDataDictionary` / `DataDictionary` / `ValidateIncomingMessage`
+
+```ini
+UseDataDictionary=Y
+DataDictionary=dict/binance-oe.fixdict
+ValidateIncomingMessage=N
+```
+
+- **`UseDataDictionary=Y`** attaches a runtime `DataDictionary` to the session at all. This is the
+  switch that turns on group-aware decoding (`decode_with_groups`): header/trailer repeating groups
+  and, since feature 011, body-level repeating groups too (e.g. `NoPartyIDs`) are structured against
+  the dictionary's declared members/delimiters instead of landing as a flat, unstructured field list.
+  **Default: `N`/absent** — no dictionary is attached, matching pre-existing behavior: messages
+  still decode (SOH/tag parsing, `BodyLength`/`CheckSum` framing), but every field — including
+  repeating groups — stays flat, and no content validation of any kind runs.
+- **`DataDictionary=<path or bundled version>`** names which dictionary to load once
+  `UseDataDictionary=Y` is set — either a bundled version string (`FIX.4.4`, `FIX.5.0SP2`, ...) or a
+  filesystem path to a `.fixdict`/vendor XML source, resolved relative to where the process runs.
+  `dict/binance-oe.fixdict` above is an example of a **user-supplied vendor dictionary** — e.g.
+  Binance's own FIX OE spec, converted (via `truefix-dict generate-dict --format qfj` or the
+  vendor-XML path) into the normalized `.fixdict` grammar and placed at that path by the operator; it
+  is not bundled with this repo, but once converted it loads and behaves exactly like a bundled
+  version string. For a real FIXT 1.1 split, use `AppDataDictionary`/`TransportDataDictionary` instead
+  (or alongside) — see the Quick start section above. **Required when `UseDataDictionary=Y`** —
+  omitting it is a config error (`ConfigError::MissingRequired`), it does not silently fall back to
+  "no dictionary".
+- **`ValidateIncomingMessage`** controls only the *content*-level checks the attached dictionary
+  performs on each inbound message — required fields present, known fields/values, field data types,
+  `BeginString`/version match, group field ordering, and the other `Validate*` toggles
+  (`ValidateFieldsOutOfOrder`, `ValidateFieldsHaveValues`, `ValidateUserDefinedFields`, etc.). It does
+  **not** control structural decoding: even with `ValidateIncomingMessage=N`, an attached dictionary
+  is still used to decode repeating groups correctly (`decode_with_groups` runs unconditionally
+  whenever a dictionary is attached — see `crates/truefix-transport/src/lib.rs`'s read loop). Setting
+  it to `N` simply makes dictionary content-validation a no-op (`DataDictionary::validate` returns
+  `Ok(())` immediately) instead of rejecting the message. **Default: `Y`/`true`** whenever
+  `UseDataDictionary=Y` is set (matching QuickFIX/J) — content validation runs unless explicitly
+  turned off. It has no effect at all when `UseDataDictionary` is absent/`N`, since there is no
+  dictionary to validate against either way.
+
+Put together, the config block above is the shape used for a vendor dictionary you trust for
+**message structure** (so groups like `NoPartyIDs` come back as real, indexable entries) but not for
+strict **content** conformance — e.g. because the vendor's real wire traffic includes fields, enum
+values, or field orderings the hand-converted `.fixdict` doesn't perfectly document, and you would
+rather let those through than reject otherwise-legitimate messages.
 
 ## Roadmap
 

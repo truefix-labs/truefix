@@ -10,7 +10,17 @@
 //! `LogConfig` (in `truefix-config`) threads file-backend options through generic log
 //! configuration (NEW-126).
 //!
-//! Design: `specs/001-fix-engine-parity/`.
+//! Feature 012 (audit 007) additions: [`FileLog`]'s constructors (`open`/`open_with_options`, and
+//! [`build_log`] for `LogConfig::File`) are now `async` and queue writes onto a bounded channel
+//! consumed by a background writer task — the same channel + background-writer shape
+//! `SqlLog`/`MssqlLog`/`MongoLog`/`RedbLog` (each behind its own Cargo feature) already use — so
+//! `on_incoming`/`on_outgoing`/`on_event` never block the calling async task on disk I/O
+//! (NEW-156). [`Log::shutdown`] on [`FileLog`] drains that queue before returning; a background
+//! write/flush failure is surfaced via a structured `tracing::error!` event and a
+//! `truefix_log_write_failures_total` metrics counter (NEW-156, FR-009) instead of the previous
+//! best-effort `eprintln!`.
+//!
+//! Design: `specs/001-fix-engine-parity/`, `specs/012-audit-007-remediation/`.
 #![cfg_attr(
     not(test),
     deny(
@@ -40,7 +50,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 pub use composite::CompositeLog;
-pub use file::{FileLog, FileLogOptions};
+pub use file::{FileLog, FileLogOptions, RetentionPolicy};
 #[cfg(feature = "mongodb")]
 pub use mongo::{MongoLog, MongoLogConfig};
 #[cfg(feature = "mssql")]
@@ -126,15 +136,22 @@ pub enum LogConfig {
 }
 
 /// Build a boxed [`Log`] from a [`LogConfig`].
-pub fn build_log(config: &LogConfig) -> Result<Box<dyn Log>, LogError> {
+///
+/// `async` (NEW-156, feature 012): the `File` variant now opens a channel + background-writer
+/// backed [`FileLog`] (see its doc for why that constructor requires an active Tokio runtime).
+/// The recursive `Composite` call is boxed (`Box::pin`) since Rust can't otherwise size a
+/// self-recursive async fn's future.
+pub async fn build_log(config: &LogConfig) -> Result<Box<dyn Log>, LogError> {
     Ok(match config {
         LogConfig::Screen => Box::new(ScreenLog::new()),
-        LogConfig::File { dir, options } => Box::new(FileLog::open_with_options(dir, *options)?),
+        LogConfig::File { dir, options } => {
+            Box::new(FileLog::open_with_options(dir, *options).await?)
+        }
         LogConfig::Tracing => Box::new(TracingLog::new()),
         LogConfig::Composite(parts) => {
             let mut logs: Vec<Box<dyn Log>> = Vec::with_capacity(parts.len());
             for part in parts {
-                logs.push(build_log(part)?);
+                logs.push(Box::pin(build_log(part)).await?);
             }
             Box::new(CompositeLog::new(logs))
         }

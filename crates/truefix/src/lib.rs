@@ -9,7 +9,14 @@
 //! failed to start and why (NEW-143); and dynamic acceptor identities each get their own
 //! per-identity store/services factory rather than sharing state (NEW-148).
 //!
-//! Design: `specs/001-fix-engine-parity/`.
+//! Feature 012 (audit 007) additions / **migration note**: [`Engine::start_with_overrides`] lets a
+//! `.cfg`-driven caller supply a custom `MessageStore`/`Log` per session (NEW-158; see the
+//! README's "Custom `MessageStore`/`Log` backends" section). `FileLog`'s constructors becoming
+//! `async` (NEW-156) is transparent to callers of `Engine::start`/`start_with_overrides` — only
+//! code calling `truefix_log::FileLog::open`/`open_with_options`/`truefix_log::build_log` directly
+//! needs an added `.await`.
+//!
+//! Design: `specs/001-fix-engine-parity/`, `specs/012-audit-007-remediation/`.
 #![deny(missing_docs)]
 #![cfg_attr(
     not(test),
@@ -138,7 +145,23 @@ pub enum EngineError {
     Proxy(String),
 }
 
-fn build_log(
+/// `async` (NEW-156, feature 012): `FileLog::open_with_options` now spawns a background writer
+/// task, which requires an active Tokio runtime -- see its own doc for the rationale.
+/// NEW-157 (feature 012): translates `LogSpec`'s data-only `max_generations`/`roll_interval_secs`
+/// fields into a live `truefix_log::RetentionPolicy`, `None` unless at least one is set.
+fn retention_policy_from_spec(
+    spec: &truefix_config::LogSpec,
+) -> Option<truefix_log::RetentionPolicy> {
+    if spec.max_generations.is_none() && spec.roll_interval_secs.is_none() {
+        return None;
+    }
+    Some(truefix_log::RetentionPolicy {
+        generations: spec.max_generations,
+        roll_interval: spec.roll_interval_secs.map(std::time::Duration::from_secs),
+    })
+}
+
+async fn build_log(
     spec: &truefix_config::LogSpec,
     session_id: &str,
 ) -> Result<Arc<dyn truefix_log::Log>, EngineError> {
@@ -149,8 +172,10 @@ fn build_log(
             include_timestamp: spec.include_timestamp,
             include_milliseconds: spec.include_milliseconds,
             max_size_bytes: spec.max_size_bytes,
+            retention: retention_policy_from_spec(spec),
         },
     )
+    .await
     .map_err(|e| EngineError::Log(e.to_string()))?;
     Ok(Arc::new(truefix_log::SessionPrefixLog::new(
         session_id.to_owned(),
@@ -165,7 +190,7 @@ fn build_log(
 /// new backend code was needed — GAP-21's own framing). NEW-126 (audit 006): the `Composite`
 /// branch's `File` component now threads `file_spec`'s own output-switch values through
 /// `LogConfig::File`'s `options` field, instead of always building a hardcoded-default `FileLog`.
-fn build_log_kind(
+async fn build_log_kind(
     kind: truefix_config::LogKind,
     file_spec: &Option<truefix_config::LogSpec>,
     session_id: &str,
@@ -186,13 +211,16 @@ fn build_log_kind(
                         include_timestamp: spec.include_timestamp,
                         include_milliseconds: spec.include_milliseconds,
                         max_size_bytes: spec.max_size_bytes,
+                        retention: retention_policy_from_spec(spec),
                     },
                 });
             }
             truefix_log::LogConfig::Composite(parts)
         }
     };
-    let log = truefix_log::build_log(&log_config).map_err(|e| EngineError::Log(e.to_string()))?;
+    let log = truefix_log::build_log(&log_config)
+        .await
+        .map_err(|e| EngineError::Log(e.to_string()))?;
     Ok(Arc::new(truefix_log::SessionPrefixLog::new(
         session_id.to_owned(),
         log,
@@ -335,6 +363,44 @@ impl Engine {
     pub async fn start<A: Application + 'static>(
         settings: &SessionSettings,
         app: Arc<A>,
+    ) -> Result<Self, EngineError> {
+        Self::start_impl(settings, app, &HashMap::new()).await
+    }
+
+    /// As [`Engine::start`], but layers a caller-supplied [`Services`] override on top of the
+    /// `.cfg`-resolved configuration for each named session (NEW-158, feature 012, FR-006/FR-012).
+    /// `overrides` is keyed by the session label (`"{BeginString}:{SenderCompID}->{TargetCompID}"`,
+    /// the same format `Engine::start`'s own diagnostics already use); a session with no matching
+    /// entry resolves exactly as [`Engine::start`] would. When an entry's `store`/`log` is `Some`,
+    /// that value wins over whatever the `.cfg`-driven `StoreConfig`/`LogSpec`/`LogKind`/
+    /// `SqlLogSpec` resolution would otherwise have built for that session -- the "builder
+    /// override wins" precedence the `NEW-158` clarification session settled on. This also gives
+    /// `.cfg`/programmatic construction a path to express a [`truefix_store::StoreConfig::Custom`]
+    /// backend: build the `Arc<dyn MessageStore>` yourself and hand it in via `Services::store`.
+    ///
+    /// **Scope**: only applies to non-grouped acceptor sessions and initiators (the common case --
+    /// one session per port, no `AcceptorTemplate`/`DynamicSession`/shared-port grouping).
+    /// Acceptor-group and dynamic-template sessions have no single fixed per-session identity to
+    /// key an override by before they're resolved to a live connection, matching this codebase's
+    /// existing disclosed simplification for `socket_options`/TLS on that same path (see the
+    /// acceptor-group loop's own comment in this function).
+    ///
+    /// A session combining an override with a built-in-only `.cfg` setting the override would
+    /// silently ignore (e.g. a custom `log` override alongside `FileLogPath`/`MaxFileLogSize`/the
+    /// retention keys) is rejected with `ConfigError::CustomOverrideWithBuiltinOnlySetting`
+    /// (FR-010) rather than silently doing nothing with the ignored setting.
+    pub async fn start_with_overrides<A: Application + 'static>(
+        settings: &SessionSettings,
+        app: Arc<A>,
+        overrides: HashMap<String, Services>,
+    ) -> Result<Self, EngineError> {
+        Self::start_impl(settings, app, &overrides).await
+    }
+
+    async fn start_impl<A: Application + 'static>(
+        settings: &SessionSettings,
+        app: Arc<A>,
+        overrides: &HashMap<String, Services>,
     ) -> Result<Self, EngineError> {
         // US4 (feature 004, FR-005): a resolution failure is also tolerated per-session via
         // `resolve_lenient` when that session's own `ContinueInitializationOnError=Y` — the flag
@@ -483,11 +549,11 @@ impl Engine {
                         |e: truefix_store::StoreError| EngineError::Store(e.to_string()),
                     )?);
                 let log = if let Some(kind) = primary.log_kind {
-                    Some(build_log_kind(kind, &primary.log, &session_id)?)
+                    Some(build_log_kind(kind, &primary.log, &session_id).await?)
                 } else if let Some(spec) = &primary.sql_log {
                     Some(build_sql_log(spec, &session_id).await?)
                 } else if let Some(spec) = &primary.log {
-                    Some(build_log(spec, &session_id)?)
+                    Some(build_log(spec, &session_id).await?)
                 } else {
                     None
                 };
@@ -581,6 +647,7 @@ impl Engine {
                                     let log = if let Some(kind) = log_kind {
                                         Some(
                                             build_log_kind(kind, &log, &session_id)
+                                                .await
                                                 .map_err(|e| e.to_string())?,
                                         )
                                     } else if let Some(spec) = &sql_log {
@@ -592,6 +659,7 @@ impl Engine {
                                     } else if let Some(spec) = &log {
                                         Some(
                                             build_log(spec, &session_id)
+                                                .await
                                                 .map_err(|e| e.to_string())?,
                                         )
                                     } else {
@@ -648,11 +716,11 @@ impl Engine {
                                 m.session.target_comp_id
                             );
                             let member_log = if let Some(kind) = m.log_kind {
-                                Some(build_log_kind(kind, &m.log, &member_session_id_str)?)
+                                Some(build_log_kind(kind, &m.log, &member_session_id_str).await?)
                             } else if let Some(spec) = &m.sql_log {
                                 Some(build_sql_log(spec, &member_session_id_str).await?)
                             } else if let Some(spec) = &m.log {
-                                Some(build_log(spec, &member_session_id_str)?)
+                                Some(build_log(spec, &member_session_id_str).await?)
                             } else {
                                 None
                             };
@@ -723,20 +791,53 @@ impl Engine {
             // (e.g. a port already in use), which only surface once resolution has already
             // succeeded for this session.
             let result: Result<(), EngineError> = async {
-                let store = truefix_store::build_store(&rs.store)
-                    .await
-                    .map_err(|e| EngineError::Store(e.to_string()))?;
-                let log = if let Some(kind) = rs.log_kind {
-                    Some(build_log_kind(kind, &rs.log, &session_id)?)
+                let override_services = overrides.get(&session_id);
+                // FR-010 (NEW-158, feature 012): a custom log override alongside FileLog-specific
+                // tuning settings (`FileLogPath` and everything under it -- heartbeats/timestamp/
+                // `MaxFileLogSize`/the retention keys) is a startup error, not a silent no-op --
+                // those settings only mean something for the built-in `FileLog`, so silently
+                // dropping them would look like a config mistake nobody warned about. Selecting a
+                // *different* built-in log entirely (`Log=Screen`/`JdbcURL`) alongside an override
+                // is not this case -- FR-012 says the override simply wins there, no error.
+                if let Some(o) = override_services
+                    && o.log.is_some()
+                    && rs.log.is_some()
+                {
+                    return Err(EngineError::Config(
+                        ConfigError::CustomOverrideWithBuiltinOnlySetting {
+                            session: session_id.clone(),
+                            kind: "log".to_owned(),
+                            detail: "FileLogPath and its FileLogHeartbeats/\
+                                     FileIncludeTimeStampForMessages/FileIncludeMilliseconds/\
+                                     MaxFileLogSize/FileLogMaxGenerations/\
+                                     FileLogRollIntervalSecs settings"
+                                .to_owned(),
+                        },
+                    ));
+                }
+                let store: Arc<dyn truefix_store::MessageStore> =
+                    if let Some(store) = override_services.and_then(|o| o.store.clone()) {
+                        store
+                    } else {
+                        Arc::from(
+                            truefix_store::build_store(&rs.store)
+                                .await
+                                .map_err(|e| EngineError::Store(e.to_string()))?,
+                        )
+                    };
+                let log = if let Some(log) = override_services.and_then(|o| o.log.clone()) {
+                    Some(log)
+                } else if let Some(kind) = rs.log_kind {
+                    Some(build_log_kind(kind, &rs.log, &session_id).await?)
                 } else if let Some(spec) = &rs.sql_log {
                     Some(build_sql_log(spec, &session_id).await?)
                 } else if let Some(spec) = &rs.log {
-                    Some(build_log(spec, &session_id)?)
+                    Some(build_log(spec, &session_id).await?)
                 } else {
                     None
                 };
                 let services = Services {
-                    store: Some(Arc::from(store)),
+                    store: Some(store),
                     socket_options: to_transport_socket_options(rs.socket_options),
                     monitor: Some(monitor.clone()),
                     log,

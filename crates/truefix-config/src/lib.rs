@@ -130,6 +130,23 @@ pub enum ConfigError {
         /// The second conflicting session's label.
         session_b: String,
     },
+    /// NEW-158 (feature 012): a session was given a caller-supplied custom store/log override
+    /// (via `Engine::start_with_overrides`) alongside a built-in-only `.cfg` setting that the
+    /// override would silently ignore (e.g. `MaxFileLogSize`/the `FileLogMaxGenerations`/
+    /// `FileLogRollIntervalSecs` retention keys only apply to the built-in `FileLog`, not to a
+    /// custom `Log` override) -- rejected at startup (FR-010) rather than silently doing nothing.
+    #[error(
+        "session {session}: a custom {kind} override was supplied alongside built-in-only .cfg \
+         settings ({detail}), which the override would silently ignore"
+    )]
+    CustomOverrideWithBuiltinOnlySetting {
+        /// The session label.
+        session: String,
+        /// Which override collided: `"store"` or `"log"`.
+        kind: String,
+        /// The specific built-in-only setting(s) that would be ignored.
+        detail: String,
+    },
 }
 
 /// A parsed settings document: the `[DEFAULT]` section plus the `[SESSION]` sections (each with

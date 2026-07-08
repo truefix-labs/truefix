@@ -177,6 +177,17 @@ pub struct LogSpec {
     /// `MaxFileLogSize` (NEW-108, audit 006). `None`/absent means unbounded (the previous
     /// behavior).
     pub max_size_bytes: Option<u64>,
+    /// `FileLogMaxGenerations` (NEW-157, feature 012): keep at most this many rotated backups,
+    /// pruning the oldest once exceeded. `None`/absent preserves the pre-existing single-backup
+    /// (`<name>.1`, overwritten) default -- data-only mirror of
+    /// `truefix_log::RetentionPolicy::generations`; independent of `max_size_bytes` (which
+    /// governs when a rotation triggers, not how many backups are kept).
+    pub max_generations: Option<u32>,
+    /// `FileLogRollIntervalSecs` (NEW-157, feature 012): roll onto a new dated backup once this
+    /// many seconds have elapsed since the active file's current interval began, composable with
+    /// `max_generations` (e.g. "roll daily, keep 30"). `None`/absent means no time-based
+    /// rotation trigger -- data-only mirror of `truefix_log::RetentionPolicy::roll_interval`.
+    pub roll_interval_secs: Option<u64>,
 }
 
 /// A SQL-backed log resolved from configuration (US3, feature 004, FR-003). Data-only mirror of
@@ -912,6 +923,20 @@ fn resolve_log(
             max_size_bytes: match map.get("MaxFileLogSize") {
                 None => None,
                 Some(_) => Some(u64::from(u32_key(map, "MaxFileLogSize", session, 0)?)),
+            },
+            // NEW-157 (feature 012): opt-in retention beyond the single-backup default; absent
+            // means unchanged (pre-existing) behavior on both keys.
+            max_generations: match map.get("FileLogMaxGenerations") {
+                None => None,
+                Some(_) => Some(u32_key(map, "FileLogMaxGenerations", session, 0)?),
+            },
+            roll_interval_secs: match map.get("FileLogRollIntervalSecs") {
+                None => None,
+                Some(v) => Some(v.parse().map_err(|_| ConfigError::InvalidValue {
+                    key: "FileLogRollIntervalSecs".to_owned(),
+                    session: session.to_owned(),
+                    reason: format!("expected a whole number of seconds, got {v:?}"),
+                })?),
             },
         }),
         None,
