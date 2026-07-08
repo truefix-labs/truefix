@@ -25,10 +25,19 @@ tracing.workspace = true
 tokio = { workspace = true }
 async-trait.workspace = true
 rcgen = "0.13"
-ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
+# "pem" (beyond the existing pkcs8/rand_core) is needed by the `binance` example to load an
+# Ed25519 signing key from a PKCS#8 PEM file (`ed25519_dalek::pkcs8::DecodePrivateKey::from_pkcs8_pem`).
+ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core", "pem"] }
 pkcs8 = "0.10"
 base64 = "0.22"
 webpki-roots = "0.26"
+# Below: `binance` example only (a real, runnable FIX client for Binance's spot testnet/production
+# FIX API -- see examples/binance/README.md).
+anyhow = "1"
+tracing-subscriber = "0.3"
+time = { workspace = true }
+truefix-log = { workspace = true, features = ["redb"] }
+redb.workspace = true
 
 [features]
 # `.cfg`-driven SQL/MSSQL backend selection (US3, feature 004, FR-003) needs the matching feature
