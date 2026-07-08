@@ -1,0 +1,5 @@
+<messageSchema id="7">
+  <message id="2" name="Secondary" blockLength="4">
+    <field name="TestField" id="100" type="uint32" offset="0"/>
+  </message>
+</messageSchema>

@@ -1,0 +1,11 @@
+<templates>
+  <template id="1" name="Basic">
+    <field id="34" name="MsgSeqNum" type="uInt32" operator="increment"/>
+    <field id="55" name="Symbol" type="ascii" operator="copy"/>
+    <field id="44" name="Price" type="decimal" operator="delta"/>
+    <field id="59" name="TimeInForce" type="ascii" operator="default" value="0"/>
+    <group id="268" name="NoMDEntries">
+      <field id="269" name="MDEntryType" type="ascii"/>
+    </group>
+  </template>
+</templates>

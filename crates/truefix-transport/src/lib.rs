@@ -47,12 +47,13 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{MissedTickBehavior, interval};
 
+use truefix_binary::BinaryCodec;
 use truefix_config::SocketEndpoint;
 use truefix_core::{DecodeError, Message, decode, decode_with_groups};
 use truefix_log::Log;
 use truefix_session::{
-    Action, Application, Event, Role, Schedule, Session, SessionConfig, SessionId, SessionState,
-    SessionStatus,
+    Action, Application, Event, Protocol, Role, Schedule, Session, SessionConfig, SessionId,
+    SessionState, SessionStatus,
 };
 use truefix_store::MessageStore;
 
@@ -286,6 +287,12 @@ pub struct Services {
     /// Optional hostname resolver override. Production uses Tokio's asynchronous resolver; this
     /// hook also makes reconnect-time DNS behavior deterministic in integration tests.
     pub address_resolver: Option<Arc<dyn AddressResolver>>,
+    /// Static wire protocol selected for this connection.
+    pub protocol: Protocol,
+    /// FAST template path used when [`Self::protocol`] is [`Protocol::Fast`].
+    pub fast_template_path: Option<String>,
+    /// SBE schema path used when [`Self::protocol`] is [`Protocol::Sbe`].
+    pub sbe_schema_path: Option<String>,
 }
 
 /// Asynchronous hostname resolution used by reconnecting initiators.
@@ -881,7 +888,7 @@ async fn run_connection<A, S>(
     stream: S,
     config: SessionConfig,
     app: Arc<A>,
-    services: Services,
+    mut services: Services,
     control_tx: mpsc::Sender<Control>,
     mut control: mpsc::Receiver<Control>,
     buf: Vec<u8>,
@@ -890,6 +897,9 @@ async fn run_connection<A, S>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let in_chan_capacity = config.in_chan_capacity;
+    services.protocol = config.protocol;
+    services.fast_template_path = config.fast_template_path.clone();
+    services.sbe_schema_path = config.sbe_schema_path.clone();
     let mut session = Session::new(config);
     if let Some((dicts, opts)) = &services.fixt_dictionaries {
         session.set_fixt_dictionaries(dicts.clone(), *opts);
@@ -1271,6 +1281,10 @@ async fn classify_buffered(
     services: &Services,
     id: &SessionId,
 ) -> Result<(), ()> {
+    if services.protocol != Protocol::Soh {
+        return classify_binary_buffered(buf, admin_tx, has_app_channel, pending_app, services, id)
+            .await;
+    }
     loop {
         match frame_length(buf) {
             Ok(Some(total)) => {
@@ -1361,6 +1375,60 @@ async fn classify_buffered(
             }
         }
     }
+}
+
+async fn classify_binary_buffered(
+    buf: &mut Vec<u8>,
+    admin_tx: &mpsc::Sender<Inbound>,
+    has_app_channel: bool,
+    pending_app: &mut std::collections::VecDeque<Inbound>,
+    services: &Services,
+    id: &SessionId,
+) -> Result<(), ()> {
+    if buf.is_empty() {
+        return Ok(());
+    }
+
+    let decoded = match services.protocol {
+        Protocol::Soh => return Ok(()),
+        Protocol::Fast => {
+            let Some(path) = services.fast_template_path.as_deref() else {
+                return Err(());
+            };
+            let templates = truefix_dict::fast_template::load_fast_templates_from_file(
+                std::path::Path::new(path),
+            )
+            .map_err(|_| ())?;
+            let codec = truefix_binary::fast::FastCodec::with_session(templates, id.to_string());
+            codec
+                .decode(buf)
+                .map(|(message, _)| message)
+                .map_err(|_| ())
+        }
+        Protocol::Sbe => {
+            let Some(path) = services.sbe_schema_path.as_deref() else {
+                return Err(());
+            };
+            let schemas =
+                truefix_dict::sbe_schema::load_sbe_schemas_from_file(std::path::Path::new(path))
+                    .map_err(|_| ())?;
+            let codec = truefix_binary::sbe::SbeCodec::with_session(schemas, id.to_string());
+            codec
+                .decode(buf)
+                .map(|(message, _)| message)
+                .map_err(|_| ())
+        }
+    };
+
+    let msg = decoded?;
+    metrics_export::record_received(id);
+    buf.clear();
+    if !has_app_channel || is_admin(&msg) {
+        admin_tx.send(Inbound::Message(msg)).await.map_err(|_| ())?;
+    } else {
+        pending_app.push_back(Inbound::Message(msg));
+    }
+    Ok(())
 }
 
 /// Scan `buf` (from byte offset 1 onward, guaranteeing forward progress even when byte 0 itself

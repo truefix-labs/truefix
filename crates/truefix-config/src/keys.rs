@@ -113,6 +113,9 @@ pub const APPENDIX_A_KEYS: &[KeyInfo] = &[
     k("ForceResendWhenCorruptedStore", "session", Impl),
     k("DisconnectOnError", "session", Impl),
     k("TimeStampPrecision", "session", Impl),
+    k("Protocol", "session", Impl),
+    k("FastTemplatePath", "session", Impl),
+    k("SbeSchemaPath", "session", Impl),
     k(
         "MaxScheduledWriteRequests",
         "session",

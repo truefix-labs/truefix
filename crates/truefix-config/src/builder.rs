@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use time::Weekday;
-use truefix_session::{Role, Schedule, SessionConfig, TimeStampPrecision};
+use truefix_session::{Protocol, Role, Schedule, SessionConfig, TimeStampPrecision};
 use truefix_store::StoreConfig;
 
 use crate::{ConfigError, SessionSettings};
@@ -497,6 +497,58 @@ fn precision_key(
     }
 }
 
+fn protocol_key(
+    map: &Map,
+    key: &str,
+    session: &str,
+    default: Protocol,
+) -> Result<Protocol, ConfigError> {
+    match map.get(key).map(|v| v.to_ascii_uppercase()).as_deref() {
+        None => Ok(default),
+        Some("SOH") => Ok(Protocol::Soh),
+        Some("FAST") => Ok(Protocol::Fast),
+        Some("SBE") => Ok(Protocol::Sbe),
+        Some(_) => Err(ConfigError::InvalidValue {
+            key: key.to_owned(),
+            session: session.to_owned(),
+            reason: format!(
+                "expected SOH/FAST/SBE, got {:?}",
+                map.get(key).map(String::as_str).unwrap_or_default()
+            ),
+        }),
+    }
+}
+
+fn resolve_protocol_paths(
+    map: &Map,
+    cfg: &mut SessionConfig,
+    session: &str,
+) -> Result<(), ConfigError> {
+    cfg.fast_template_path = map.get("FastTemplatePath").cloned();
+    cfg.sbe_schema_path = map.get("SbeSchemaPath").cloned();
+    match cfg.protocol {
+        Protocol::Soh => Ok(()),
+        Protocol::Fast => {
+            if cfg.fast_template_path.is_none() {
+                return Err(ConfigError::MissingRequired {
+                    key: "FastTemplatePath".to_owned(),
+                    session: session.to_owned(),
+                });
+            }
+            Ok(())
+        }
+        Protocol::Sbe => {
+            if cfg.sbe_schema_path.is_none() {
+                return Err(ConfigError::MissingRequired {
+                    key: "SbeSchemaPath".to_owned(),
+                    session: session.to_owned(),
+                });
+            }
+            Ok(())
+        }
+    }
+}
+
 fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> {
     let session = label(map, index);
     let begin_string = required(map, "BeginString", &session)?.to_owned();
@@ -558,6 +610,8 @@ fn resolve_one(map: &Map, index: usize) -> Result<ResolvedSession, ConfigError> 
     )?;
     cfg.timestamp_precision =
         precision_key(map, "TimeStampPrecision", &session, cfg.timestamp_precision)?;
+    cfg.protocol = protocol_key(map, "Protocol", &session, cfg.protocol)?;
+    resolve_protocol_paths(map, &mut cfg, &session)?;
     cfg.schedule = resolve_schedule(map, &session)?;
     cfg.send_redundant_resend_requests =
         bool_key(map, "SendRedundantResendRequests", &session, false)?;

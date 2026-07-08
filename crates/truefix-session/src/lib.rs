@@ -33,7 +33,7 @@ mod tags;
 mod time_util;
 
 pub use application::Application;
-pub use config::{Role, SessionConfig, TimeStampPrecision};
+pub use config::{Protocol, Role, SessionConfig, TimeStampPrecision};
 pub use schedule::Schedule;
 pub use schedule_reset::{
     ScheduleAction, decide as decide_schedule_action, decide_recurring_reset,

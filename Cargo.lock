@@ -3327,6 +3327,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "truefix-binary",
  "truefix-config",
  "truefix-core",
  "truefix-dict",
@@ -3348,6 +3349,17 @@ dependencies = [
  "truefix-dict",
  "truefix-session",
  "truefix-transport",
+]
+
+[[package]]
+name = "truefix-binary"
+version = "0.1.0"
+dependencies = [
+ "metrics",
+ "thiserror 2.0.18",
+ "tracing",
+ "truefix-core",
+ "truefix-dict",
 ]
 
 [[package]]
@@ -3450,6 +3462,7 @@ dependencies = [
  "tokio-rustls 0.26.4",
  "tokio-socks",
  "tracing",
+ "truefix-binary",
  "truefix-config",
  "truefix-core",
  "truefix-dict",

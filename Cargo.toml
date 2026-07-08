@@ -58,6 +58,7 @@ truefix-transport = { path = "crates/truefix-transport" }
 truefix-config = { path = "crates/truefix-config" }
 truefix-store = { path = "crates/truefix-store" }
 truefix-log = { path = "crates/truefix-log" }
+truefix-binary = { path = "crates/truefix-binary" }
 
 [profile.release]
 # Production builds: keep debug info off, optimize. Benchmarks live in benches/.
