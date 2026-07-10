@@ -10,18 +10,19 @@ use truefix_twsapi_client::requests::{
     CompletedOrdersRequest, ContractDetailsRequest, EmptyRequest, EncodableRequest,
     ExecutionRequest, ExerciseOptionsRequest, FieldSink, FinancialAdvisorRequest,
     GlobalCancelRequest, HeadTimestampRequest, HistogramDataRequest, HistoricalDataRequest,
-    HistoricalTicksRequest, IdRequest, MarketDataRequest, MarketDepthRequest, NewsArticleRequest,
-    PlaceOrderRequest, PnlSingleRequest, RealTimeBarsRequest, ReplaceFinancialAdvisorRequest,
-    ScannerSubscriptionRequest, StartApiRequest, SubscribeToGroupEventsRequest, TickByTickRequest,
-    UpdateDisplayGroupRequest, VerifyAndAuthMessageRequest, VerifyAndAuthRequest,
-    VerifyMessageRequest, VerifyRequest, VersionedRequest, WshEventDataRequest,
-    encode_request_frame, encode_request_frame_with_protobuf, protobuf_min_server_version,
+    HistoricalNewsRequest, HistoricalTicksRequest, IdRequest, MarketDataRequest,
+    MarketDepthRequest, NewsArticleRequest, PlaceOrderRequest, PnlSingleRequest,
+    RealTimeBarsRequest, ReplaceFinancialAdvisorRequest, ScannerSubscriptionRequest,
+    StartApiRequest, SubscribeToGroupEventsRequest, TickByTickRequest, UpdateDisplayGroupRequest,
+    VerifyAndAuthMessageRequest, VerifyAndAuthRequest, VerifyMessageRequest, VerifyRequest,
+    VersionedRequest, WshEventDataRequest, encode_request_frame,
+    encode_request_frame_with_protobuf, protobuf_min_server_version,
 };
 use truefix_twsapi_client::server_versions::{
     MAX_CLIENT_VER, MIN_SERVER_VER_LINKING, MIN_SERVER_VER_MANUAL_ORDER_TIME,
-    MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE, MIN_SERVER_VER_PROTOBUF_MARKET_DATA,
-    MIN_SERVER_VER_REPLACE_FA_END, MIN_SERVER_VER_RFQ_FIELDS, MIN_SERVER_VER_SCANNER_GENERIC_OPTS,
-    MIN_SERVER_VER_SMART_DEPTH, MIN_SERVER_VER_TRADING_CLASS,
+    MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE, MIN_SERVER_VER_NEWS_QUERY_ORIGINS,
+    MIN_SERVER_VER_PROTOBUF_MARKET_DATA, MIN_SERVER_VER_REPLACE_FA_END, MIN_SERVER_VER_RFQ_FIELDS,
+    MIN_SERVER_VER_SCANNER_GENERIC_OPTS, MIN_SERVER_VER_SMART_DEPTH, MIN_SERVER_VER_TRADING_CLASS,
 };
 use truefix_twsapi_client::types::{
     Contract, DepthMarketDataDescription, ExecutionFilter, FamilyCode, HistogramEntry,
@@ -293,6 +294,23 @@ fn typed_request_frames_use_protobuf_when_supported() {
         "20260701".to_owned(),
         "20260702".to_owned(),
     ]));
+
+    let mut fields = FieldSink::default();
+    execution
+        .encode_fields_for_server_version(&mut fields, 41)
+        .unwrap();
+    assert_eq!(field_strings(&fields.into_string())[0..2], ["3", "2"]);
+
+    let mut fields = FieldSink::default();
+    ExecutionRequest {
+        req_id: 9,
+        filter: ExecutionFilter::default(),
+    }
+    .encode_fields_for_server_version(&mut fields, 200)
+    .unwrap();
+    assert!(
+        field_strings(&fields.into_string()).ends_with(&["2147483647".to_owned(), "0".to_owned(),])
+    );
 }
 
 #[test]
@@ -1077,7 +1095,7 @@ fn place_order_request_encodes_extended_order_fields_to_field_protocol() {
     assert!(parts.contains(&"adaptivePriority".to_owned()));
     assert!(parts.contains(&"Normal".to_owned()));
     assert!(parts.contains(&"algo-1".to_owned()));
-    assert!(parts.contains(&"1000".to_owned()));
+    assert!(parts.contains(&"1000.0".to_owned()));
     assert!(parts.contains(&"1".to_owned()));
 }
 
@@ -1282,7 +1300,7 @@ fn legacy_field_encoders_follow_tws_version_gates() {
             "AAPL",
             "STK",
             "202609",
-            "175",
+            "175.0",
             "C",
             "100",
             "SMART",
@@ -1302,7 +1320,7 @@ fn legacy_field_encoders_follow_tws_version_gates() {
             "AAPL",
             "STK",
             "202609",
-            "175",
+            "175.0",
             "C",
             "100",
             "SMART",
@@ -1323,7 +1341,7 @@ fn legacy_field_encoders_follow_tws_version_gates() {
             "AAPL",
             "STK",
             "202609",
-            "175",
+            "175.0",
             "C",
             "100",
             "SMART",
@@ -1453,6 +1471,71 @@ fn scanner_realtime_and_contract_field_encoders_match_python_layouts() {
     let generic_options = encode_scanner(MIN_SERVER_VER_SCANNER_GENERIC_OPTS);
     assert_eq!(generic_options.first().map(String::as_str), Some("4"));
     assert!(generic_options.ends_with(&["filter=value;".to_owned(), "option=value;".to_owned()]));
+}
+
+#[test]
+fn news_field_options_are_versioned_single_fields() {
+    let options = vec![
+        TagValue {
+            tag: "origin".to_owned(),
+            value: "BRFG".to_owned(),
+        },
+        TagValue {
+            tag: "format".to_owned(),
+            value: "text".to_owned(),
+        },
+    ];
+    let article = NewsArticleRequest {
+        req_id: 1,
+        provider_code: "BRFG".to_owned(),
+        article_id: "A1".to_owned(),
+        options: options.clone(),
+    };
+    let historical = HistoricalNewsRequest {
+        req_id: 2,
+        con_id: 265598,
+        provider_codes: "BRFG".to_owned(),
+        start_date_time: "20260701 00:00:00".to_owned(),
+        end_date_time: "20260710 00:00:00".to_owned(),
+        total_results: 10,
+        options,
+    };
+
+    let encode = |request: &dyn EncodableRequest, server_version| {
+        let mut sink = FieldSink::default();
+        request
+            .encode_fields_for_server_version(&mut sink, server_version)
+            .unwrap();
+        field_strings(&sink.into_string())
+    };
+    assert_eq!(encode(&article, 127), ["1", "BRFG", "A1"]);
+    assert_eq!(
+        encode(&article, MIN_SERVER_VER_NEWS_QUERY_ORIGINS),
+        ["1", "BRFG", "A1", "origin=BRFG;format=text;"]
+    );
+    assert_eq!(
+        encode(&historical, 127),
+        [
+            "2",
+            "265598",
+            "BRFG",
+            "20260701 00:00:00",
+            "20260710 00:00:00",
+            "10"
+        ]
+    );
+    assert_eq!(
+        encode(&historical, MIN_SERVER_VER_NEWS_QUERY_ORIGINS),
+        [
+            "2",
+            "265598",
+            "BRFG",
+            "20260701 00:00:00",
+            "20260710 00:00:00",
+            "10",
+            "origin=BRFG;format=text;"
+        ]
+    );
 }
 
 #[test]

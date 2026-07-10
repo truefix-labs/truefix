@@ -55,6 +55,9 @@ fn field_encoding_matches_python_bool_and_empty_sentinel_rules() {
     assert_eq!(comm::make_field(false).unwrap(), "0\0");
     assert_eq!(comm::make_field_handle_empty(UNSET_INTEGER).unwrap(), "\0");
     assert_eq!(comm::make_field_handle_empty(UNSET_DOUBLE).unwrap(), "\0");
+    assert_eq!(comm::make_field(100.0_f64).unwrap(), "100.0\0");
+    assert_eq!(comm::make_field(-0.0_f64).unwrap(), "-0.0\0");
+    assert_eq!(comm::make_field(f64::INFINITY).unwrap(), "inf\0");
     assert_eq!(
         comm::make_field_handle_empty(f64::INFINITY).unwrap(),
         "Infinity\0"

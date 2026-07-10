@@ -14,17 +14,19 @@ use crate::server_versions::{
     MIN_SERVER_VER_CONTRACT_DATA_CHAIN, MIN_SERVER_VER_CUSTOMER_ACCOUNT,
     MIN_SERVER_VER_D_PEG_ORDERS, MIN_SERVER_VER_DECISION_MAKER, MIN_SERVER_VER_DELTA_NEUTRAL,
     MIN_SERVER_VER_DELTA_NEUTRAL_CONID, MIN_SERVER_VER_DELTA_NEUTRAL_OPEN_CLOSE,
-    MIN_SERVER_VER_DURATION, MIN_SERVER_VER_EXT_OPERATOR, MIN_SERVER_VER_FA_PROFILE_DESUPPORT,
-    MIN_SERVER_VER_HEDGE_MAX_SIZE, MIN_SERVER_VER_HEDGE_ORDERS, MIN_SERVER_VER_HISTORICAL_TICKS,
-    MIN_SERVER_VER_IMBALANCE_ONLY, MIN_SERVER_VER_INCLUDE_OVERNIGHT, MIN_SERVER_VER_LINKING,
-    MIN_SERVER_VER_MANUAL_ORDER_TIME, MIN_SERVER_VER_MANUAL_ORDER_TIME_EXERCISE_OPTIONS,
-    MIN_SERVER_VER_MIFID_EXECUTION, MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE,
-    MIN_SERVER_VER_MODELS_SUPPORT, MIN_SERVER_VER_NOT_HELD, MIN_SERVER_VER_OPT_OUT_SMART_ROUTING,
-    MIN_SERVER_VER_ORDER_COMBO_LEGS_PRICE, MIN_SERVER_VER_ORDER_CONTAINER,
-    MIN_SERVER_VER_ORDER_SOLICITED, MIN_SERVER_VER_PARAMETRIZED_DAYS_OF_EXECUTIONS,
-    MIN_SERVER_VER_PEGBEST_PEGMID_OFFSETS, MIN_SERVER_VER_PEGGED_TO_BENCHMARK,
-    MIN_SERVER_VER_PLACE_ORDER_CONID, MIN_SERVER_VER_POST_TO_ATS, MIN_SERVER_VER_PRICE_MGMT_ALGO,
-    MIN_SERVER_VER_PRIMARYEXCH, MIN_SERVER_VER_PROFESSIONAL_CUSTOMER, MIN_SERVER_VER_PROTOBUF,
+    MIN_SERVER_VER_DURATION, MIN_SERVER_VER_EXECUTION_DATA_CHAIN, MIN_SERVER_VER_EXT_OPERATOR,
+    MIN_SERVER_VER_FA_PROFILE_DESUPPORT, MIN_SERVER_VER_HEDGE_MAX_SIZE,
+    MIN_SERVER_VER_HEDGE_ORDERS, MIN_SERVER_VER_HISTORICAL_TICKS, MIN_SERVER_VER_IMBALANCE_ONLY,
+    MIN_SERVER_VER_INCLUDE_OVERNIGHT, MIN_SERVER_VER_LINKING, MIN_SERVER_VER_MANUAL_ORDER_TIME,
+    MIN_SERVER_VER_MANUAL_ORDER_TIME_EXERCISE_OPTIONS, MIN_SERVER_VER_MIFID_EXECUTION,
+    MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE, MIN_SERVER_VER_MODELS_SUPPORT,
+    MIN_SERVER_VER_NEWS_QUERY_ORIGINS, MIN_SERVER_VER_NOT_HELD,
+    MIN_SERVER_VER_OPT_OUT_SMART_ROUTING, MIN_SERVER_VER_ORDER_COMBO_LEGS_PRICE,
+    MIN_SERVER_VER_ORDER_CONTAINER, MIN_SERVER_VER_ORDER_SOLICITED,
+    MIN_SERVER_VER_PARAMETRIZED_DAYS_OF_EXECUTIONS, MIN_SERVER_VER_PEGBEST_PEGMID_OFFSETS,
+    MIN_SERVER_VER_PEGGED_TO_BENCHMARK, MIN_SERVER_VER_PLACE_ORDER_CONID,
+    MIN_SERVER_VER_POST_TO_ATS, MIN_SERVER_VER_PRICE_MGMT_ALGO, MIN_SERVER_VER_PRIMARYEXCH,
+    MIN_SERVER_VER_PROFESSIONAL_CUSTOMER, MIN_SERVER_VER_PROTOBUF,
     MIN_SERVER_VER_PROTOBUF_ACCOUNTS_POSITIONS, MIN_SERVER_VER_PROTOBUF_COMPLETED_ORDER,
     MIN_SERVER_VER_PROTOBUF_CONTRACT_DATA, MIN_SERVER_VER_PROTOBUF_HISTORICAL_DATA,
     MIN_SERVER_VER_PROTOBUF_MARKET_DATA, MIN_SERVER_VER_PROTOBUF_NEWS_DATA,
@@ -808,11 +810,22 @@ impl EncodableRequest for NewsArticleRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         fields
             .push(self.req_id)?
             .push(&self.provider_code)?
             .push(&self.article_id)?;
-        encode_tag_values(fields, &self.options)
+        if server_version >= MIN_SERVER_VER_NEWS_QUERY_ORIGINS {
+            fields.push(tag_values_to_tws_options(&self.options))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -853,6 +866,14 @@ impl EncodableRequest for HistoricalNewsRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         fields
             .push(self.req_id)?
             .push(self.con_id)?
@@ -860,7 +881,10 @@ impl EncodableRequest for HistoricalNewsRequest {
             .push(&self.start_date_time)?
             .push(&self.end_date_time)?
             .push(self.total_results)?;
-        encode_tag_values(fields, &self.options)
+        if server_version >= MIN_SERVER_VER_NEWS_QUERY_ORIGINS {
+            fields.push(tag_values_to_tws_options(&self.options))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -2192,9 +2216,11 @@ impl EncodableRequest for ExecutionRequest {
         fields: &mut FieldSink,
         server_version: i32,
     ) -> TwsApiResult<()> {
+        fields.push(3)?;
+        if server_version >= MIN_SERVER_VER_EXECUTION_DATA_CHAIN {
+            fields.push(self.req_id)?;
+        }
         fields
-            .push(3)?
-            .push(self.req_id)?
             .push(self.filter.client_id)?
             .push(&self.filter.acct_code)?
             .push(&self.filter.time)?
@@ -2204,7 +2230,7 @@ impl EncodableRequest for ExecutionRequest {
             .push(&self.filter.side)?;
         if server_version >= MIN_SERVER_VER_PARAMETRIZED_DAYS_OF_EXECUTIONS {
             fields
-                .push_empty(self.filter.last_n_days)?
+                .push(self.filter.last_n_days)?
                 .push(self.filter.specific_dates.len())?;
             for date in &self.filter.specific_dates {
                 fields.push(*date)?;
