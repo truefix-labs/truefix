@@ -470,10 +470,18 @@ impl EncodableRequest for CancelMarketDepthRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
-        fields
-            .push(1)?
-            .push(self.req_id)?
-            .push(self.is_smart_depth)?;
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        fields.push(1)?.push(self.req_id)?;
+        if server_version >= MIN_SERVER_VER_SMART_DEPTH {
+            fields.push(self.is_smart_depth)?;
+        }
         Ok(())
     }
 
@@ -528,11 +536,21 @@ impl EncodableRequest for GlobalCancelRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
-        fields
-            .push(1)?
-            .push(&self.order_cancel.manual_order_cancel_time)?
-            .push(&self.order_cancel.ext_operator)?
-            .push(self.order_cancel.manual_order_indicator)?;
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        if server_version < MIN_SERVER_VER_CME_TAGGING_FIELDS {
+            fields.push(1)?;
+        } else {
+            fields
+                .push(&self.order_cancel.ext_operator)?
+                .push_empty(self.order_cancel.manual_order_indicator)?;
+        }
         Ok(())
     }
 

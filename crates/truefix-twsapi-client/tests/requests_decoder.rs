@@ -6,16 +6,16 @@ use truefix_twsapi_client::message::{Incoming, Outgoing, PROTOBUF_MSG_ID};
 use truefix_twsapi_client::protobuf;
 use truefix_twsapi_client::requests::{
     AccountSummaryRequest, AccountUpdatesMultiRequest, CalculateImpliedVolatilityRequest,
-    CalculateOptionPriceRequest, CancelOrderRequest, CompletedOrdersRequest,
-    ContractDetailsRequest, EmptyRequest, EncodableRequest, ExecutionRequest,
-    ExerciseOptionsRequest, FieldSink, FinancialAdvisorRequest, HeadTimestampRequest,
-    HistoricalDataRequest, HistoricalTicksRequest, IdRequest, MarketDataRequest,
-    MarketDepthRequest, NewsArticleRequest, PlaceOrderRequest, PnlSingleRequest,
-    RealTimeBarsRequest, ReplaceFinancialAdvisorRequest, ScannerSubscriptionRequest,
-    StartApiRequest, SubscribeToGroupEventsRequest, TickByTickRequest, UpdateDisplayGroupRequest,
-    VerifyAndAuthMessageRequest, VerifyAndAuthRequest, VerifyMessageRequest, VerifyRequest,
-    VersionedRequest, WshEventDataRequest, encode_request_frame,
-    encode_request_frame_with_protobuf, protobuf_min_server_version,
+    CalculateOptionPriceRequest, CancelMarketDepthRequest, CancelOrderRequest,
+    CompletedOrdersRequest, ContractDetailsRequest, EmptyRequest, EncodableRequest,
+    ExecutionRequest, ExerciseOptionsRequest, FieldSink, FinancialAdvisorRequest,
+    GlobalCancelRequest, HeadTimestampRequest, HistoricalDataRequest, HistoricalTicksRequest,
+    IdRequest, MarketDataRequest, MarketDepthRequest, NewsArticleRequest, PlaceOrderRequest,
+    PnlSingleRequest, RealTimeBarsRequest, ReplaceFinancialAdvisorRequest,
+    ScannerSubscriptionRequest, StartApiRequest, SubscribeToGroupEventsRequest, TickByTickRequest,
+    UpdateDisplayGroupRequest, VerifyAndAuthMessageRequest, VerifyAndAuthRequest,
+    VerifyMessageRequest, VerifyRequest, VersionedRequest, WshEventDataRequest,
+    encode_request_frame, encode_request_frame_with_protobuf, protobuf_min_server_version,
 };
 use truefix_twsapi_client::server_versions::{
     MAX_CLIENT_VER, MIN_SERVER_VER_MANUAL_ORDER_TIME, MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE,
@@ -1188,6 +1188,36 @@ fn legacy_field_encoders_follow_tws_version_gates() {
     assert_eq!(
         encode_cancel(192),
         ["7", "20260710-12:00:00", "operator", "1"]
+    );
+
+    let global_cancel = GlobalCancelRequest {
+        order_cancel: cancel.order_cancel.clone(),
+    };
+    let encode_global_cancel = |server_version| {
+        let mut fields = FieldSink::default();
+        global_cancel
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(encode_global_cancel(191), ["1"]);
+    assert_eq!(encode_global_cancel(192), ["operator", "1"]);
+
+    let cancel_depth = CancelMarketDepthRequest {
+        req_id: 9,
+        is_smart_depth: true,
+    };
+    let encode_cancel_depth = |server_version| {
+        let mut fields = FieldSink::default();
+        cancel_depth
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(encode_cancel_depth(145), ["1", "9"]);
+    assert_eq!(
+        encode_cancel_depth(MIN_SERVER_VER_SMART_DEPTH),
+        ["1", "9", "1"]
     );
 
     let replace = ReplaceFinancialAdvisorRequest {
