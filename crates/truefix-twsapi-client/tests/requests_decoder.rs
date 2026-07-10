@@ -18,7 +18,9 @@ use truefix_twsapi_client::requests::{
     encode_request_frame_with_protobuf, protobuf_min_server_version,
 };
 use truefix_twsapi_client::server_versions::{
-    MAX_CLIENT_VER, MIN_SERVER_VER_PROTOBUF_MARKET_DATA, MIN_SERVER_VER_RFQ_FIELDS,
+    MAX_CLIENT_VER, MIN_SERVER_VER_MANUAL_ORDER_TIME, MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE,
+    MIN_SERVER_VER_PROTOBUF_MARKET_DATA, MIN_SERVER_VER_REPLACE_FA_END, MIN_SERVER_VER_RFQ_FIELDS,
+    MIN_SERVER_VER_SMART_DEPTH,
 };
 use truefix_twsapi_client::types::{
     Contract, DepthMarketDataDescription, ExecutionFilter, FamilyCode, HistogramEntry,
@@ -1155,6 +1157,154 @@ fn place_order_field_protocol_keeps_conditional_fields_in_wire_order() {
         &peg_best,
         &["3", "4", "Infinity", "0.1", "0.2", "customer", "1", "", ""],
     ));
+}
+
+#[test]
+fn legacy_field_encoders_follow_tws_version_gates() {
+    let cancel = CancelOrderRequest {
+        order_id: 7,
+        order_cancel: OrderCancel {
+            manual_order_cancel_time: "20260710-12:00:00".to_owned(),
+            ext_operator: "operator".to_owned(),
+            manual_order_indicator: 1,
+        },
+    };
+    let encode_cancel = |server_version| {
+        let mut fields = FieldSink::default();
+        cancel
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(encode_cancel(168), ["1", "7"]);
+    assert_eq!(
+        encode_cancel(MIN_SERVER_VER_MANUAL_ORDER_TIME),
+        ["1", "7", "20260710-12:00:00"]
+    );
+    assert_eq!(
+        encode_cancel(MIN_SERVER_VER_RFQ_FIELDS),
+        ["1", "7", "20260710-12:00:00", "", "", ""]
+    );
+    assert_eq!(
+        encode_cancel(192),
+        ["7", "20260710-12:00:00", "operator", "1"]
+    );
+
+    let replace = ReplaceFinancialAdvisorRequest {
+        req_id: 8,
+        fa_data_type: 3,
+        xml: "<xml/>".to_owned(),
+    };
+    let encode_replace = |server_version| {
+        let mut fields = FieldSink::default();
+        replace
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(encode_replace(156), ["1", "3", "<xml/>"]);
+    assert_eq!(
+        encode_replace(MIN_SERVER_VER_REPLACE_FA_END),
+        ["1", "3", "<xml/>", "8"]
+    );
+
+    let depth = MarketDepthRequest {
+        req_id: 9,
+        contract: Contract {
+            con_id: 265598,
+            symbol: "AAPL".to_owned(),
+            sec_type: "STK".to_owned(),
+            last_trade_date_or_contract_month: "202609".to_owned(),
+            strike: 175.0,
+            right: "C".to_owned(),
+            multiplier: "100".to_owned(),
+            exchange: "SMART".to_owned(),
+            primary_exchange: "NASDAQ".to_owned(),
+            currency: "USD".to_owned(),
+            local_symbol: "AAPL".to_owned(),
+            trading_class: "NMS".to_owned(),
+            include_expired: true,
+            sec_id_type: "ISIN".to_owned(),
+            sec_id: "US0378331005".to_owned(),
+            ..Contract::default()
+        },
+        num_rows: 10,
+        is_smart_depth: true,
+        market_depth_options: vec![TagValue {
+            tag: "exchange".to_owned(),
+            value: "ISLAND".to_owned(),
+        }],
+    };
+    let encode_depth = |server_version| {
+        let mut fields = FieldSink::default();
+        depth
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(
+        encode_depth(MIN_SERVER_VER_SMART_DEPTH - 1),
+        [
+            "5",
+            "9",
+            "265598",
+            "AAPL",
+            "STK",
+            "202609",
+            "175",
+            "C",
+            "100",
+            "SMART",
+            "USD",
+            "AAPL",
+            "NMS",
+            "10",
+            "exchange=ISLAND;"
+        ]
+    );
+    assert_eq!(
+        encode_depth(MIN_SERVER_VER_SMART_DEPTH),
+        [
+            "5",
+            "9",
+            "265598",
+            "AAPL",
+            "STK",
+            "202609",
+            "175",
+            "C",
+            "100",
+            "SMART",
+            "USD",
+            "AAPL",
+            "NMS",
+            "10",
+            "1",
+            "exchange=ISLAND;"
+        ]
+    );
+    assert_eq!(
+        encode_depth(MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE),
+        [
+            "5",
+            "9",
+            "265598",
+            "AAPL",
+            "STK",
+            "202609",
+            "175",
+            "C",
+            "100",
+            "SMART",
+            "NASDAQ",
+            "USD",
+            "AAPL",
+            "NMS",
+            "10",
+            "1",
+            "exchange=ISLAND;"
+        ]
+    );
 }
 
 #[test]

@@ -18,27 +18,27 @@ use crate::server_versions::{
     MIN_SERVER_VER_HEDGE_MAX_SIZE, MIN_SERVER_VER_HEDGE_ORDERS, MIN_SERVER_VER_HISTORICAL_TICKS,
     MIN_SERVER_VER_IMBALANCE_ONLY, MIN_SERVER_VER_INCLUDE_OVERNIGHT, MIN_SERVER_VER_LINKING,
     MIN_SERVER_VER_MANUAL_ORDER_TIME, MIN_SERVER_VER_MANUAL_ORDER_TIME_EXERCISE_OPTIONS,
-    MIN_SERVER_VER_MIFID_EXECUTION, MIN_SERVER_VER_MODELS_SUPPORT, MIN_SERVER_VER_NOT_HELD,
-    MIN_SERVER_VER_OPT_OUT_SMART_ROUTING, MIN_SERVER_VER_ORDER_COMBO_LEGS_PRICE,
-    MIN_SERVER_VER_ORDER_CONTAINER, MIN_SERVER_VER_ORDER_SOLICITED,
-    MIN_SERVER_VER_PARAMETRIZED_DAYS_OF_EXECUTIONS, MIN_SERVER_VER_PEGBEST_PEGMID_OFFSETS,
-    MIN_SERVER_VER_PEGGED_TO_BENCHMARK, MIN_SERVER_VER_PLACE_ORDER_CONID,
-    MIN_SERVER_VER_POST_TO_ATS, MIN_SERVER_VER_PRICE_MGMT_ALGO, MIN_SERVER_VER_PRIMARYEXCH,
-    MIN_SERVER_VER_PROFESSIONAL_CUSTOMER, MIN_SERVER_VER_PROTOBUF,
+    MIN_SERVER_VER_MIFID_EXECUTION, MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE,
+    MIN_SERVER_VER_MODELS_SUPPORT, MIN_SERVER_VER_NOT_HELD, MIN_SERVER_VER_OPT_OUT_SMART_ROUTING,
+    MIN_SERVER_VER_ORDER_COMBO_LEGS_PRICE, MIN_SERVER_VER_ORDER_CONTAINER,
+    MIN_SERVER_VER_ORDER_SOLICITED, MIN_SERVER_VER_PARAMETRIZED_DAYS_OF_EXECUTIONS,
+    MIN_SERVER_VER_PEGBEST_PEGMID_OFFSETS, MIN_SERVER_VER_PEGGED_TO_BENCHMARK,
+    MIN_SERVER_VER_PLACE_ORDER_CONID, MIN_SERVER_VER_POST_TO_ATS, MIN_SERVER_VER_PRICE_MGMT_ALGO,
+    MIN_SERVER_VER_PRIMARYEXCH, MIN_SERVER_VER_PROFESSIONAL_CUSTOMER, MIN_SERVER_VER_PROTOBUF,
     MIN_SERVER_VER_PROTOBUF_ACCOUNTS_POSITIONS, MIN_SERVER_VER_PROTOBUF_COMPLETED_ORDER,
     MIN_SERVER_VER_PROTOBUF_CONTRACT_DATA, MIN_SERVER_VER_PROTOBUF_HISTORICAL_DATA,
     MIN_SERVER_VER_PROTOBUF_MARKET_DATA, MIN_SERVER_VER_PROTOBUF_NEWS_DATA,
     MIN_SERVER_VER_PROTOBUF_PLACE_ORDER, MIN_SERVER_VER_PROTOBUF_REST_MESSAGES_1,
     MIN_SERVER_VER_PROTOBUF_REST_MESSAGES_2, MIN_SERVER_VER_PROTOBUF_REST_MESSAGES_3,
     MIN_SERVER_VER_PROTOBUF_SCAN_DATA, MIN_SERVER_VER_PTA_ORDERS,
-    MIN_SERVER_VER_RANDOMIZE_SIZE_AND_PRICE, MIN_SERVER_VER_REQ_CALC_IMPLIED_VOLAT,
-    MIN_SERVER_VER_REQ_MKT_DATA_CONID, MIN_SERVER_VER_REQ_SMART_COMPONENTS,
-    MIN_SERVER_VER_RFQ_FIELDS, MIN_SERVER_VER_SCALE_ORDERS2, MIN_SERVER_VER_SCALE_ORDERS3,
-    MIN_SERVER_VER_SCALE_TABLE, MIN_SERVER_VER_SEC_ID_TYPE,
-    MIN_SERVER_VER_SMART_COMBO_ROUTING_PARAMS, MIN_SERVER_VER_SOFT_DOLLAR_TIER,
-    MIN_SERVER_VER_SSHORTX_OLD, MIN_SERVER_VER_SYNT_REALTIME_BARS, MIN_SERVER_VER_TICK_BY_TICK,
-    MIN_SERVER_VER_TICK_BY_TICK_IGNORE_SIZE, MIN_SERVER_VER_TRADING_CLASS,
-    MIN_SERVER_VER_TRAILING_PERCENT, MIN_SERVER_VER_UNDO_RFQ_FIELDS,
+    MIN_SERVER_VER_RANDOMIZE_SIZE_AND_PRICE, MIN_SERVER_VER_REPLACE_FA_END,
+    MIN_SERVER_VER_REQ_CALC_IMPLIED_VOLAT, MIN_SERVER_VER_REQ_MKT_DATA_CONID,
+    MIN_SERVER_VER_REQ_SMART_COMPONENTS, MIN_SERVER_VER_RFQ_FIELDS, MIN_SERVER_VER_SCALE_ORDERS2,
+    MIN_SERVER_VER_SCALE_ORDERS3, MIN_SERVER_VER_SCALE_TABLE, MIN_SERVER_VER_SEC_ID_TYPE,
+    MIN_SERVER_VER_SMART_COMBO_ROUTING_PARAMS, MIN_SERVER_VER_SMART_DEPTH,
+    MIN_SERVER_VER_SOFT_DOLLAR_TIER, MIN_SERVER_VER_SSHORTX_OLD, MIN_SERVER_VER_SYNT_REALTIME_BARS,
+    MIN_SERVER_VER_TICK_BY_TICK, MIN_SERVER_VER_TICK_BY_TICK_IGNORE_SIZE,
+    MIN_SERVER_VER_TRADING_CLASS, MIN_SERVER_VER_TRAILING_PERCENT, MIN_SERVER_VER_UNDO_RFQ_FIELDS,
 };
 use crate::types::{
     Contract, ExecutionFilter, Order, OrderCancel, ScannerSubscription, TagValue, TickerId,
@@ -1005,11 +1005,18 @@ impl EncodableRequest for ReplaceFinancialAdvisorRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
-        fields
-            .push(1)?
-            .push(self.req_id)?
-            .push(self.fa_data_type)?
-            .push(&self.xml)?;
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        fields.push(1)?.push(self.fa_data_type)?.push(&self.xml)?;
+        if server_version >= MIN_SERVER_VER_REPLACE_FA_END {
+            fields.push(self.req_id)?;
+        }
         Ok(())
     }
 
@@ -1983,10 +1990,43 @@ impl EncodableRequest for MarketDepthRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         fields.push(5)?.push(self.req_id)?;
-        encode_contract_core(fields, &self.contract)?;
-        fields.push(self.num_rows)?.push(self.is_smart_depth)?;
-        encode_tag_values(fields, &self.market_depth_options)
+        if server_version >= MIN_SERVER_VER_TRADING_CLASS {
+            fields.push(self.contract.con_id)?;
+        }
+        fields
+            .push(&self.contract.symbol)?
+            .push(&self.contract.sec_type)?
+            .push(&self.contract.last_trade_date_or_contract_month)?
+            .push_empty(self.contract.strike)?
+            .push(&self.contract.right)?
+            .push(&self.contract.multiplier)?
+            .push(&self.contract.exchange)?;
+        if server_version >= MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE {
+            fields.push(&self.contract.primary_exchange)?;
+        }
+        fields
+            .push(&self.contract.currency)?
+            .push(&self.contract.local_symbol)?;
+        if server_version >= MIN_SERVER_VER_TRADING_CLASS {
+            fields.push(&self.contract.trading_class)?;
+        }
+        fields.push(self.num_rows)?;
+        if server_version >= MIN_SERVER_VER_SMART_DEPTH {
+            fields.push(self.is_smart_depth)?;
+        }
+        if server_version >= MIN_SERVER_VER_LINKING {
+            fields.push(tag_values_to_tws_options(&self.market_depth_options))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -2064,12 +2104,29 @@ impl EncodableRequest for CancelOrderRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
-        fields
-            .push(1)?
-            .push(self.order_id)?
-            .push(&self.order_cancel.manual_order_cancel_time)?
-            .push(&self.order_cancel.ext_operator)?
-            .push(self.order_cancel.manual_order_indicator)?;
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        if server_version < MIN_SERVER_VER_CME_TAGGING_FIELDS {
+            fields.push(1)?;
+        }
+        fields.push(self.order_id)?;
+        if server_version >= MIN_SERVER_VER_MANUAL_ORDER_TIME {
+            fields.push(&self.order_cancel.manual_order_cancel_time)?;
+        }
+        if (MIN_SERVER_VER_RFQ_FIELDS..MIN_SERVER_VER_UNDO_RFQ_FIELDS).contains(&server_version) {
+            fields.push("")?.push("")?.push_empty(UNSET_INTEGER)?;
+        }
+        if server_version >= MIN_SERVER_VER_CME_TAGGING_FIELDS {
+            fields
+                .push(&self.order_cancel.ext_operator)?
+                .push_empty(self.order_cancel.manual_order_indicator)?;
+        }
         Ok(())
     }
 
