@@ -1,7 +1,7 @@
 use aes::Aes128;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, KeyIvInit, generic_array::GenericArray};
-use cbc::{Decryptor, Encryptor};
 use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, block_padding::Pkcs7};
+use cbc::{Decryptor, Encryptor};
 
 use crate::error::{FutuError, FutuResult};
 
@@ -36,7 +36,9 @@ impl EncAlgo {
             Self::FtAesEcb { key } => decrypt_ft_aes_ecb(*key, ciphertext),
             Self::AesCbc { key, iv } => {
                 if !ciphertext.len().is_multiple_of(16) {
-                    return Err(FutuError::Crypto("ciphertext length must be multiple of 16".into()));
+                    return Err(FutuError::Crypto(
+                        "ciphertext length must be multiple of 16".into(),
+                    ));
                 }
                 let cipher = Decryptor::<Aes128>::new(key.into(), iv.into());
                 let mut buf = ciphertext.to_vec();
@@ -72,7 +74,9 @@ fn encrypt_ft_aes_ecb(key: [u8; 16], plaintext: &[u8]) -> FutuResult<Vec<u8>> {
 
 fn decrypt_ft_aes_ecb(key: [u8; 16], ciphertext: &[u8]) -> FutuResult<Vec<u8>> {
     if ciphertext.len() < 16 || !ciphertext.len().is_multiple_of(16) {
-        return Err(FutuError::Crypto("ciphertext length must be multiple of 16".into()));
+        return Err(FutuError::Crypto(
+            "ciphertext length must be multiple of 16".into(),
+        ));
     }
     let body_len = ciphertext.len() - 16;
     let mut out = ciphertext

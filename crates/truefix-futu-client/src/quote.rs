@@ -96,8 +96,9 @@ macro_rules! skill_wrap_unusual {
             &self,
             request: crate::pb::skill_wrap_api::$req_ty,
         ) -> FutuResult<crate::pb::skill_wrap_api::$rsp_ty> {
-            let resp: crate::pb::skill_wrap_api::$rsp_ty =
-                self.request(crate::proto_id::$proto_const, &request).await?;
+            let resp: crate::pb::skill_wrap_api::$rsp_ty = self
+                .request(crate::proto_id::$proto_const, &request)
+                .await?;
             if resp.ret_type == 0 {
                 Ok(resp)
             } else {
@@ -140,7 +141,9 @@ impl QuoteClient {
                 header: request.header,
             },
         };
-        let resp = self.request::<_, pb::qot_sub::Response>(proto_id::QOT_SUB, &req).await?;
+        let resp = self
+            .request::<_, pb::qot_sub::Response>(proto_id::QOT_SUB, &req)
+            .await?;
         ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         self.core.remember_subscription(&replay_request).await;
         Ok(())
@@ -160,10 +163,7 @@ impl QuoteClient {
         })
     }
 
-    pub async fn test_cmd(
-        &self,
-        request: pb::test_cmd::Request,
-    ) -> FutuResult<pb::test_cmd::S2c> {
+    pub async fn test_cmd(&self, request: pb::test_cmd::Request) -> FutuResult<pb::test_cmd::S2c> {
         let resp = self
             .request::<_, pb::test_cmd::Response>(proto_id::TEST_CMD, &request)
             .await?;
@@ -267,14 +267,16 @@ impl QuoteClient {
             c2s: pb::qot_get_kl::C2s {
                 rehab_type: request.rehab_type,
                 kl_type: request.kl_type,
-                security: request.security.ok_or_else(|| {
-                    FutuError::Crypto("get_kl requires a security".to_owned())
-                })?,
+                security: request
+                    .security
+                    .ok_or_else(|| FutuError::Crypto("get_kl requires a security".to_owned()))?,
                 req_num: request.req_num,
                 header: request.header,
             },
         };
-        let resp = self.request::<_, pb::qot_get_kl::Response>(proto_id::QOT_GET_KL, &req).await?;
+        let resp = self
+            .request::<_, pb::qot_get_kl::Response>(proto_id::QOT_GET_KL, &req)
+            .await?;
         ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         resp.s2c.ok_or_else(|| FutuError::OpenDError {
             ret_type: resp.ret_type,
@@ -493,7 +495,10 @@ impl QuoteClient {
         request: pb::qot_get_option_chain::Request,
     ) -> FutuResult<pb::qot_get_option_chain::S2c> {
         let resp = self
-            .request::<_, pb::qot_get_option_chain::Response>(proto_id::QOT_GET_OPTION_CHAIN, &request)
+            .request::<_, pb::qot_get_option_chain::Response>(
+                proto_id::QOT_GET_OPTION_CHAIN,
+                &request,
+            )
             .await?;
         ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         resp.s2c.ok_or_else(|| FutuError::OpenDError {
@@ -521,7 +526,10 @@ impl QuoteClient {
         request: pb::qot_get_option_quote::Request,
     ) -> FutuResult<pb::qot_get_option_quote::S2c> {
         let resp = self
-            .request::<_, pb::qot_get_option_quote::Response>(proto_id::QOT_GET_OPTION_QUOTE, &request)
+            .request::<_, pb::qot_get_option_quote::Response>(
+                proto_id::QOT_GET_OPTION_QUOTE,
+                &request,
+            )
             .await?;
         ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         resp.s2c.ok_or_else(|| FutuError::OpenDError {
@@ -535,7 +543,10 @@ impl QuoteClient {
         request: pb::qot_get_search_quote::Request,
     ) -> FutuResult<pb::qot_get_search_quote::S2c> {
         let resp = self
-            .request::<_, pb::qot_get_search_quote::Response>(proto_id::QOT_GET_SEARCH_QUOTE, &request)
+            .request::<_, pb::qot_get_search_quote::Response>(
+                proto_id::QOT_GET_SEARCH_QUOTE,
+                &request,
+            )
             .await?;
         ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         resp.s2c.ok_or_else(|| FutuError::OpenDError {
@@ -549,7 +560,10 @@ impl QuoteClient {
         request: pb::qot_get_search_news::Request,
     ) -> FutuResult<pb::qot_get_search_news::S2c> {
         let resp = self
-            .request::<_, pb::qot_get_search_news::Response>(proto_id::QOT_GET_SEARCH_NEWS, &request)
+            .request::<_, pb::qot_get_search_news::Response>(
+                proto_id::QOT_GET_SEARCH_NEWS,
+                &request,
+            )
             .await?;
         ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         resp.s2c.ok_or_else(|| FutuError::OpenDError {
@@ -707,7 +721,10 @@ impl QuoteClient {
         request: pb::qot_get_option_rank::Request,
     ) -> FutuResult<pb::qot_get_option_rank::S2c> {
         let resp = self
-            .request::<_, pb::qot_get_option_rank::Response>(proto_id::QOT_GET_OPTION_RANK, &request)
+            .request::<_, pb::qot_get_option_rank::Response>(
+                proto_id::QOT_GET_OPTION_RANK,
+                &request,
+            )
             .await?;
         ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         resp.s2c.ok_or_else(|| FutuError::OpenDError {
@@ -721,7 +738,10 @@ impl QuoteClient {
         request: pb::qot_get_option_event::Request,
     ) -> FutuResult<pb::qot_get_option_event::S2c> {
         let resp = self
-            .request::<_, pb::qot_get_option_event::Response>(proto_id::QOT_GET_OPTION_EVENT, &request)
+            .request::<_, pb::qot_get_option_event::Response>(
+                proto_id::QOT_GET_OPTION_EVENT,
+                &request,
+            )
             .await?;
         ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         resp.s2c.ok_or_else(|| FutuError::OpenDError {
@@ -1068,82 +1088,357 @@ impl QuoteClient {
         })
     }
 
-    quote_passthrough!(get_financials_earnings_price_move, QOT_GET_FINANCIALS_EARNINGS_PRICE_MOVE, qot_get_financials_earnings_price_move);
-    quote_passthrough!(get_financials_earnings_price_history, QOT_GET_FINANCIALS_EARNINGS_PRICE_HISTORY, qot_get_financials_earnings_price_history);
-    quote_passthrough!(get_financials_statements, QOT_GET_FINANCIALS_STATEMENTS, qot_get_financials_statements);
-    quote_passthrough!(get_financials_revenue_breakdown, QOT_GET_FINANCIALS_REVENUE_BREAKDOWN, qot_get_financials_revenue_breakdown);
-    quote_passthrough!(get_research_analyst_consensus, QOT_GET_RESEARCH_ANALYST_CONSENSUS, qot_get_research_analyst_consensus);
-    quote_passthrough!(get_research_rating_summary, QOT_GET_RESEARCH_RATING_SUMMARY, qot_get_research_rating_summary);
-    quote_passthrough!(get_research_morningstar_report, QOT_GET_RESEARCH_MORNINGSTAR_REPORT, qot_get_research_morningstar_report);
-    quote_passthrough!(get_valuation_detail, QOT_GET_VALUATION_DETAIL, qot_get_valuation_detail);
-    quote_passthrough!(get_valuation_plate_stock_list, QOT_GET_VALUATION_PLATE_STOCK_LIST, qot_get_valuation_plate_stock_list);
-    quote_passthrough!(get_corporate_actions_dividends, QOT_GET_CORPORATE_ACTIONS_DIVIDENDS, qot_get_corporate_actions_dividends);
-    quote_passthrough!(get_corporate_actions_buybacks, QOT_GET_CORPORATE_ACTIONS_BUYBACKS, qot_get_corporate_actions_buybacks);
-    quote_passthrough!(get_corporate_actions_stock_splits, QOT_GET_CORPORATE_ACTIONS_STOCK_SPLITS, qot_get_corporate_actions_stock_splits);
-    quote_passthrough!(get_shareholders_overview, QOT_GET_SHAREHOLDERS_OVERVIEW, qot_get_shareholders_overview);
-    quote_passthrough!(get_shareholders_holding_changes, QOT_GET_SHAREHOLDERS_HOLDING_CHANGES, qot_get_shareholders_holding_changes);
-    quote_passthrough!(get_shareholders_holder_detail, QOT_GET_SHAREHOLDERS_HOLDER_DETAIL, qot_get_shareholders_holder_detail);
-    quote_passthrough!(get_shareholders_institutional, QOT_GET_SHAREHOLDERS_INSTITUTIONAL, qot_get_shareholders_institutional);
-    quote_passthrough!(get_insider_holder_list, QOT_GET_INSIDER_HOLDER_LIST, qot_get_insider_holder_list);
-    quote_passthrough!(get_insider_trade_list, QOT_GET_INSIDER_TRADE_LIST, qot_get_insider_trade_list);
-    quote_passthrough!(get_company_profile, QOT_GET_COMPANY_PROFILE, qot_get_company_profile);
-    quote_passthrough!(get_company_executives, QOT_GET_COMPANY_EXECUTIVES, qot_get_company_executives);
-    quote_passthrough!(get_company_executive_background, QOT_GET_COMPANY_EXECUTIVE_BACKGROUND, qot_get_company_executive_background);
-    quote_passthrough!(get_company_operational_efficiency, QOT_GET_COMPANY_OPERATIONAL_EFFICIENCY, qot_get_company_operational_efficiency);
-    quote_passthrough!(get_top_ten_buy_sell_brokers, QOT_GET_TOP_TEN_BUY_SELL_BROKERS, qot_get_top_ten_buy_sell_brokers);
-    quote_passthrough!(get_daily_short_volume, QOT_GET_DAILY_SHORT_VOLUME, qot_get_daily_short_volume);
-    quote_passthrough!(get_short_interest, QOT_GET_SHORT_INTEREST, qot_get_short_interest);
-    quote_passthrough!(get_option_exercise_probability, QOT_GET_OPTION_EXERCISE_PROBABILITY, qot_get_option_exercise_probability);
-    quote_passthrough!(get_option_volatility, QOT_GET_OPTION_VOLATILITY, qot_get_option_volatility);
-    quote_passthrough!(get_earnings_calendar, QOT_GET_EARNINGS_CALENDAR, qot_get_earnings_calendar);
-    quote_passthrough!(get_macro_indicator_list, QOT_GET_MACRO_INDICATOR_LIST, qot_get_macro_indicator_list);
-    quote_passthrough!(get_macro_indicator_history, QOT_GET_MACRO_INDICATOR_HISTORY, qot_get_macro_indicator_history);
-    quote_passthrough!(get_fed_watch_target_rate, QOT_GET_FED_WATCH_TARGET_RATE, qot_get_fed_watch_target_rate);
-    quote_passthrough!(get_fed_watch_dot_plot, QOT_GET_FED_WATCH_DOT_PLOT, qot_get_fed_watch_dot_plot);
-    quote_passthrough!(get_economic_calendar, QOT_GET_ECONOMIC_CALENDAR, qot_get_economic_calendar);
-    quote_passthrough!(get_earnings_beat_rank, QOT_GET_EARNINGS_BEAT_RANK, qot_get_earnings_beat_rank);
-    quote_passthrough!(get_dividend_rank, QOT_GET_DIVIDEND_RANK, qot_get_dividend_rank);
-    quote_passthrough!(get_dividend_calendar, QOT_GET_DIVIDEND_CALENDAR, qot_get_dividend_calendar);
-    quote_passthrough!(get_us_pre_market_rank, QOT_GET_US_PRE_MARKET_RANK, qot_get_us_pre_market_rank);
-    quote_passthrough!(get_us_after_hours_rank, QOT_GET_US_AFTER_HOURS_RANK, qot_get_us_after_hours_rank);
-    quote_passthrough!(get_us_overnight_rank, QOT_GET_US_OVERNIGHT_RANK, qot_get_us_overnight_rank);
-    quote_passthrough!(get_top_movers_rank, QOT_GET_TOP_MOVERS_RANK, qot_get_top_movers_rank);
+    quote_passthrough!(
+        get_financials_earnings_price_move,
+        QOT_GET_FINANCIALS_EARNINGS_PRICE_MOVE,
+        qot_get_financials_earnings_price_move
+    );
+    quote_passthrough!(
+        get_financials_earnings_price_history,
+        QOT_GET_FINANCIALS_EARNINGS_PRICE_HISTORY,
+        qot_get_financials_earnings_price_history
+    );
+    quote_passthrough!(
+        get_financials_statements,
+        QOT_GET_FINANCIALS_STATEMENTS,
+        qot_get_financials_statements
+    );
+    quote_passthrough!(
+        get_financials_revenue_breakdown,
+        QOT_GET_FINANCIALS_REVENUE_BREAKDOWN,
+        qot_get_financials_revenue_breakdown
+    );
+    quote_passthrough!(
+        get_research_analyst_consensus,
+        QOT_GET_RESEARCH_ANALYST_CONSENSUS,
+        qot_get_research_analyst_consensus
+    );
+    quote_passthrough!(
+        get_research_rating_summary,
+        QOT_GET_RESEARCH_RATING_SUMMARY,
+        qot_get_research_rating_summary
+    );
+    quote_passthrough!(
+        get_research_morningstar_report,
+        QOT_GET_RESEARCH_MORNINGSTAR_REPORT,
+        qot_get_research_morningstar_report
+    );
+    quote_passthrough!(
+        get_valuation_detail,
+        QOT_GET_VALUATION_DETAIL,
+        qot_get_valuation_detail
+    );
+    quote_passthrough!(
+        get_valuation_plate_stock_list,
+        QOT_GET_VALUATION_PLATE_STOCK_LIST,
+        qot_get_valuation_plate_stock_list
+    );
+    quote_passthrough!(
+        get_corporate_actions_dividends,
+        QOT_GET_CORPORATE_ACTIONS_DIVIDENDS,
+        qot_get_corporate_actions_dividends
+    );
+    quote_passthrough!(
+        get_corporate_actions_buybacks,
+        QOT_GET_CORPORATE_ACTIONS_BUYBACKS,
+        qot_get_corporate_actions_buybacks
+    );
+    quote_passthrough!(
+        get_corporate_actions_stock_splits,
+        QOT_GET_CORPORATE_ACTIONS_STOCK_SPLITS,
+        qot_get_corporate_actions_stock_splits
+    );
+    quote_passthrough!(
+        get_shareholders_overview,
+        QOT_GET_SHAREHOLDERS_OVERVIEW,
+        qot_get_shareholders_overview
+    );
+    quote_passthrough!(
+        get_shareholders_holding_changes,
+        QOT_GET_SHAREHOLDERS_HOLDING_CHANGES,
+        qot_get_shareholders_holding_changes
+    );
+    quote_passthrough!(
+        get_shareholders_holder_detail,
+        QOT_GET_SHAREHOLDERS_HOLDER_DETAIL,
+        qot_get_shareholders_holder_detail
+    );
+    quote_passthrough!(
+        get_shareholders_institutional,
+        QOT_GET_SHAREHOLDERS_INSTITUTIONAL,
+        qot_get_shareholders_institutional
+    );
+    quote_passthrough!(
+        get_insider_holder_list,
+        QOT_GET_INSIDER_HOLDER_LIST,
+        qot_get_insider_holder_list
+    );
+    quote_passthrough!(
+        get_insider_trade_list,
+        QOT_GET_INSIDER_TRADE_LIST,
+        qot_get_insider_trade_list
+    );
+    quote_passthrough!(
+        get_company_profile,
+        QOT_GET_COMPANY_PROFILE,
+        qot_get_company_profile
+    );
+    quote_passthrough!(
+        get_company_executives,
+        QOT_GET_COMPANY_EXECUTIVES,
+        qot_get_company_executives
+    );
+    quote_passthrough!(
+        get_company_executive_background,
+        QOT_GET_COMPANY_EXECUTIVE_BACKGROUND,
+        qot_get_company_executive_background
+    );
+    quote_passthrough!(
+        get_company_operational_efficiency,
+        QOT_GET_COMPANY_OPERATIONAL_EFFICIENCY,
+        qot_get_company_operational_efficiency
+    );
+    quote_passthrough!(
+        get_top_ten_buy_sell_brokers,
+        QOT_GET_TOP_TEN_BUY_SELL_BROKERS,
+        qot_get_top_ten_buy_sell_brokers
+    );
+    quote_passthrough!(
+        get_daily_short_volume,
+        QOT_GET_DAILY_SHORT_VOLUME,
+        qot_get_daily_short_volume
+    );
+    quote_passthrough!(
+        get_short_interest,
+        QOT_GET_SHORT_INTEREST,
+        qot_get_short_interest
+    );
+    quote_passthrough!(
+        get_option_exercise_probability,
+        QOT_GET_OPTION_EXERCISE_PROBABILITY,
+        qot_get_option_exercise_probability
+    );
+    quote_passthrough!(
+        get_option_volatility,
+        QOT_GET_OPTION_VOLATILITY,
+        qot_get_option_volatility
+    );
+    quote_passthrough!(
+        get_earnings_calendar,
+        QOT_GET_EARNINGS_CALENDAR,
+        qot_get_earnings_calendar
+    );
+    quote_passthrough!(
+        get_macro_indicator_list,
+        QOT_GET_MACRO_INDICATOR_LIST,
+        qot_get_macro_indicator_list
+    );
+    quote_passthrough!(
+        get_macro_indicator_history,
+        QOT_GET_MACRO_INDICATOR_HISTORY,
+        qot_get_macro_indicator_history
+    );
+    quote_passthrough!(
+        get_fed_watch_target_rate,
+        QOT_GET_FED_WATCH_TARGET_RATE,
+        qot_get_fed_watch_target_rate
+    );
+    quote_passthrough!(
+        get_fed_watch_dot_plot,
+        QOT_GET_FED_WATCH_DOT_PLOT,
+        qot_get_fed_watch_dot_plot
+    );
+    quote_passthrough!(
+        get_economic_calendar,
+        QOT_GET_ECONOMIC_CALENDAR,
+        qot_get_economic_calendar
+    );
+    quote_passthrough!(
+        get_earnings_beat_rank,
+        QOT_GET_EARNINGS_BEAT_RANK,
+        qot_get_earnings_beat_rank
+    );
+    quote_passthrough!(
+        get_dividend_rank,
+        QOT_GET_DIVIDEND_RANK,
+        qot_get_dividend_rank
+    );
+    quote_passthrough!(
+        get_dividend_calendar,
+        QOT_GET_DIVIDEND_CALENDAR,
+        qot_get_dividend_calendar
+    );
+    quote_passthrough!(
+        get_us_pre_market_rank,
+        QOT_GET_US_PRE_MARKET_RANK,
+        qot_get_us_pre_market_rank
+    );
+    quote_passthrough!(
+        get_us_after_hours_rank,
+        QOT_GET_US_AFTER_HOURS_RANK,
+        qot_get_us_after_hours_rank
+    );
+    quote_passthrough!(
+        get_us_overnight_rank,
+        QOT_GET_US_OVERNIGHT_RANK,
+        qot_get_us_overnight_rank
+    );
+    quote_passthrough!(
+        get_top_movers_rank,
+        QOT_GET_TOP_MOVERS_RANK,
+        qot_get_top_movers_rank
+    );
     quote_passthrough!(get_hot_list, QOT_GET_HOT_LIST, qot_get_hot_list);
-    quote_passthrough!(get_short_selling_rank, QOT_GET_SHORT_SELLING_RANK, qot_get_short_selling_rank);
-    quote_passthrough!(get_period_change_rank, QOT_GET_PERIOD_CHANGE_RANK, qot_get_period_change_rank);
-    quote_passthrough!(get_high_dividend_soe_rank, QOT_GET_HIGH_DIVIDEND_SOE_RANK, qot_get_high_dividend_soe_rank);
-    quote_passthrough!(get_institution_list, QOT_GET_INSTITUTION_LIST, qot_get_institution_list);
-    quote_passthrough!(get_institution_profile, QOT_GET_INSTITUTION_PROFILE, qot_get_institution_profile);
-    quote_passthrough!(get_institution_distribution, QOT_GET_INSTITUTION_DISTRIBUTION, qot_get_institution_distribution);
-    quote_passthrough!(get_institution_holding_change, QOT_GET_INSTITUTION_HOLDING_CHANGE, qot_get_institution_holding_change);
-    quote_passthrough!(get_institution_holding_list, QOT_GET_INSTITUTION_HOLDING_LIST, qot_get_institution_holding_list);
-    quote_passthrough!(get_ark_fund_holding, QOT_GET_ARK_FUND_HOLDING, qot_get_ark_fund_holding);
-    quote_passthrough!(get_ark_stock_dynamic, QOT_GET_ARK_STOCK_DYNAMIC, qot_get_ark_stock_dynamic);
-    quote_passthrough!(get_ark_active_transaction, QOT_GET_ARK_ACTIVE_TRANSACTION, qot_get_ark_active_transaction);
-    quote_passthrough!(get_rating_change, QOT_GET_RATING_CHANGE, qot_get_rating_change);
-    quote_passthrough!(get_industrial_chain_list, QOT_GET_INDUSTRIAL_CHAIN_LIST, qot_get_industrial_chain_list);
-    quote_passthrough!(get_industrial_chain_detail, QOT_GET_INDUSTRIAL_CHAIN_DETAIL, qot_get_industrial_chain_detail);
-    quote_passthrough!(get_industrial_chain_by_plate, QOT_GET_INDUSTRIAL_CHAIN_BY_PLATE, qot_get_industrial_chain_by_plate);
-    quote_passthrough!(get_industrial_plate_info, QOT_GET_INDUSTRIAL_PLATE_INFO, qot_get_industrial_plate_info);
-    quote_passthrough!(get_industrial_plate_stock, QOT_GET_INDUSTRIAL_PLATE_STOCK, qot_get_industrial_plate_stock);
-    quote_passthrough!(get_heat_map_data, QOT_GET_HEAT_MAP_DATA, qot_get_heat_map_data);
-    quote_passthrough!(get_rise_fall_distribution, QOT_GET_RISE_FALL_DISTRIBUTION, qot_get_rise_fall_distribution);
+    quote_passthrough!(
+        get_short_selling_rank,
+        QOT_GET_SHORT_SELLING_RANK,
+        qot_get_short_selling_rank
+    );
+    quote_passthrough!(
+        get_period_change_rank,
+        QOT_GET_PERIOD_CHANGE_RANK,
+        qot_get_period_change_rank
+    );
+    quote_passthrough!(
+        get_high_dividend_soe_rank,
+        QOT_GET_HIGH_DIVIDEND_SOE_RANK,
+        qot_get_high_dividend_soe_rank
+    );
+    quote_passthrough!(
+        get_institution_list,
+        QOT_GET_INSTITUTION_LIST,
+        qot_get_institution_list
+    );
+    quote_passthrough!(
+        get_institution_profile,
+        QOT_GET_INSTITUTION_PROFILE,
+        qot_get_institution_profile
+    );
+    quote_passthrough!(
+        get_institution_distribution,
+        QOT_GET_INSTITUTION_DISTRIBUTION,
+        qot_get_institution_distribution
+    );
+    quote_passthrough!(
+        get_institution_holding_change,
+        QOT_GET_INSTITUTION_HOLDING_CHANGE,
+        qot_get_institution_holding_change
+    );
+    quote_passthrough!(
+        get_institution_holding_list,
+        QOT_GET_INSTITUTION_HOLDING_LIST,
+        qot_get_institution_holding_list
+    );
+    quote_passthrough!(
+        get_ark_fund_holding,
+        QOT_GET_ARK_FUND_HOLDING,
+        qot_get_ark_fund_holding
+    );
+    quote_passthrough!(
+        get_ark_stock_dynamic,
+        QOT_GET_ARK_STOCK_DYNAMIC,
+        qot_get_ark_stock_dynamic
+    );
+    quote_passthrough!(
+        get_ark_active_transaction,
+        QOT_GET_ARK_ACTIVE_TRANSACTION,
+        qot_get_ark_active_transaction
+    );
+    quote_passthrough!(
+        get_rating_change,
+        QOT_GET_RATING_CHANGE,
+        qot_get_rating_change
+    );
+    quote_passthrough!(
+        get_industrial_chain_list,
+        QOT_GET_INDUSTRIAL_CHAIN_LIST,
+        qot_get_industrial_chain_list
+    );
+    quote_passthrough!(
+        get_industrial_chain_detail,
+        QOT_GET_INDUSTRIAL_CHAIN_DETAIL,
+        qot_get_industrial_chain_detail
+    );
+    quote_passthrough!(
+        get_industrial_chain_by_plate,
+        QOT_GET_INDUSTRIAL_CHAIN_BY_PLATE,
+        qot_get_industrial_chain_by_plate
+    );
+    quote_passthrough!(
+        get_industrial_plate_info,
+        QOT_GET_INDUSTRIAL_PLATE_INFO,
+        qot_get_industrial_plate_info
+    );
+    quote_passthrough!(
+        get_industrial_plate_stock,
+        QOT_GET_INDUSTRIAL_PLATE_STOCK,
+        qot_get_industrial_plate_stock
+    );
+    quote_passthrough!(
+        get_heat_map_data,
+        QOT_GET_HEAT_MAP_DATA,
+        qot_get_heat_map_data
+    );
+    quote_passthrough!(
+        get_rise_fall_distribution,
+        QOT_GET_RISE_FALL_DISTRIBUTION,
+        qot_get_rise_fall_distribution
+    );
     quote_passthrough!(get_reference, QOT_GET_REFERENCE, qot_get_reference);
     quote_passthrough!(get_owner_plate, QOT_GET_OWNER_PLATE, qot_get_owner_plate);
-    quote_passthrough!(get_holding_change_list, QOT_GET_HOLDING_CHANGE_LIST, qot_get_holding_change_list);
+    quote_passthrough!(
+        get_holding_change_list,
+        QOT_GET_HOLDING_CHANGE_LIST,
+        qot_get_holding_change_list
+    );
     quote_passthrough!(get_plate_list, QOT_GET_PLATE_SET, qot_get_plate_set);
-    quote_passthrough!(get_plate_stock, QOT_GET_PLATE_SECURITY, qot_get_plate_security);
+    quote_passthrough!(
+        get_plate_stock,
+        QOT_GET_PLATE_SECURITY,
+        qot_get_plate_security
+    );
     quote_passthrough!(get_code_change, QOT_GET_CODE_CHANGE, qot_get_code_change);
     quote_passthrough!(get_capital_flow, QOT_GET_CAPITAL_FLOW, qot_get_capital_flow);
-    quote_passthrough!(get_capital_distribution, QOT_GET_CAPITAL_DISTRIBUTION, qot_get_capital_distribution);
+    quote_passthrough!(
+        get_capital_distribution,
+        QOT_GET_CAPITAL_DISTRIBUTION,
+        qot_get_capital_distribution
+    );
     quote_passthrough!(get_future_info, QOT_GET_FUTURE_INFO, qot_get_future_info);
     quote_passthrough!(get_ipo_list, QOT_GET_IPO_LIST, qot_get_ipo_list);
-    quote_passthrough!(get_option_strategy, QOT_GET_OPTION_STRATEGY, qot_get_option_strategy);
-    quote_passthrough!(get_option_strategy_analysis, QOT_GET_OPTION_STRATEGY_ANALYSIS, qot_get_option_strategy_analysis);
-    quote_passthrough!(get_option_strategy_spread, QOT_GET_OPTION_STRATEGY_SPREAD, qot_get_option_strategy_spread);
-    skill_wrap_unusual!(get_technical_unusual, SKILL_WRAP_TECHNICAL_UNUSUAL, TechnicalUnusualReq, TechnicalUnusualRsp);
-    skill_wrap_unusual!(get_financial_unusual, SKILL_WRAP_FINANCIAL_UNUSUAL, FinancialUnusualReq, FinancialUnusualRsp);
-    skill_wrap_unusual!(get_derivative_unusual, SKILL_WRAP_DERIVATIVE_UNUSUAL, DerivativeUnusualReq, DerivativeUnusualRsp);
+    quote_passthrough!(
+        get_option_strategy,
+        QOT_GET_OPTION_STRATEGY,
+        qot_get_option_strategy
+    );
+    quote_passthrough!(
+        get_option_strategy_analysis,
+        QOT_GET_OPTION_STRATEGY_ANALYSIS,
+        qot_get_option_strategy_analysis
+    );
+    quote_passthrough!(
+        get_option_strategy_spread,
+        QOT_GET_OPTION_STRATEGY_SPREAD,
+        qot_get_option_strategy_spread
+    );
+    skill_wrap_unusual!(
+        get_technical_unusual,
+        SKILL_WRAP_TECHNICAL_UNUSUAL,
+        TechnicalUnusualReq,
+        TechnicalUnusualRsp
+    );
+    skill_wrap_unusual!(
+        get_financial_unusual,
+        SKILL_WRAP_FINANCIAL_UNUSUAL,
+        FinancialUnusualReq,
+        FinancialUnusualRsp
+    );
+    skill_wrap_unusual!(
+        get_derivative_unusual,
+        SKILL_WRAP_DERIVATIVE_UNUSUAL,
+        DerivativeUnusualReq,
+        DerivativeUnusualRsp
+    );
 
     pub async fn get_history_kl_quota(
         &self,

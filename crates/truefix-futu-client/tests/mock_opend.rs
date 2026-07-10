@@ -6,7 +6,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
-use truefix_futu_client::codec::frame::{FRAME_HEADER_LEN, FrameHeader, body_sha1, decode_header, encode_frame};
+use truefix_futu_client::codec::frame::{
+    FRAME_HEADER_LEN, FrameHeader, body_sha1, decode_header, encode_frame,
+};
 use truefix_futu_client::error::FutuError;
 use truefix_futu_client::pb;
 use truefix_futu_client::proto_id;
@@ -70,7 +72,9 @@ async fn get_basic_qot_error_surfaces_opend_error() {
                 market: 1,
                 code: "AAPL".to_owned(),
             }],
-            header: Some(pb::qot_common::QotHeader { security_firm: None }),
+            header: Some(pb::qot_common::QotHeader {
+                security_firm: None,
+            }),
         })
         .await
         .unwrap_err();
@@ -170,7 +174,10 @@ impl Drop for MockOpenD {
     }
 }
 
-async fn run_session(socket: &mut TcpStream, scenario: Scenario) -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn run_session(
+    socket: &mut TcpStream,
+    scenario: Scenario,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     loop {
         let (header, body) = read_frame(socket).await?;
         match header.proto_id {
@@ -184,7 +191,8 @@ async fn run_session(socket: &mut TcpStream, scenario: Scenario) -> Result<(), B
                             err_code: Some(1),
                             s2c: None,
                         };
-                        write_frame(socket, proto_id::INIT_CONNECT, header.serial_no, &resp).await?;
+                        write_frame(socket, proto_id::INIT_CONNECT, header.serial_no, &resp)
+                            .await?;
                         break;
                     }
                     _ => {
@@ -202,7 +210,8 @@ async fn run_session(socket: &mut TcpStream, scenario: Scenario) -> Result<(), B
                                 user_attribution: None,
                             }),
                         };
-                        write_frame(socket, proto_id::INIT_CONNECT, header.serial_no, &resp).await?;
+                        write_frame(socket, proto_id::INIT_CONNECT, header.serial_no, &resp)
+                            .await?;
                     }
                 }
             }
@@ -303,7 +312,9 @@ async fn run_session(socket: &mut TcpStream, scenario: Scenario) -> Result<(), B
     Ok(())
 }
 
-async fn read_frame(socket: &mut TcpStream) -> Result<(FrameHeader, Bytes), Box<dyn Error + Send + Sync>> {
+async fn read_frame(
+    socket: &mut TcpStream,
+) -> Result<(FrameHeader, Bytes), Box<dyn Error + Send + Sync>> {
     let mut header_buf = [0u8; FRAME_HEADER_LEN];
     socket.read_exact(&mut header_buf).await?;
     let header = decode_header(&header_buf)?;

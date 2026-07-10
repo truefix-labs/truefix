@@ -48,7 +48,9 @@ impl InitRsaCipher {
     pub fn decrypt(&self, ciphertext: &[u8]) -> FutuResult<Vec<u8>> {
         let block_size = self.private_key.size();
         if block_size == 0 || !ciphertext.len().is_multiple_of(block_size) {
-            return Err(FutuError::Crypto("invalid RSA ciphertext length".to_owned()));
+            return Err(FutuError::Crypto(
+                "invalid RSA ciphertext length".to_owned(),
+            ));
         }
         let mut out = Vec::new();
         for chunk in ciphertext.chunks(block_size) {

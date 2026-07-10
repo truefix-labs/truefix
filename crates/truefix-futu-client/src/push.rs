@@ -59,9 +59,9 @@ pub fn decode_push(proto_id_value: u32, body: &[u8]) -> FutuResult<Push> {
         proto_id::QOT_UPDATE_BROKER => {
             Push::UpdateBroker(decode_response_s2c!(pb::qot_update_broker::Response))
         }
-        proto_id::QOT_UPDATE_PRICE_REMINDER => {
-            Push::UpdatePriceReminder(decode_response_s2c!(pb::qot_update_price_reminder::Response))
-        }
+        proto_id::QOT_UPDATE_PRICE_REMINDER => Push::UpdatePriceReminder(decode_response_s2c!(
+            pb::qot_update_price_reminder::Response
+        )),
         proto_id::QOT_UPDATE_OPTION_EVENT => {
             Push::UpdateOptionEvent(decode_response_s2c!(pb::qot_update_option_event::Response))
         }

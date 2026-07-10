@@ -30,12 +30,7 @@ impl ActorHandle {
             })
             .await
             .map_err(|_| FutuError::ActorGone)?;
-        match tokio::time::timeout(
-            Duration::from_millis(self.request_timeout_ms),
-            reply_rx,
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_millis(self.request_timeout_ms), reply_rx).await {
             Ok(result) => result.map_err(|_| FutuError::ActorGone)?,
             Err(_) => Err(FutuError::Timeout {
                 timeout_ms: self.request_timeout_ms,

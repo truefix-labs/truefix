@@ -1,8 +1,8 @@
+use bytes::Bytes;
+use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use bytes::Bytes;
-use prost::Message;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::warn;
 
@@ -126,7 +126,9 @@ impl ConnectionActor {
         };
         let body = request.encode_to_vec();
         let serial = next_serial(&self.serial)?;
-        self.writer.send(proto_id::KEEP_ALIVE, serial, &body).await?;
+        self.writer
+            .send(proto_id::KEEP_ALIVE, serial, &body)
+            .await?;
         Ok(())
     }
 

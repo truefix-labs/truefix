@@ -84,9 +84,13 @@ impl FutuClient {
         let (push_tx, _) = broadcast::channel(256);
         let packet_serial = Arc::new(AtomicU32::new(1));
         let (disconnect_tx, disconnect_rx) = mpsc::unbounded_channel();
-        let (handle, conn_id) =
-            connect_session(&config, push_tx.clone(), Arc::clone(&packet_serial), disconnect_tx.clone())
-                .await?;
+        let (handle, conn_id) = connect_session(
+            &config,
+            push_tx.clone(),
+            Arc::clone(&packet_serial),
+            disconnect_tx.clone(),
+        )
+        .await?;
 
         let core = Arc::new(ClientCore {
             config,
@@ -329,7 +333,8 @@ impl ClientCore {
                     header: request.header,
                 },
             };
-            let resp: pb::qot_sub::Response = self.request_no_retry(proto_id::QOT_SUB, &req).await?;
+            let resp: pb::qot_sub::Response =
+                self.request_no_retry(proto_id::QOT_SUB, &req).await?;
             ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         }
 
@@ -341,8 +346,9 @@ impl ClientCore {
                     security_firm: request.security_firm.map(|firm| firm as i32),
                 },
             };
-            let resp: pb::trd_unlock_trade::Response =
-                self.request_no_retry(proto_id::TRD_UNLOCK_TRADE, &req).await?;
+            let resp: pb::trd_unlock_trade::Response = self
+                .request_no_retry(proto_id::TRD_UNLOCK_TRADE, &req)
+                .await?;
             ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         }
 
@@ -352,8 +358,9 @@ impl ClientCore {
                     acc_id_list: request.acc_id_list,
                 },
             };
-            let resp: pb::trd_sub_acc_push::Response =
-                self.request_no_retry(proto_id::TRD_SUB_ACC_PUSH, &req).await?;
+            let resp: pb::trd_sub_acc_push::Response = self
+                .request_no_retry(proto_id::TRD_SUB_ACC_PUSH, &req)
+                .await?;
             ensure_ok(resp.ret_type, resp.ret_msg.clone())?;
         }
 
@@ -452,7 +459,9 @@ async fn connect_session(
         }
         plaintext
     } else {
-        transport.send(proto_id::INIT_CONNECT, 1, &init_body).await?;
+        transport
+            .send(proto_id::INIT_CONNECT, 1, &init_body)
+            .await?;
         let (_header, body) = timeout(
             Duration::from_millis(config.request_timeout_ms),
             transport.recv(),

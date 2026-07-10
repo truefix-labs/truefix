@@ -154,6 +154,21 @@ impl Application for MyApp {
 See `crates/truefix/examples/` (`executor`, `banzai`, `ordermatch`, `multi_acceptor`) for complete,
 runnable programs.
 
+## Broker client SDKs
+
+The workspace also contains protocol-native Rust clients for Futu OpenD and Interactive Brokers
+TWS/Gateway. They are independent from the FIX engine and expose broker protocol types directly:
+
+- [`truefix-futu-client`](crates/truefix-futu-client/) — OpenD framing, protobuf RPCs, quote/trade
+  APIs, push events, reconnect handling, RSA/AES packet support, and an interactive CLI.
+- [`truefix-twsapi-client`](crates/truefix-twsapi-client/) — TWS/Gateway handshake, field-encoded
+  requests, supported protobuf request paths, event decoding, quote/account/order/history APIs, and
+  an interactive CLI.
+
+The clients are currently workspace crates for local integration and testing (`publish = false`).
+See [`docs/getting-started.md`](docs/getting-started.md) for prerequisites, complete commands,
+environment variables, and common broker-side failure modes.
+
 ### Custom `MessageStore`/`Log` backends
 
 The built-in store/log backends (`Memory`/`File`/`CachedFile`/`Noop`/`Sql`/`Mssql`/`Redb`/`Mongo`

@@ -246,7 +246,11 @@ async fn run_command(
                     header: state.quote_header(),
                 })
                 .await?;
-            println!("subscribed: {} {:?}", symbol, normalize_sub_types(&sub_types));
+            println!(
+                "subscribed: {} {:?}",
+                symbol,
+                normalize_sub_types(&sub_types)
+            );
             println!("waiting for push updates in background");
         }
         Command::Watch {
@@ -749,9 +753,7 @@ fn parse_sub_types(values: &[String]) -> Result<Vec<i32>, CliError> {
             "klday" | "day" => out.push(pb::qot_common::SubType::KlDay as i32),
             "klweek" | "week" => out.push(pb::qot_common::SubType::KlWeek as i32),
             "klmonth" | "month" => out.push(pb::qot_common::SubType::KlMonth as i32),
-            "klquarter" | "quarter" => {
-                out.push(pb::qot_common::SubType::KlQurater as i32)
-            }
+            "klquarter" | "quarter" => out.push(pb::qot_common::SubType::KlQurater as i32),
             "klyear" | "year" => out.push(pb::qot_common::SubType::KlYear as i32),
             "all" => {
                 out.push(pb::qot_common::SubType::Basic as i32);
@@ -836,9 +838,7 @@ fn kl_type_to_sub_type(kl_type: i32) -> i32 {
     match kl_type {
         x if x == pb::qot_common::KlType::Day as i32 => pb::qot_common::SubType::KlDay as i32,
         x if x == pb::qot_common::KlType::Week as i32 => pb::qot_common::SubType::KlWeek as i32,
-        x if x == pb::qot_common::KlType::Month as i32 => {
-            pb::qot_common::SubType::KlMonth as i32
-        }
+        x if x == pb::qot_common::KlType::Month as i32 => pb::qot_common::SubType::KlMonth as i32,
         x if x == pb::qot_common::KlType::Quarter as i32 => {
             pb::qot_common::SubType::KlQurater as i32
         }
@@ -894,7 +894,10 @@ fn security(market: i32, code: &str) -> pb::qot_common::Security {
 }
 
 fn normalize_sub_types(sub_types: &[i32]) -> Vec<&'static str> {
-    sub_types.iter().map(|value| sub_type_name(*value)).collect()
+    sub_types
+        .iter()
+        .map(|value| sub_type_name(*value))
+        .collect()
 }
 
 fn sub_type_name(sub_type: i32) -> &'static str {
@@ -932,7 +935,10 @@ fn print_push(push: &Push) {
         Push::UpdateOptionEvent(value) => println!("\n[option-event] {value:#?}"),
         Push::PushIndicatorCalc(value) => println!("\n[indicator] {value:#?}"),
         Push::Unknown { proto_id, body } => {
-            println!("\n[push-unknown] proto_id={proto_id} body_len={}", body.len())
+            println!(
+                "\n[push-unknown] proto_id={proto_id} body_len={}",
+                body.len()
+            )
         }
     }
     print!("futu> ");
@@ -1012,10 +1018,18 @@ fn print_order_book_push(resp: &pb::qot_update_order_book::S2c) {
         "\n[book] {} {} bid={}x{} ask={}x{}",
         symbol,
         name,
-        best_bid.map(|x| format!("{:.4}", x.price)).unwrap_or_else(|| "-".to_owned()),
-        best_bid.map(fmt_order_book_volume).unwrap_or_else(|| "-".to_owned()),
-        best_ask.map(|x| format!("{:.4}", x.price)).unwrap_or_else(|| "-".to_owned()),
-        best_ask.map(fmt_order_book_volume).unwrap_or_else(|| "-".to_owned()),
+        best_bid
+            .map(|x| format!("{:.4}", x.price))
+            .unwrap_or_else(|| "-".to_owned()),
+        best_bid
+            .map(fmt_order_book_volume)
+            .unwrap_or_else(|| "-".to_owned()),
+        best_ask
+            .map(|x| format!("{:.4}", x.price))
+            .unwrap_or_else(|| "-".to_owned()),
+        best_ask
+            .map(fmt_order_book_volume)
+            .unwrap_or_else(|| "-".to_owned()),
     );
 }
 
@@ -1120,10 +1134,7 @@ fn print_accounts(accounts: &[pb::trd_common::TrdAcc]) {
 fn print_sub_info(resp: &pb::qot_get_sub_info::S2c) {
     println!(
         "subscriptions total_used={} remain={} option_used={:?} option_remain={:?}",
-        resp.total_used_quota,
-        resp.remain_quota,
-        resp.option_used_quota,
-        resp.option_remain_quota
+        resp.total_used_quota, resp.remain_quota, resp.option_used_quota, resp.option_remain_quota
     );
     for (idx, conn) in resp.conn_sub_info_list.iter().enumerate() {
         println!(
@@ -1208,7 +1219,10 @@ fn env_optional_string(name: &str) -> Option<String> {
 
 fn env_bool(name: &str, default: bool) -> bool {
     match env::var(name) {
-        Ok(value) => matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"),
+        Ok(value) => matches!(
+            value.as_str(),
+            "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+        ),
         Err(_) => default,
     }
 }

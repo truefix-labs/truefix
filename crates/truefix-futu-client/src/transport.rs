@@ -4,7 +4,9 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 use crate::codec::crypto::EncAlgo;
-use crate::codec::frame::{FRAME_HEADER_LEN, FrameHeader, body_sha1, decode_header, encode_frame, verify_sha1};
+use crate::codec::frame::{
+    FRAME_HEADER_LEN, FrameHeader, body_sha1, decode_header, encode_frame, verify_sha1,
+};
 use crate::error::{FutuError, FutuResult};
 
 #[derive(Debug)]

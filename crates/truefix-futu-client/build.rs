@@ -34,11 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "rs") {
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                == Some("pb_modules.rs")
-            {
+            if path.file_name().and_then(|name| name.to_str()) == Some("pb_modules.rs") {
                 continue;
             }
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {

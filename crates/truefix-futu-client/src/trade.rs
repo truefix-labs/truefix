@@ -6,8 +6,8 @@ use crate::client::ClientCore;
 use crate::error::{FutuError, FutuResult};
 use crate::pb;
 use crate::proto_id;
-use crate::rpc::{ensure_ok, impl_response_with_s2c};
 use crate::rpc::ResponseWithS2C;
+use crate::rpc::{ensure_ok, impl_response_with_s2c};
 
 #[derive(Clone)]
 pub struct TradeClient {
@@ -517,10 +517,7 @@ impl TradeClient {
         .await
     }
 
-    pub async fn change_order(
-        &self,
-        request: ModifyOrderRequest,
-    ) -> FutuResult<u64> {
+    pub async fn change_order(&self, request: ModifyOrderRequest) -> FutuResult<u64> {
         self.modify_order(request).await
     }
 
@@ -585,7 +582,7 @@ impl TradeClient {
             proto_id::TRD_GET_HISTORY_ORDER_FILL_LIST,
             &request,
         )
-            .await
+        .await
     }
 
     pub async fn get_margin_ratio(
@@ -623,7 +620,7 @@ impl TradeClient {
             proto_id::TRD_GET_COMBO_MAX_TRD_QTYS,
             &request,
         )
-            .await
+        .await
     }
 
     pub async fn place_combo_order(
@@ -644,11 +641,7 @@ impl TradeClient {
         Ok(s2c.order_id_ex.unwrap_or_default())
     }
 
-    async fn decode_s2c<Req, Resp>(
-        &self,
-        proto_id: u32,
-        request: &Req,
-    ) -> FutuResult<Resp::S2c>
+    async fn decode_s2c<Req, Resp>(&self, proto_id: u32, request: &Req) -> FutuResult<Resp::S2c>
     where
         Req: Message,
         Resp: Message + Default + ResponseWithS2C,
@@ -657,7 +650,8 @@ impl TradeClient {
         ensure_ok(resp.ret_type(), resp.ret_msg())?;
         let ret_type = resp.ret_type();
         let ret_msg = resp.ret_msg();
-        resp.s2c().ok_or(FutuError::OpenDError { ret_type, ret_msg })
+        resp.s2c()
+            .ok_or(FutuError::OpenDError { ret_type, ret_msg })
     }
 
     async fn request<Req, Resp>(&self, proto_id: u32, request: &Req) -> FutuResult<Resp>
@@ -690,7 +684,10 @@ impl_response_with_s2c!(
     pb::trd_get_position_list::Response,
     pb::trd_get_position_list::S2c
 );
-impl_response_with_s2c!(pb::trd_get_order_list::Response, pb::trd_get_order_list::S2c);
+impl_response_with_s2c!(
+    pb::trd_get_order_list::Response,
+    pb::trd_get_order_list::S2c
+);
 impl_response_with_s2c!(
     pb::trd_get_order_fill_list::Response,
     pb::trd_get_order_fill_list::S2c
@@ -703,7 +700,10 @@ impl_response_with_s2c!(
     pb::trd_get_history_order_fill_list::Response,
     pb::trd_get_history_order_fill_list::S2c
 );
-impl_response_with_s2c!(pb::trd_get_margin_ratio::Response, pb::trd_get_margin_ratio::S2c);
+impl_response_with_s2c!(
+    pb::trd_get_margin_ratio::Response,
+    pb::trd_get_margin_ratio::S2c
+);
 impl_response_with_s2c!(pb::trd_get_order_fee::Response, pb::trd_get_order_fee::S2c);
 impl_response_with_s2c!(pb::trd_flow_summary::Response, pb::trd_flow_summary::S2c);
 impl_response_with_s2c!(
