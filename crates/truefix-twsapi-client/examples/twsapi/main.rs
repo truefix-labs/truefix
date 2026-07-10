@@ -800,13 +800,20 @@ fn print_event(event: &Event) {
         Event::MarketDepthExchanges { descriptions } => {
             println!("market_depth_exchanges count={}", descriptions.len());
             for description in descriptions {
-                println!("  {description}");
+                println!(
+                    "  {} {} {} {} {}",
+                    description.exchange,
+                    description.security_type,
+                    description.listing_exchange,
+                    description.service_data_type,
+                    description.aggregate_group
+                );
             }
         }
         Event::NewsProviders { providers } => {
             println!("news_providers count={}", providers.len());
             for provider in providers {
-                println!("  {} {}", provider.0, provider.1);
+                println!("  {} {}", provider.code, provider.name);
             }
         }
         Event::ScannerParameters { xml } => println!("{xml}"),
@@ -1680,6 +1687,7 @@ async fn run_executions(client: &mut TwsApiClient) -> Result<(), CliError> {
                 sec_type: env_string("TWS_SEC_TYPE", ""),
                 exchange: env_string("TWS_EXCHANGE", ""),
                 side: env_string("TWS_EXEC_SIDE", ""),
+                ..ExecutionFilter::default()
             },
         })
         .await?;
