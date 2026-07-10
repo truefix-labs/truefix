@@ -1,0 +1,28 @@
+[package]
+name = "truefix-futu-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Thin Futu OpenD protocol client for TrueFix."
+publish = false
+
+[dependencies]
+prost.workspace = true
+tokio.workspace = true
+bytes = "1"
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = "0.3"
+aes = "0.8"
+cbc = "0.1"
+sha1 = "0.10"
+rsa = { version = "0.9", features = ["pem"] }
+rand = "0.8"
+
+[build-dependencies]
+prost-build.workspace = true
+
+[lints]
+workspace = true
