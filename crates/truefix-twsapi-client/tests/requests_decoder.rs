@@ -9,18 +9,19 @@ use truefix_twsapi_client::requests::{
     CalculateOptionPriceRequest, CancelMarketDepthRequest, CancelOrderRequest,
     CompletedOrdersRequest, ContractDetailsRequest, EmptyRequest, EncodableRequest,
     ExecutionRequest, ExerciseOptionsRequest, FieldSink, FinancialAdvisorRequest,
-    GlobalCancelRequest, HeadTimestampRequest, HistoricalDataRequest, HistoricalTicksRequest,
-    IdRequest, MarketDataRequest, MarketDepthRequest, NewsArticleRequest, PlaceOrderRequest,
-    PnlSingleRequest, RealTimeBarsRequest, ReplaceFinancialAdvisorRequest,
+    GlobalCancelRequest, HeadTimestampRequest, HistogramDataRequest, HistoricalDataRequest,
+    HistoricalTicksRequest, IdRequest, MarketDataRequest, MarketDepthRequest, NewsArticleRequest,
+    PlaceOrderRequest, PnlSingleRequest, RealTimeBarsRequest, ReplaceFinancialAdvisorRequest,
     ScannerSubscriptionRequest, StartApiRequest, SubscribeToGroupEventsRequest, TickByTickRequest,
     UpdateDisplayGroupRequest, VerifyAndAuthMessageRequest, VerifyAndAuthRequest,
     VerifyMessageRequest, VerifyRequest, VersionedRequest, WshEventDataRequest,
     encode_request_frame, encode_request_frame_with_protobuf, protobuf_min_server_version,
 };
 use truefix_twsapi_client::server_versions::{
-    MAX_CLIENT_VER, MIN_SERVER_VER_MANUAL_ORDER_TIME, MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE,
-    MIN_SERVER_VER_PROTOBUF_MARKET_DATA, MIN_SERVER_VER_REPLACE_FA_END, MIN_SERVER_VER_RFQ_FIELDS,
-    MIN_SERVER_VER_SMART_DEPTH,
+    MAX_CLIENT_VER, MIN_SERVER_VER_LINKING, MIN_SERVER_VER_MANUAL_ORDER_TIME,
+    MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE, MIN_SERVER_VER_PROTOBUF_MARKET_DATA,
+    MIN_SERVER_VER_REPLACE_FA_END, MIN_SERVER_VER_RFQ_FIELDS, MIN_SERVER_VER_SCANNER_GENERIC_OPTS,
+    MIN_SERVER_VER_SMART_DEPTH, MIN_SERVER_VER_TRADING_CLASS,
 };
 use truefix_twsapi_client::types::{
     Contract, DepthMarketDataDescription, ExecutionFilter, FamilyCode, HistogramEntry,
@@ -1335,6 +1336,123 @@ fn legacy_field_encoders_follow_tws_version_gates() {
             "exchange=ISLAND;"
         ]
     );
+}
+
+#[test]
+fn scanner_realtime_and_contract_field_encoders_match_python_layouts() {
+    fn encode_fields<R: EncodableRequest>(request: &R) -> Vec<String> {
+        let mut sink = FieldSink::default();
+        request.encode_fields(&mut sink).unwrap();
+        field_strings(&sink.into_string())
+    }
+
+    let contract = Contract {
+        con_id: 265598,
+        symbol: "AAPL".to_owned(),
+        sec_type: "STK".to_owned(),
+        last_trade_date_or_contract_month: "202609".to_owned(),
+        strike: 175.0,
+        right: "C".to_owned(),
+        multiplier: "100".to_owned(),
+        exchange: "SMART".to_owned(),
+        primary_exchange: "NASDAQ".to_owned(),
+        currency: "USD".to_owned(),
+        local_symbol: "AAPL".to_owned(),
+        trading_class: "NMS".to_owned(),
+        include_expired: true,
+        sec_id_type: "ISIN".to_owned(),
+        sec_id: "US0378331005".to_owned(),
+        ..Contract::default()
+    };
+
+    let head = HeadTimestampRequest {
+        req_id: 1,
+        contract: contract.clone(),
+        use_rth: true,
+        what_to_show: "TRADES".to_owned(),
+        format_date: 2,
+    };
+    let histogram = HistogramDataRequest {
+        req_id: 2,
+        contract: contract.clone(),
+        use_rth: true,
+        time_period: "3 days".to_owned(),
+    };
+    for fields in [encode_fields(&head), encode_fields(&histogram)] {
+        assert!(fields.contains(&"265598".to_owned()));
+        assert!(fields.contains(&"NMS".to_owned()));
+        assert!(fields.contains(&"1".to_owned()));
+        assert!(!fields.contains(&"ISIN".to_owned()));
+        assert!(!fields.contains(&"US0378331005".to_owned()));
+    }
+
+    let realtime = RealTimeBarsRequest {
+        req_id: 3,
+        contract: contract.clone(),
+        bar_size: 5,
+        what_to_show: "TRADES".to_owned(),
+        use_rth: true,
+        options: vec![TagValue {
+            tag: "source".to_owned(),
+            value: "api".to_owned(),
+        }],
+    };
+    let encode_realtime = |server_version| {
+        let mut sink = FieldSink::default();
+        realtime
+            .encode_fields_for_server_version(&mut sink, server_version)
+            .unwrap();
+        field_strings(&sink.into_string())
+    };
+    let before_trading_class = encode_realtime(MIN_SERVER_VER_TRADING_CLASS - 1);
+    assert_eq!(before_trading_class[0..3], ["3", "3", "AAPL"]);
+    assert!(!before_trading_class.contains(&"265598".to_owned()));
+    assert!(!before_trading_class.contains(&"NMS".to_owned()));
+    assert!(!before_trading_class.contains(&"source=api;".to_owned()));
+    let with_trading_class = encode_realtime(MIN_SERVER_VER_TRADING_CLASS);
+    assert_eq!(with_trading_class[0..4], ["3", "3", "265598", "AAPL"]);
+    assert!(with_trading_class.contains(&"NMS".to_owned()));
+    let with_options = encode_realtime(MIN_SERVER_VER_LINKING);
+    assert_eq!(with_options.last().map(String::as_str), Some("source=api;"));
+
+    let scanner = ScannerSubscriptionRequest {
+        req_id: 4,
+        subscription: ScannerSubscription {
+            number_of_rows: 10,
+            instrument: "STK".to_owned(),
+            location_code: "STK.US".to_owned(),
+            scan_code: "TOP_PERC_GAIN".to_owned(),
+            ..ScannerSubscription::default()
+        },
+        scanner_subscription_options: vec![TagValue {
+            tag: "option".to_owned(),
+            value: "value".to_owned(),
+        }],
+        scanner_subscription_filter_options: vec![TagValue {
+            tag: "filter".to_owned(),
+            value: "value".to_owned(),
+        }],
+    };
+    let encode_scanner = |server_version| {
+        let mut sink = FieldSink::default();
+        scanner
+            .encode_fields_for_server_version(&mut sink, server_version)
+            .unwrap();
+        field_strings(&sink.into_string())
+    };
+    let before_generic_options = encode_scanner(MIN_SERVER_VER_SCANNER_GENERIC_OPTS - 1);
+    assert_eq!(
+        before_generic_options.first().map(String::as_str),
+        Some("4")
+    );
+    assert!(!before_generic_options.contains(&"filter=value;".to_owned()));
+    assert_eq!(
+        before_generic_options.last().map(String::as_str),
+        Some("option=value;")
+    );
+    let generic_options = encode_scanner(MIN_SERVER_VER_SCANNER_GENERIC_OPTS);
+    assert_eq!(generic_options.first().map(String::as_str), Some("4"));
+    assert!(generic_options.ends_with(&["filter=value;".to_owned(), "option=value;".to_owned()]));
 }
 
 #[test]

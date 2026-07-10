@@ -34,11 +34,12 @@ use crate::server_versions::{
     MIN_SERVER_VER_RANDOMIZE_SIZE_AND_PRICE, MIN_SERVER_VER_REPLACE_FA_END,
     MIN_SERVER_VER_REQ_CALC_IMPLIED_VOLAT, MIN_SERVER_VER_REQ_MKT_DATA_CONID,
     MIN_SERVER_VER_REQ_SMART_COMPONENTS, MIN_SERVER_VER_RFQ_FIELDS, MIN_SERVER_VER_SCALE_ORDERS2,
-    MIN_SERVER_VER_SCALE_ORDERS3, MIN_SERVER_VER_SCALE_TABLE, MIN_SERVER_VER_SEC_ID_TYPE,
-    MIN_SERVER_VER_SMART_COMBO_ROUTING_PARAMS, MIN_SERVER_VER_SMART_DEPTH,
-    MIN_SERVER_VER_SOFT_DOLLAR_TIER, MIN_SERVER_VER_SSHORTX_OLD, MIN_SERVER_VER_SYNT_REALTIME_BARS,
-    MIN_SERVER_VER_TICK_BY_TICK, MIN_SERVER_VER_TICK_BY_TICK_IGNORE_SIZE,
-    MIN_SERVER_VER_TRADING_CLASS, MIN_SERVER_VER_TRAILING_PERCENT, MIN_SERVER_VER_UNDO_RFQ_FIELDS,
+    MIN_SERVER_VER_SCALE_ORDERS3, MIN_SERVER_VER_SCALE_TABLE, MIN_SERVER_VER_SCANNER_GENERIC_OPTS,
+    MIN_SERVER_VER_SEC_ID_TYPE, MIN_SERVER_VER_SMART_COMBO_ROUTING_PARAMS,
+    MIN_SERVER_VER_SMART_DEPTH, MIN_SERVER_VER_SOFT_DOLLAR_TIER, MIN_SERVER_VER_SSHORTX_OLD,
+    MIN_SERVER_VER_SYNT_REALTIME_BARS, MIN_SERVER_VER_TICK_BY_TICK,
+    MIN_SERVER_VER_TICK_BY_TICK_IGNORE_SIZE, MIN_SERVER_VER_TRADING_CLASS,
+    MIN_SERVER_VER_TRAILING_PERCENT, MIN_SERVER_VER_UNDO_RFQ_FIELDS,
 };
 use crate::types::{
     Contract, ExecutionFilter, Order, OrderCancel, ScannerSubscription, TagValue, TickerId,
@@ -1072,7 +1073,7 @@ impl EncodableRequest for HeadTimestampRequest {
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
         fields.push(self.req_id)?;
-        encode_contract_core(fields, &self.contract)?;
+        encode_contract_head_or_histogram(fields, &self.contract)?;
         fields
             .push(self.use_rth)?
             .push(&self.what_to_show)?
@@ -1114,7 +1115,7 @@ impl EncodableRequest for HistogramDataRequest {
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
         fields.push(self.req_id)?;
-        encode_contract_core(fields, &self.contract)?;
+        encode_contract_head_or_histogram(fields, &self.contract)?;
         fields.push(self.use_rth)?.push(&self.time_period)?;
         Ok(())
     }
@@ -1155,13 +1156,24 @@ impl EncodableRequest for RealTimeBarsRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         fields.push(3)?.push(self.req_id)?;
-        encode_contract_core(fields, &self.contract)?;
+        encode_contract_real_time_bars(fields, &self.contract, server_version)?;
         fields
             .push(self.bar_size)?
             .push(&self.what_to_show)?
             .push(self.use_rth)?;
-        encode_tag_values(fields, &self.options)
+        if server_version >= MIN_SERVER_VER_LINKING {
+            fields.push(tag_values_to_tws_options(&self.options))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -2403,9 +2415,19 @@ impl EncodableRequest for ScannerSubscriptionRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         let sub = &self.subscription;
+        if server_version < MIN_SERVER_VER_SCANNER_GENERIC_OPTS {
+            fields.push(4)?;
+        }
         fields
-            .push(4)?
             .push(self.req_id)?
             .push(sub.number_of_rows)?
             .push(&sub.instrument)?
@@ -2428,8 +2450,17 @@ impl EncodableRequest for ScannerSubscriptionRequest {
             .push_empty(sub.average_option_volume_above)?
             .push(&sub.scanner_setting_pairs)?
             .push(&sub.stock_type_filter)?;
-        encode_tag_values(fields, &self.scanner_subscription_options)?;
-        encode_tag_values(fields, &self.scanner_subscription_filter_options)
+        if server_version >= MIN_SERVER_VER_SCANNER_GENERIC_OPTS {
+            fields.push(tag_values_to_tws_options(
+                &self.scanner_subscription_filter_options,
+            ))?;
+        }
+        if server_version >= MIN_SERVER_VER_LINKING {
+            fields.push(tag_values_to_tws_options(
+                &self.scanner_subscription_options,
+            ))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -2447,7 +2478,10 @@ impl EncodableRequest for ScannerSubscriptionRequest {
     }
 }
 
-fn encode_contract_core(fields: &mut FieldSink, contract: &Contract) -> TwsApiResult<()> {
+fn encode_contract_head_or_histogram(
+    fields: &mut FieldSink,
+    contract: &Contract,
+) -> TwsApiResult<()> {
     fields
         .push(contract.con_id)?
         .push(&contract.symbol)?
@@ -2461,9 +2495,32 @@ fn encode_contract_core(fields: &mut FieldSink, contract: &Contract) -> TwsApiRe
         .push(&contract.currency)?
         .push(&contract.local_symbol)?
         .push(&contract.trading_class)?
-        .push(contract.include_expired)?
-        .push(&contract.sec_id_type)?
-        .push(&contract.sec_id)?;
+        .push(contract.include_expired)?;
+    Ok(())
+}
+
+fn encode_contract_real_time_bars(
+    fields: &mut FieldSink,
+    contract: &Contract,
+    server_version: i32,
+) -> TwsApiResult<()> {
+    if server_version >= MIN_SERVER_VER_TRADING_CLASS {
+        fields.push(contract.con_id)?;
+    }
+    fields
+        .push(&contract.symbol)?
+        .push(&contract.sec_type)?
+        .push(&contract.last_trade_date_or_contract_month)?
+        .push_empty(contract.strike)?
+        .push(&contract.right)?
+        .push(&contract.multiplier)?
+        .push(&contract.exchange)?
+        .push(&contract.primary_exchange)?
+        .push(&contract.currency)?
+        .push(&contract.local_symbol)?;
+    if server_version >= MIN_SERVER_VER_TRADING_CLASS {
+        fields.push(&contract.trading_class)?;
+    }
     Ok(())
 }
 
