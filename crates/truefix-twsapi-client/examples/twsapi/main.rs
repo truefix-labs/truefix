@@ -468,7 +468,7 @@ fn order_from_env() -> Result<Order, CliError> {
     let mut order = Order::default();
     order.order_id = req_id(5001)?;
     order.action = side(&env_string("TWS_ORDER_SIDE", "BUY"))?;
-    order.total_quantity = env_decimal("TWS_ORDER_QTY")?.unwrap_or_else(|| Decimal::ONE);
+    order.total_quantity = env_decimal("TWS_ORDER_QTY")?.unwrap_or(Decimal::ONE);
     order.account = env_string("TWS_ACCOUNT", "");
     order.order_type = env_string("TWS_ORDER_TYPE", "");
     order.tif = env_string("TWS_TIF", "DAY");

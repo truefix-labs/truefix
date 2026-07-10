@@ -8,8 +8,9 @@ use crate::protobuf;
 use crate::types::{
     BarData, ComboLeg, CommissionAndFeesReport, Contract, ContractDescription, ContractDetails,
     DeltaNeutralContract, Execution, HistoricalSession, HistoricalTick, HistoricalTickBidAsk,
-    HistoricalTickLast, LegOpenClose, Order, OrderAllocation, OrderCondition, OrderState, Origin,
-    SmartComponent, SoftDollarTier, TagValue, TickAttribBidAsk, TickAttribLast, TickByTick,
+    HistoricalTickLast, IneligibilityReason, LegOpenClose, Order, OrderAllocation, OrderCondition,
+    OrderState, Origin, SmartComponent, SoftDollarTier, TagValue, TickAttribBidAsk, TickAttribLast,
+    TickByTick,
 };
 
 mod order;
@@ -561,7 +562,7 @@ pub fn decode_protobuf_event(msg_id: i32, payload: &[u8]) -> TwsApiResult<Event>
                 details: Box::new(proto_contract_details_to_contract_details(
                     msg.contract,
                     msg.contract_details,
-                )),
+                )?),
             })
         }
         Ok(Incoming::BondContractData) => {
@@ -571,7 +572,7 @@ pub fn decode_protobuf_event(msg_id: i32, payload: &[u8]) -> TwsApiResult<Event>
                 details: Box::new(proto_contract_details_to_contract_details(
                     msg.contract,
                     msg.contract_details,
-                )),
+                )?),
             })
         }
         Ok(Incoming::ContractDataEnd) => {
@@ -1215,15 +1216,15 @@ fn proto_execution_to_execution(execution: Option<protobuf::Execution>) -> TwsAp
 fn proto_contract_details_to_contract_details(
     contract: Option<protobuf::Contract>,
     details: Option<protobuf::ContractDetails>,
-) -> ContractDetails {
+) -> TwsApiResult<ContractDetails> {
     let Some(details) = details else {
-        return ContractDetails {
+        return Ok(ContractDetails {
             contract: proto_contract_to_contract(contract),
             ..ContractDetails::default()
-        };
+        });
     };
 
-    ContractDetails {
+    Ok(ContractDetails {
         contract: proto_contract_to_contract(contract),
         market_name: details.market_name.unwrap_or_default(),
         min_tick: details
@@ -1258,7 +1259,49 @@ fn proto_contract_details_to_contract_details(
         next_option_type: details.next_option_type.unwrap_or_default(),
         next_option_partial: details.next_option_partial.unwrap_or_default(),
         bond_notes: details.bond_notes.unwrap_or_default(),
-    }
+        real_expiration_date: details.real_expiration_date.unwrap_or_default(),
+        stock_type: details.stock_type.unwrap_or_default(),
+        min_size: parse_decimal_string(details.min_size.as_deref())?,
+        size_increment: parse_decimal_string(details.size_increment.as_deref())?,
+        suggested_size_increment: parse_decimal_string(
+            details.suggested_size_increment.as_deref(),
+        )?,
+        fund_name: details.fund_name.unwrap_or_default(),
+        fund_family: details.fund_family.unwrap_or_default(),
+        fund_type: details.fund_type.unwrap_or_default(),
+        fund_front_load: details.fund_front_load.unwrap_or_default(),
+        fund_back_load: details.fund_back_load.unwrap_or_default(),
+        fund_back_load_time_interval: details.fund_back_load_time_interval.unwrap_or_default(),
+        fund_management_fee: details.fund_management_fee.unwrap_or_default(),
+        fund_closed: details.fund_closed.unwrap_or_default(),
+        fund_closed_for_new_investors: details.fund_closed_for_new_investors.unwrap_or_default(),
+        fund_closed_for_new_money: details.fund_closed_for_new_money.unwrap_or_default(),
+        fund_notify_amount: details.fund_notify_amount.unwrap_or_default(),
+        fund_minimum_initial_purchase: details.fund_minimum_initial_purchase.unwrap_or_default(),
+        fund_minimum_subsequent_purchase: details
+            .fund_minimum_subsequent_purchase
+            .unwrap_or_default(),
+        fund_blue_sky_states: details.fund_blue_sky_states.unwrap_or_default(),
+        fund_blue_sky_territories: details.fund_blue_sky_territories.unwrap_or_default(),
+        fund_distribution_policy_indicator: details
+            .fund_distribution_policy_indicator
+            .unwrap_or_default(),
+        fund_asset_type: details.fund_asset_type.unwrap_or_default(),
+        ineligibility_reason_list: details
+            .ineligibility_reason_list
+            .into_iter()
+            .map(|reason| IneligibilityReason {
+                id: reason.id.unwrap_or_default(),
+                description: reason.description.unwrap_or_default(),
+            })
+            .collect(),
+        event_contract1: details.event_contract1.unwrap_or_default(),
+        event_contract_description1: details.event_contract_description1.unwrap_or_default(),
+        event_contract_description2: details.event_contract_description2.unwrap_or_default(),
+        min_algo_size: parse_decimal_string(details.min_algo_size.as_deref())?,
+        last_price_precision: parse_decimal_string(details.last_price_precision.as_deref())?,
+        last_size_precision: parse_decimal_string(details.last_size_precision.as_deref())?,
+    })
 }
 
 fn proto_contract_to_contract(contract: Option<protobuf::Contract>) -> Contract {
@@ -1878,6 +1921,55 @@ fn decode_contract_data_fields(fields: &[String]) -> TwsApiResult<Event> {
     }
     if index < fields.len() {
         details.market_rule_ids = next_string(fields, &mut index);
+    }
+
+    if index < fields.len() {
+        details.real_expiration_date = next_string(fields, &mut index);
+    }
+    if index < fields.len() {
+        details.stock_type = next_string(fields, &mut index);
+    }
+    if index < fields.len() {
+        details.min_size = next_decimal(fields, &mut index).unwrap_or_default();
+    }
+    if index < fields.len() {
+        details.size_increment = next_decimal(fields, &mut index).unwrap_or_default();
+    }
+    if index < fields.len() {
+        details.suggested_size_increment = next_decimal(fields, &mut index).unwrap_or_default();
+    }
+
+    if details.contract.sec_type == "FUND" && index + 16 < fields.len() {
+        details.fund_name = next_string(fields, &mut index);
+        details.fund_family = next_string(fields, &mut index);
+        details.fund_type = next_string(fields, &mut index);
+        details.fund_front_load = next_string(fields, &mut index);
+        details.fund_back_load = next_string(fields, &mut index);
+        details.fund_back_load_time_interval = next_string(fields, &mut index);
+        details.fund_management_fee = next_string(fields, &mut index);
+        details.fund_closed = next_bool(fields, &mut index);
+        details.fund_closed_for_new_investors = next_bool(fields, &mut index);
+        details.fund_closed_for_new_money = next_bool(fields, &mut index);
+        details.fund_notify_amount = next_string(fields, &mut index);
+        details.fund_minimum_initial_purchase = next_string(fields, &mut index);
+        details.fund_minimum_subsequent_purchase = next_string(fields, &mut index);
+        details.fund_blue_sky_states = next_string(fields, &mut index);
+        details.fund_blue_sky_territories = next_string(fields, &mut index);
+        details.fund_distribution_policy_indicator = next_string(fields, &mut index);
+        details.fund_asset_type = next_string(fields, &mut index);
+    }
+
+    if index < fields.len() {
+        let count = next_i32(fields, &mut index).unwrap_or_default().max(0) as usize;
+        for _ in 0..count {
+            if index + 1 >= fields.len() {
+                break;
+            }
+            details.ineligibility_reason_list.push(IneligibilityReason {
+                id: next_string(fields, &mut index),
+                description: next_string(fields, &mut index),
+            });
+        }
     }
 
     Ok(Event::ContractDetails {

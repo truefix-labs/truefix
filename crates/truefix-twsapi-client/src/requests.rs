@@ -3197,6 +3197,7 @@ pub(crate) fn validate_attached_orders_parameters(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module, clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::server_versions::{

@@ -20,6 +20,8 @@ pub mod comm;
 pub mod constants;
 /// Incoming message decoder.
 pub mod decoder;
+/// Semantic enums for wire-level integer and string values.
+pub mod enums;
 /// Client-side error types.
 pub mod error;
 /// TWS callback events.
@@ -38,6 +40,6 @@ pub mod server_versions;
 /// Domain model types used by requests and callbacks.
 pub mod types;
 
-pub use client::{ClientConfig, ConnectionState, TwsApiClient};
+pub use client::{ClientConfig, ConnectionState, EventPump, TwsApiClient};
 pub use error::{TwsApiError, TwsApiResult};
 pub use events::{Event, Wrapper};

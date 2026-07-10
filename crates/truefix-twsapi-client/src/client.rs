@@ -6,7 +6,7 @@ use crate::comm;
 use crate::constants::MAX_MSG_LEN;
 use crate::decoder;
 use crate::error::{TwsApiError, TwsApiResult};
-use crate::events::Event;
+use crate::events::{Event, Wrapper};
 use crate::message::Outgoing;
 use crate::requests::{
     AccountDataRequest, AccountSummaryRequest, AccountUpdatesMultiRequest, AutoOpenOrdersRequest,
@@ -86,7 +86,27 @@ pub struct TwsApiClient {
     pending_events: VecDeque<Event>,
 }
 
+/// An owned asynchronous event loop. Spawn `run` on a Tokio task when a background reader is desired.
+pub struct EventPump<W> {
+    client: TwsApiClient,
+    wrapper: W,
+}
+
+impl<W: Wrapper> EventPump<W> {
+    /// Runs until the connection closes or an event cannot be decoded.
+    pub async fn run(mut self) -> TwsApiResult<()> {
+        self.client.run_with(&mut self.wrapper).await
+    }
+}
+
 impl TwsApiClient {
+    /// Moves this client into an owned asynchronous event pump.
+    pub fn into_event_pump<W: Wrapper>(self, wrapper: W) -> EventPump<W> {
+        EventPump {
+            client: self,
+            wrapper,
+        }
+    }
     /// Opens a TCP connection and performs the enhanced TWS API handshake.
     pub async fn connect(config: ClientConfig) -> TwsApiResult<Self> {
         let addr = format!("{}:{}", config.host, config.port);
@@ -1037,6 +1057,20 @@ impl TwsApiClient {
         Ok(event)
     }
 
+    /// Reads one event and dispatches it to typed [`Wrapper`] callbacks.
+    pub async fn read_event_with<W: Wrapper>(&mut self, wrapper: &mut W) -> TwsApiResult<Event> {
+        let event = self.read_event().await?;
+        wrapper.dispatch(event.clone());
+        Ok(event)
+    }
+
+    /// Runs the event loop until the socket closes or a decoding error occurs.
+    pub async fn run_with<W: Wrapper>(&mut self, wrapper: &mut W) -> TwsApiResult<()> {
+        loop {
+            self.read_event_with(wrapper).await?;
+        }
+    }
+
     async fn read_handshake(&mut self) -> TwsApiResult<()> {
         let payload = self.read_payload().await?;
         let fields = comm::read_fields(&payload);
@@ -1062,6 +1096,7 @@ fn follow_up_event(event: &Event) -> Option<Event> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::follow_up_event;
     use crate::events::{Event, ScannerDataRow};

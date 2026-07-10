@@ -1,6 +1,7 @@
 use rust_decimal::Decimal;
 
 use crate::constants::{UNSET_DOUBLE, UNSET_INTEGER};
+use crate::enums::{OptionExerciseType, TriggerMethod};
 
 /// Market data ticker id.
 pub type TickerId = i32;
@@ -27,6 +28,90 @@ pub struct SoftDollarTier {
     pub value: String,
     /// Display name.
     pub display_name: String,
+}
+
+/// A reason why a contract cannot be traded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IneligibilityReason {
+    pub id: String,
+    pub description: String,
+}
+
+/// A market-depth exchange description.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DepthMarketDataDescription {
+    pub exchange: String,
+    pub security_type: String,
+    pub listing_exchange: String,
+    pub service_data_type: String,
+    pub aggregate_group: i32,
+}
+
+/// Price increment for a market rule.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PriceIncrement {
+    pub low_edge: f64,
+    pub increment: f64,
+}
+
+/// Account family-code mapping.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FamilyCode {
+    pub account_id: String,
+    pub family_code: String,
+}
+
+/// News provider metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewsProvider {
+    pub code: String,
+    pub name: String,
+}
+
+/// Structured WSH event payload. The original JSON is retained for fields added by IB later.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WshEventData {
+    pub req_id: i32,
+    pub con_id: i32,
+    pub filter: String,
+    pub fill_watchlist: bool,
+    pub fill_portfolio: bool,
+    pub fill_position: bool,
+    pub fill_account: bool,
+    pub data_json: String,
+}
+
+impl WshEventData {
+    /// Parses the standard WSH JSON fields while retaining the original payload.
+    pub fn from_json(req_id: i32, data_json: impl Into<String>) -> Self {
+        let data_json = data_json.into();
+        #[derive(serde::Deserialize, Default)]
+        struct Raw {
+            #[serde(rename = "conId", default)]
+            con_id: i32,
+            #[serde(default)]
+            filter: String,
+            #[serde(rename = "fillWatchlist", default)]
+            fill_watchlist: bool,
+            #[serde(rename = "fillPortfolio", default)]
+            fill_portfolio: bool,
+            #[serde(rename = "fillPosition", default)]
+            fill_position: bool,
+            #[serde(rename = "fillAccount", default)]
+            fill_account: bool,
+        }
+        let raw = serde_json::from_str::<Raw>(&data_json).unwrap_or_default();
+        Self {
+            req_id,
+            con_id: raw.con_id,
+            filter: raw.filter,
+            fill_watchlist: raw.fill_watchlist,
+            fill_portfolio: raw.fill_portfolio,
+            fill_position: raw.fill_position,
+            fill_account: raw.fill_account,
+            data_json,
+        }
+    }
 }
 
 /// Combo leg open/close value.
@@ -229,6 +314,64 @@ pub struct ContractDetails {
     pub next_option_partial: bool,
     /// Bond notes.
     pub bond_notes: String,
+    /// Real expiration date.
+    pub real_expiration_date: String,
+    /// Stock type.
+    pub stock_type: String,
+    /// Minimum order size.
+    pub min_size: Decimal,
+    /// Order-size increment.
+    pub size_increment: Decimal,
+    /// Suggested order-size increment.
+    pub suggested_size_increment: Decimal,
+    /// Fund name.
+    pub fund_name: String,
+    /// Fund family.
+    pub fund_family: String,
+    /// Fund type code.
+    pub fund_type: String,
+    /// Fund front load.
+    pub fund_front_load: String,
+    /// Fund back load.
+    pub fund_back_load: String,
+    /// Fund back-load interval.
+    pub fund_back_load_time_interval: String,
+    /// Fund management fee.
+    pub fund_management_fee: String,
+    /// Whether the fund is closed.
+    pub fund_closed: bool,
+    /// Whether the fund is closed to new investors.
+    pub fund_closed_for_new_investors: bool,
+    /// Whether the fund is closed to new money.
+    pub fund_closed_for_new_money: bool,
+    /// Fund notification amount.
+    pub fund_notify_amount: String,
+    /// Minimum initial purchase.
+    pub fund_minimum_initial_purchase: String,
+    /// Minimum subsequent purchase.
+    pub fund_minimum_subsequent_purchase: String,
+    /// Blue-sky states.
+    pub fund_blue_sky_states: String,
+    /// Blue-sky territories.
+    pub fund_blue_sky_territories: String,
+    /// Distribution policy indicator.
+    pub fund_distribution_policy_indicator: String,
+    /// Asset type.
+    pub fund_asset_type: String,
+    /// Ineligibility reasons.
+    pub ineligibility_reason_list: Vec<IneligibilityReason>,
+    /// First event contract.
+    pub event_contract1: String,
+    /// First event contract description.
+    pub event_contract_description1: String,
+    /// Second event contract description.
+    pub event_contract_description2: String,
+    /// Minimum algorithmic order size.
+    pub min_algo_size: Decimal,
+    /// Last-price precision.
+    pub last_price_precision: Decimal,
+    /// Last-size precision.
+    pub last_size_precision: Decimal,
 }
 
 /// Order combo leg.
@@ -1147,6 +1290,28 @@ pub enum OrderCondition {
     },
 }
 
+impl OrderCondition {
+    /// Returns the typed trigger method for a price condition.
+    pub fn trigger_method(&self) -> Option<TriggerMethod> {
+        match self {
+            Self::Price { trigger_method, .. } => Some(TriggerMethod::from_i32(*trigger_method)),
+            _ => None,
+        }
+    }
+}
+
+impl Execution {
+    /// Returns the typed option exercise/lapse result.
+    pub const fn option_exercise_type(&self) -> OptionExerciseType {
+        OptionExerciseType::from_i32(self.opt_exercise_or_lapse_type)
+    }
+
+    /// Returns the typed liquidity classification.
+    pub const fn liquidity(&self) -> crate::enums::Liquidities {
+        crate::enums::Liquidities::from_i32(self.last_liquidity)
+    }
+}
+
 /// Historical bar data.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BarData {
@@ -1166,4 +1331,19 @@ pub struct BarData {
     pub wap: Decimal,
     /// Bar count.
     pub bar_count: i32,
+}
+
+/// Real-time five-second bar. This is intentionally distinct from historical bars because its
+/// timestamp and end time have different semantics in the TWS API.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RealTimeBar {
+    pub time: i64,
+    pub end_time: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: Decimal,
+    pub wap: Decimal,
+    pub count: i32,
 }
