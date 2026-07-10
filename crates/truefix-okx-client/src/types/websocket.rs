@@ -1,0 +1,101 @@
+//! Typed OKX V5 WebSocket protocol records.
+
+/// Request identifier used to correlate acknowledgements and commands.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct RequestId(pub String);
+
+/// A channel subscription argument.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SubscriptionArg {
+    /// OKX channel name.
+    pub channel: String,
+    /// Optional instrument identifier.
+    #[serde(rename = "instId", skip_serializing_if = "Option::is_none")]
+    pub instrument_id: Option<String>,
+}
+
+/// WebSocket command sent to OKX.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WsCommand<T> {
+    /// `login`, `subscribe`, `unsubscribe`, or a trading operation.
+    pub op: String,
+    /// Correlation identifier.
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<RequestId>,
+    /// Command arguments.
+    pub args: T,
+}
+
+/// Server acknowledgement or error.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct WsAcknowledgement {
+    /// Acknowledged operation.
+    pub op: Option<String>,
+    /// Server correlation identifier.
+    #[serde(rename = "id")]
+    pub request_id: Option<RequestId>,
+    /// OKX status code.
+    pub code: Option<String>,
+    /// Error text when non-successful.
+    pub msg: Option<String>,
+}
+
+/// A routed real-time event preserving the source channel and raw native payload.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct WsEvent {
+    /// Event argument including the source channel.
+    pub arg: SubscriptionArg,
+    /// Native exchange records.
+    pub data: Vec<serde_json::Value>,
+}
+
+/// Typed arguments accepted by the real-time order command.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WsOrder {
+    #[serde(rename = "instId")]
+    pub instrument_id: String,
+    #[serde(rename = "tdMode")]
+    pub trade_mode: String,
+    pub side: String,
+    #[serde(rename = "ordType")]
+    pub order_type: String,
+    pub size: String,
+    #[serde(rename = "px", skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+    #[serde(rename = "clOrdId", skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
+}
+
+/// Typed order identity used by cancel and amend commands.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WsOrderReference {
+    #[serde(rename = "instId", skip_serializing_if = "Option::is_none")]
+    pub instrument_id: Option<String>,
+    #[serde(rename = "ordId", skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    #[serde(rename = "clOrdId", skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
+}
+
+/// Typed arguments accepted by the real-time amend command.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WsAmendOrder {
+    #[serde(flatten)]
+    pub order: WsOrderReference,
+    #[serde(rename = "newSz", skip_serializing_if = "Option::is_none")]
+    pub new_size: Option<String>,
+    #[serde(rename = "newPx", skip_serializing_if = "Option::is_none")]
+    pub new_price: Option<String>,
+}
+
+/// Typed arguments accepted by the real-time mass-cancel command.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WsMassCancel {
+    #[serde(rename = "instType")]
+    pub instrument_type: String,
+    #[serde(rename = "uly", skip_serializing_if = "Option::is_none")]
+    pub underlying: Option<String>,
+    #[serde(rename = "instFamily", skip_serializing_if = "Option::is_none")]
+    pub instrument_family: Option<String>,
+}
