@@ -7,6 +7,23 @@ use crate::{
 use std::collections::BTreeMap;
 pub struct MarketService<'a>(pub(crate) &'a OkxClient);
 impl MarketService<'_> {
+    async fn read_json(
+        &self,
+        path: &str,
+        query: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.0
+            .execute(CanonicalRequest::new(
+                reqwest::Method::GET,
+                path,
+                query,
+                None::<&serde_json::Value>,
+                RetrySafety::ReadOnly,
+                false,
+            )?)
+            .await
+    }
+    /// Executes the `ticker` OKX V5 operation with its classified auth and replay policy.
     pub async fn ticker(&self, instrument_id: &str) -> OkxResult<Vec<Ticker>> {
         let mut q = BTreeMap::new();
         q.insert("instId".into(), instrument_id.into());
@@ -149,6 +166,80 @@ impl MarketService<'_> {
                 RetrySafety::ReadOnly,
                 false,
             )?)
+            .await
+    }
+    /// Executes the `index_candles` OKX V5 operation with its classified auth and replay policy.
+    pub async fn index_candles(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/index-candles", q).await
+    }
+    /// Executes the `mark_price_candles` OKX V5 operation with its classified auth and replay policy.
+    pub async fn mark_price_candles(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/mark-price-candles", q).await
+    }
+    /// Executes the `platform_volume` OKX V5 operation with its classified auth and replay policy.
+    pub async fn platform_volume(&self) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/platform-24-volume", BTreeMap::new())
+            .await
+    }
+    /// Executes the `index_components` OKX V5 operation with its classified auth and replay policy.
+    pub async fn index_components(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/index-components", q).await
+    }
+    /// Executes the `exchange_rate` OKX V5 operation with its classified auth and replay policy.
+    pub async fn exchange_rate(&self) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/exchange-rate", BTreeMap::new())
+            .await
+    }
+    /// Executes the `history_trades` OKX V5 operation with its classified auth and replay policy.
+    pub async fn history_trades(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/history-trades", q).await
+    }
+    /// Executes the `block_ticker` OKX V5 operation with its classified auth and replay policy.
+    pub async fn block_ticker(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/block-ticker", q).await
+    }
+    /// Executes the `block_tickers` OKX V5 operation with its classified auth and replay policy.
+    pub async fn block_tickers(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/block-tickers", q).await
+    }
+    /// Executes the `block_trades` OKX V5 operation with its classified auth and replay policy.
+    pub async fn block_trades(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/block-trades", q).await
+    }
+    /// Executes the `books_lite` OKX V5 operation with its classified auth and replay policy.
+    pub async fn books_lite(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/books-lite", q).await
+    }
+    /// Executes the `option_family_trades` OKX V5 operation with its classified auth and replay policy.
+    pub async fn option_family_trades(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/market/option/instrument-family-trades", q)
             .await
     }
 }

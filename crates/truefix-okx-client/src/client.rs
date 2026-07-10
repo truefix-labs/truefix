@@ -79,6 +79,20 @@ impl OkxClient {
         request: CanonicalRequest,
     ) -> OkxResult<Vec<T>> {
         self.limiter.reserve().await;
-        decode_envelope(&self.http.execute(request).await?)
+        let safety = request.retry_safety;
+        let response = match self.http.execute(request.clone()).await {
+            Ok(response) => response,
+            Err(error) if RateLimiter::may_retry(safety, &error) => {
+                if let crate::error::OkxError::RateLimited { retry_after } = &error {
+                    self.limiter
+                        .throttle_for(retry_after.unwrap_or(std::time::Duration::from_millis(100)))
+                        .await;
+                }
+                self.limiter.reserve().await;
+                self.http.execute(request).await?
+            }
+            Err(error) => return Err(error),
+        };
+        decode_envelope(&response)
     }
 }

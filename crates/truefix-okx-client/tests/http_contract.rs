@@ -81,6 +81,13 @@ async fn demo_writes_are_signed_once_and_send_exact_body() {
     assert!(request.headers.contains_key("ok-access-key"));
     assert!(request.headers.contains_key("ok-access-sign"));
     assert_eq!(
+        request.headers.get("content-type").map(String::as_str),
+        Some("application/json")
+    );
+    let timestamp = request.headers.get("ok-access-timestamp").unwrap();
+    assert!(timestamp.ends_with('Z'));
+    assert_eq!(timestamp.split_once('.').unwrap().1.len(), 4);
+    assert_eq!(
         request
             .headers
             .get("x-simulated-trading")
@@ -91,4 +98,100 @@ async fn demo_writes_are_signed_once_and_send_exact_body() {
         request.body,
         br#"{"instId":"BTC-USDT","tdMode":"cash","side":"buy","ordType":"market","sz":"1"}"#
     );
+}
+
+#[tokio::test]
+async fn safe_read_retries_one_429_after_the_server_throttle() {
+    let (base, captured) = support::http::start_sequence(vec![
+        (
+            429,
+            r#"{"code":"50011","msg":"rate limited","data":[]}"#,
+            Some("1"),
+        ),
+        (
+            200,
+            r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","last":"1"}]}"#,
+            None,
+        ),
+    ])
+    .await;
+    let client = OkxClient::new(custom_config(base, None)).unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(client.market().ticker("BTC-USDT").await.unwrap().len(), 1);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "the Retry-After throttle was not observed"
+    );
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.method == "GET"));
+    assert_eq!(requests[0].target, requests[1].target);
+}
+
+#[tokio::test]
+async fn state_changing_write_is_not_replayed_after_429() {
+    let (base, captured) = support::http::start_sequence(vec![(
+        429,
+        r#"{"code":"50011","msg":"rate limited","data":[]}"#,
+        Some("0"),
+    )])
+    .await;
+    let credentials = Credentials::new("key", "secret", "passphrase").unwrap();
+    let client = OkxClient::new(custom_config(base, Some(credentials))).unwrap();
+    let order = PlaceOrder {
+        instrument_id: "BTC-USDT".to_owned(),
+        trade_mode: "cash".to_owned(),
+        side: "buy".to_owned(),
+        order_type: "market".to_owned(),
+        size: "1".parse::<DecimalValue>().unwrap(),
+        price: None,
+        client_order_id: None,
+    };
+    assert!(matches!(
+        client.trade().place_order(&order).await,
+        Err(truefix_okx_client::OkxError::RateLimited { .. })
+    ));
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+}
+
+#[test]
+fn corrected_domain_paths_match_the_baseline_and_reject_known_invalid_paths() {
+    let sources = [
+        include_str!("../src/services/account.rs"),
+        include_str!("../src/services/funding.rs"),
+        include_str!("../src/services/finance.rs"),
+        include_str!("../src/services/professional.rs"),
+    ]
+    .join("\n");
+    for required in [
+        "/api/v5/account/vip-loan-order-list",
+        "/api/v5/account/fixed-loan/borrowing-orders-list",
+        "/api/v5/account/spot-manual-borrow-repay",
+        "/api/v5/asset/currencies",
+        "/api/v5/asset/deposit-lightning",
+        "/api/v5/finance/flexible-loan/borrow-currencies",
+        "/api/v5/finance/staking-defi/offers",
+        "/api/v5/finance/sfp/dcd/products",
+        "/api/v5/broker/fd/rebate-per-orders",
+    ] {
+        assert!(
+            sources.contains(required),
+            "missing corrected path {required}"
+        );
+    }
+    for invalid in [
+        "/api/v5/asset/lightning",
+        "/api/v5/account/vip-loan/loan-order-list",
+        "/api/v5/account/fixed-loan/borrowing-order-list",
+        "/api/v5/finance/staking-defi/defi/offer-list",
+        "/api/v5/finance/staking-defi/dual-investment/products",
+        "/api/v5/broker/nd/rebate-per-orders",
+    ] {
+        assert!(
+            !sources.contains(invalid),
+            "invalid path remains: {invalid}"
+        );
+    }
 }

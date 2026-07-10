@@ -43,17 +43,19 @@ impl HttpTransport {
         let mut builder = self
             .client
             .request(request.method.clone(), url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(request.body.clone());
-        if matches!(
-            self.config.environment,
-            Environment::Demo
-                | Environment::Custom {
-                    simulated: true,
-                    ..
-                }
-        ) {
-            builder = builder.header("x-simulated-trading", "1");
-        }
+        let simulated = match self.config.environment {
+            Environment::Demo => "1",
+            Environment::Live(_) => "0",
+            Environment::Custom {
+                simulated: true, ..
+            } => "1",
+            Environment::Custom {
+                simulated: false, ..
+            } => "0",
+        };
+        builder = builder.header("x-simulated-trading", simulated);
         if request.requires_auth {
             let credentials = self
                 .config

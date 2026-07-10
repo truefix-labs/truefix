@@ -39,6 +39,7 @@ impl TradeService<'_> {
             )?)
             .await
     }
+    /// Executes the `place_order` OKX V5 operation with its classified auth and replay policy.
     pub async fn place_order(&self, order: &PlaceOrder) -> OkxResult<Vec<OrderAck>> {
         self.0
             .execute(CanonicalRequest::new(
@@ -189,18 +190,21 @@ impl TradeService<'_> {
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.write_json("/api/v5/trade/order-algo", request).await
     }
+    /// Executes the `cancel_algo_order` OKX V5 operation with its classified auth and replay policy.
     pub async fn cancel_algo_order(
         &self,
         request: &serde_json::Value,
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.write_json("/api/v5/trade/cancel-algos", request).await
     }
+    /// Executes the `amend_algo_order` OKX V5 operation with its classified auth and replay policy.
     pub async fn amend_algo_order(
         &self,
         request: &serde_json::Value,
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.write_json("/api/v5/trade/amend-algos", request).await
     }
+    /// Executes the `algo_orders_pending` OKX V5 operation with its classified auth and replay policy.
     pub async fn algo_orders_pending(
         &self,
         query: BTreeMap<String, String>,
@@ -208,6 +212,7 @@ impl TradeService<'_> {
         self.read_json("/api/v5/trade/orders-algo-pending", query)
             .await
     }
+    /// Executes the `algo_orders_history` OKX V5 operation with its classified auth and replay policy.
     pub async fn algo_orders_history(
         &self,
         query: BTreeMap<String, String>,
@@ -215,6 +220,7 @@ impl TradeService<'_> {
         self.read_json("/api/v5/trade/orders-algo-history", query)
             .await
     }
+    /// Executes the `algo_advance_orders_pending` OKX V5 operation with its classified auth and replay policy.
     pub async fn algo_advance_orders_pending(
         &self,
         query: BTreeMap<String, String>,
@@ -222,6 +228,7 @@ impl TradeService<'_> {
         self.read_json("/api/v5/trade/orders-algo-pending", query)
             .await
     }
+    /// Executes the `algo_advance_orders_history` OKX V5 operation with its classified auth and replay policy.
     pub async fn algo_advance_orders_history(
         &self,
         query: BTreeMap<String, String>,
@@ -238,12 +245,14 @@ impl TradeService<'_> {
         self.read_json("/api/v5/trade/easy-convert-currency-list", query)
             .await
     }
+    /// Executes the `easy_convert` OKX V5 operation with its classified auth and replay policy.
     pub async fn easy_convert(
         &self,
         request: &serde_json::Value,
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.write_json("/api/v5/trade/easy-convert", request).await
     }
+    /// Executes the `easy_convert_history` OKX V5 operation with its classified auth and replay policy.
     pub async fn easy_convert_history(
         &self,
         query: BTreeMap<String, String>,
@@ -251,6 +260,7 @@ impl TradeService<'_> {
         self.read_json("/api/v5/trade/easy-convert-history", query)
             .await
     }
+    /// Executes the `one_click_repay_currency_list` OKX V5 operation with its classified auth and replay policy.
     pub async fn one_click_repay_currency_list(
         &self,
         query: BTreeMap<String, String>,
@@ -258,6 +268,7 @@ impl TradeService<'_> {
         self.read_json("/api/v5/trade/one-click-repay-currency-list", query)
             .await
     }
+    /// Executes the `one_click_repay` OKX V5 operation with its classified auth and replay policy.
     pub async fn one_click_repay(
         &self,
         request: &serde_json::Value,
@@ -265,6 +276,7 @@ impl TradeService<'_> {
         self.write_json("/api/v5/trade/one-click-repay", request)
             .await
     }
+    /// Executes the `one_click_repay_history` OKX V5 operation with its classified auth and replay policy.
     pub async fn one_click_repay_history(
         &self,
         query: BTreeMap<String, String>,
@@ -272,6 +284,7 @@ impl TradeService<'_> {
         self.read_json("/api/v5/trade/one-click-repay-history", query)
             .await
     }
+    /// Executes the `fills_history` OKX V5 operation with its classified auth and replay policy.
     pub async fn fills_history(&self, query: BTreeMap<String, String>) -> OkxResult<Vec<Fill>> {
         self.0
             .execute(CanonicalRequest::new(
@@ -282,6 +295,44 @@ impl TradeService<'_> {
                 RetrySafety::ReadOnly,
                 true,
             )?)
+            .await
+    }
+    /// Executes the `orders_history_archive` OKX V5 operation with its classified auth and replay policy.
+    pub async fn orders_history_archive(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/trade/orders-history-archive", q)
+            .await
+    }
+    /// Executes the `algo_order_details` OKX V5 operation with its classified auth and replay policy.
+    pub async fn algo_order_details(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/trade/order-algo", q).await
+    }
+    /// Executes the `one_click_repay_currency_list_v2` OKX V5 operation with its classified auth and replay policy.
+    pub async fn one_click_repay_currency_list_v2(&self) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json(
+            "/api/v5/trade/one-click-repay-currency-list-v2",
+            BTreeMap::new(),
+        )
+        .await
+    }
+    /// Executes the `one_click_repay_v2` OKX V5 operation with its classified auth and replay policy.
+    pub async fn one_click_repay_v2(
+        &self,
+        b: &serde_json::Value,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.write_json("/api/v5/trade/one-click-repay-v2", b).await
+    }
+    /// Executes the `one_click_repay_history_v2` OKX V5 operation with its classified auth and replay policy.
+    pub async fn one_click_repay_history_v2(
+        &self,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.read_json("/api/v5/trade/one-click-repay-history-v2", q)
             .await
     }
 }

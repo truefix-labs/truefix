@@ -1,5 +1,108 @@
 //! Auditable source-capability inventory.
 
+use std::collections::HashSet;
+
+/// Authentication required by a baseline operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthClass {
+    /// The operation is available without API credentials.
+    Public,
+    /// The operation requires the OKX REST signing headers.
+    Private,
+}
+
+/// Automatic replay classification for a baseline operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayClass {
+    /// A safe read may be retried once after a transient failure.
+    ReadOnly,
+    /// A state-changing request must never be replayed automatically.
+    NeverReplay,
+}
+
+/// One source operation and all evidence required to audit its Rust implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BaselineOperation {
+    /// Stable source file, line, and Python method identity.
+    pub source_identity: &'static str,
+    /// Source business domain.
+    pub domain: &'static str,
+    /// Python capability name.
+    pub operation: &'static str,
+    /// Approved HTTP method.
+    pub method: &'static str,
+    /// Approved current OKX path.
+    pub path: &'static str,
+    /// Authentication classification.
+    pub auth: AuthClass,
+    /// Automatic replay classification.
+    pub replay: ReplayClass,
+    /// Native Rust service and method implementing the operation.
+    pub native_entrypoint: &'static str,
+    /// Local fixture which audits the record.
+    pub fixture_id: &'static str,
+}
+
+/// Why an operation manifest cannot be accepted as complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestValidationError {
+    /// The manifest does not contain exactly the pinned baseline count.
+    WrongCount { expected: usize, actual: usize },
+    /// More than one record claims the same source identity.
+    DuplicateSourceIdentity(&'static str),
+    /// A required evidence field is empty or has an unknown classification.
+    Unclassified(&'static str),
+    /// The baseline operation has no native Rust implementation.
+    Unsupported(&'static str),
+}
+
+#[path = "generated_operation_inventory.rs"]
+mod generated;
+pub use generated::BASELINE_OPERATION_MANIFEST;
+
+/// Validates exact count, uniqueness, classifications, native support, and fixture evidence.
+pub fn validate_operation_manifest(
+    records: &[BaselineOperation],
+    expected_count: usize,
+) -> Result<(), ManifestValidationError> {
+    if records.len() != expected_count {
+        return Err(ManifestValidationError::WrongCount {
+            expected: expected_count,
+            actual: records.len(),
+        });
+    }
+    let mut identities = HashSet::with_capacity(records.len());
+    for record in records {
+        if !identities.insert(record.source_identity) {
+            return Err(ManifestValidationError::DuplicateSourceIdentity(
+                record.source_identity,
+            ));
+        }
+        if record.source_identity.is_empty()
+            || record.domain.is_empty()
+            || record.operation.is_empty()
+            || !matches!(record.method, "GET" | "POST")
+            || !record.path.starts_with("/api/v5/")
+            || record.fixture_id.is_empty()
+        {
+            return Err(ManifestValidationError::Unclassified(
+                record.source_identity,
+            ));
+        }
+        if record.native_entrypoint.is_empty() || record.native_entrypoint == "UNSUPPORTED" {
+            return Err(ManifestValidationError::Unsupported(record.source_identity));
+        }
+        if (record.method == "GET" && record.replay != ReplayClass::ReadOnly)
+            || (record.method == "POST" && record.replay != ReplayClass::NeverReplay)
+        {
+            return Err(ManifestValidationError::Unclassified(
+                record.source_identity,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A source capability that must have a native entrypoint and automated evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperationInventoryEntry {

@@ -31,9 +31,19 @@ pub fn sign_rest(
     request: &CanonicalRequest,
     now: OffsetDateTime,
 ) -> OkxResult<(String, String)> {
-    let timestamp = now
+    let rfc3339 = now
         .format(&Rfc3339)
         .map_err(|error| OkxError::Signing(error.to_string()))?;
+    let timestamp = match rfc3339.split_once('.') {
+        Some((whole, fraction_and_zone)) => format!(
+            "{whole}.{:0<3}Z",
+            &fraction_and_zone[..fraction_and_zone.len().saturating_sub(1)]
+                .chars()
+                .take(3)
+                .collect::<String>()
+        ),
+        None => format!("{} .000Z", rfc3339.trim_end_matches('Z')).replace(" ", ""),
+    };
     let payload = format!(
         "{}{}{}{}",
         timestamp,
@@ -97,7 +107,7 @@ mod tests {
         .unwrap();
         let (signature, timestamp) =
             sign_rest(&credentials, &request, datetime!(2024-01-01 0:00 UTC)).unwrap();
-        assert_eq!(timestamp, "2024-01-01T00:00:00Z");
+        assert_eq!(timestamp, "2024-01-01T00:00:00.000Z");
         assert!(!signature.is_empty());
     }
 
@@ -126,7 +136,7 @@ mod tests {
         .unwrap();
         let (signature, timestamp) =
             sign_rest(&credentials, &request, datetime!(2024-01-01 0:00 UTC)).unwrap();
-        assert_eq!(timestamp, "2024-01-01T00:00:00Z");
+        assert_eq!(timestamp, "2024-01-01T00:00:00.000Z");
         assert!(!signature.is_empty());
         assert!(request.path_and_query.contains("BTC-USDT+SWAP"));
         assert!(request.body.is_empty());
@@ -138,5 +148,28 @@ mod tests {
         let headers = private_headers(&credentials, "signature".to_owned(), "time".to_owned());
         assert!(headers.iter().all(|(_, value)| value != "secret"));
         assert!(headers.iter().any(|(name, _)| name == "OK-ACCESS-SIGN"));
+    }
+
+    #[test]
+    fn rest_timestamps_always_use_exact_milliseconds() {
+        let credentials = Credentials::new("key", "secret", "passphrase").unwrap();
+        let request = CanonicalRequest::new(
+            reqwest::Method::GET,
+            "/api/v5/account/balance",
+            BTreeMap::new(),
+            None::<&serde_json::Value>,
+            RetrySafety::ReadOnly,
+            true,
+        )
+        .unwrap();
+        for (now, expected) in [
+            (datetime!(2024-01-01 0:00 UTC), "2024-01-01T00:00:00.000Z"),
+            (
+                datetime!(2024-01-01 0:00:00.123456789 UTC),
+                "2024-01-01T00:00:00.123Z",
+            ),
+        ] {
+            assert_eq!(sign_rest(&credentials, &request, now).unwrap().1, expected);
+        }
     }
 }

@@ -154,7 +154,7 @@ Command ends after Phase 2 planning. Report branch, IMPL_PLAN path, and generate
    - Keep this artifact as a validation/run guide; implementation details belong in `tasks.md` and the implementation phase
 
 4. **Agent context update**:
-   - Update the plan reference between the `<!-- SPECKIT START -->` and `<!-- SPECKIT END -->` markers in `CLAUDE.md` to point to the plan file created in step 1 (the IMPL_PLAN path)
+   - Update the plan reference between the `<!-- SPECKIT START -->` and `<!-- SPECKIT END -->` markers in `AGENTS.md` to point to the plan file created in step 1 (the IMPL_PLAN path)
 
 **Output**: data-model.md, /contracts/*, quickstart.md, updated agent context file
 

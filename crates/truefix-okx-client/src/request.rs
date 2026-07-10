@@ -37,8 +37,13 @@ impl CanonicalRequest {
                 "request paths must start with '/'".to_owned(),
             ));
         }
-        let encoded_query = serde_urlencoded::to_string(query)
-            .map_err(|error| OkxError::Signing(error.to_string()))?;
+        let encoded_query = serde_urlencoded::to_string(
+            query
+                .into_iter()
+                .filter(|(_, value)| !value.is_empty())
+                .collect::<BTreeMap<_, _>>(),
+        )
+        .map_err(|error| OkxError::Signing(error.to_string()))?;
         let path_and_query = if encoded_query.is_empty() {
             path.to_owned()
         } else {
@@ -91,5 +96,25 @@ mod tests {
             false,
         );
         assert!(matches!(result, Err(OkxError::InvalidConfiguration(_))));
+    }
+
+    #[test]
+    fn empty_query_values_are_omitted() {
+        let mut query = BTreeMap::new();
+        query.insert("instId".to_owned(), "BTC-USDT".to_owned());
+        query.insert("after".to_owned(), String::new());
+        let request = CanonicalRequest::new(
+            reqwest::Method::GET,
+            "/api/v5/market/ticker",
+            query,
+            None::<&serde_json::Value>,
+            RetrySafety::ReadOnly,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            request.path_and_query,
+            "/api/v5/market/ticker?instId=BTC-USDT"
+        );
     }
 }
