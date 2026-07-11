@@ -163,6 +163,8 @@ fn corrected_domain_paths_match_the_baseline_and_reject_known_invalid_paths() {
         include_str!("../src/services/funding.rs"),
         include_str!("../src/services/finance.rs"),
         include_str!("../src/services/professional.rs"),
+        include_str!("../src/services/strategy.rs"),
+        include_str!("../src/services/trade.rs"),
     ]
     .join("\n");
     for required in [
@@ -183,15 +185,32 @@ fn corrected_domain_paths_match_the_baseline_and_reject_known_invalid_paths() {
     }
     for invalid in [
         "/api/v5/asset/lightning",
+        "/api/v5/asset/deposit/currencies",
         "/api/v5/account/vip-loan/loan-order-list",
         "/api/v5/account/fixed-loan/borrowing-order-list",
         "/api/v5/finance/staking-defi/defi/offer-list",
         "/api/v5/finance/staking-defi/dual-investment/products",
         "/api/v5/broker/nd/rebate-per-orders",
+        "/api/v5/finance/savings/purchase-redempt-history",
+        "/api/v5/finance/savings/interest-accrued",
     ] {
         assert!(
             !sources.contains(invalid),
             "invalid path remains: {invalid}"
+        );
+    }
+    for duplicate_or_misleading_method in [
+        "deposit_currencies",
+        "fixed_loan_repayments",
+        "algo_advance_orders_pending",
+        "algo_advance_orders_history",
+        "copy_lead_positions",
+        "dust_assets",
+        "savings_products",
+    ] {
+        assert!(
+            !sources.contains(duplicate_or_misleading_method),
+            "duplicate, unsupported, or misleading method remains: {duplicate_or_misleading_method}"
         );
     }
 }

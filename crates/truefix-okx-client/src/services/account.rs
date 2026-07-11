@@ -258,14 +258,6 @@ impl AccountService<'_> {
         self.write_json("/api/v5/account/fixed-loan/repay-borrowing-order", request)
             .await
     }
-    /// Executes the `fixed_loan_repayments` OKX V5 operation with its classified auth and replay policy.
-    pub async fn fixed_loan_repayments(
-        &self,
-        query: BTreeMap<String, String>,
-    ) -> OkxResult<Vec<serde_json::Value>> {
-        self.read_json("/api/v5/account/fixed-loan/borrowing-orders-list", query)
-            .await
-    }
     /// Executes the `vip_loan_orders` OKX V5 operation with its classified auth and replay policy.
     pub async fn vip_loan_orders(
         &self,

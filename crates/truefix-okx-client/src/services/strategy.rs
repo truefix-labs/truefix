@@ -107,14 +107,6 @@ impl StrategyService<'_> {
         self.get("/api/v5/tradingBot/recurring/orders-algo-pending", q)
             .await
     }
-    /// Executes the `copy_lead_positions` OKX V5 operation with its classified auth and replay policy.
-    pub async fn copy_lead_positions(
-        &self,
-        q: BTreeMap<String, String>,
-    ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/copytrading/current-subpositions", q)
-            .await
-    }
     /// Executes the `grid_order_details` OKX V5 operation with its classified auth and replay policy.
     pub async fn grid_order_details(
         &self,

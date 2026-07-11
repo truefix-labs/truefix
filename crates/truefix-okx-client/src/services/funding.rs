@@ -51,13 +51,6 @@ impl FundingService<'_> {
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.get("/api/v5/asset/deposit-address", q).await
     }
-    /// Executes the `deposit_currencies` OKX V5 operation with its classified auth and replay policy.
-    pub async fn deposit_currencies(
-        &self,
-        q: BTreeMap<String, String>,
-    ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/asset/deposit/currencies", q).await
-    }
     /// Executes the `deposits` OKX V5 operation with its classified auth and replay policy.
     pub async fn deposits(&self, q: BTreeMap<String, String>) -> OkxResult<Vec<serde_json::Value>> {
         self.get("/api/v5/asset/deposit-history", q).await
@@ -98,11 +91,6 @@ impl FundingService<'_> {
     /// Executes the `convert_dust` OKX V5 operation with its classified auth and replay policy.
     pub async fn convert_dust(&self, b: &serde_json::Value) -> OkxResult<Vec<serde_json::Value>> {
         self.write("/api/v5/asset/convert-dust-assets", b).await
-    }
-    /// Executes the `dust_assets` OKX V5 operation with its classified auth and replay policy.
-    pub async fn dust_assets(&self) -> OkxResult<Vec<serde_json::Value>> {
-        self.write("/api/v5/asset/convert-dust-assets", &serde_json::json!({}))
-            .await
     }
     /// Executes the `asset_valuation` OKX V5 operation with its classified auth and replay policy.
     pub async fn asset_valuation(

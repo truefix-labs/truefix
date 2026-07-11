@@ -220,23 +220,6 @@ impl TradeService<'_> {
         self.read_json("/api/v5/trade/orders-algo-history", query)
             .await
     }
-    /// Executes the `algo_advance_orders_pending` OKX V5 operation with its classified auth and replay policy.
-    pub async fn algo_advance_orders_pending(
-        &self,
-        query: BTreeMap<String, String>,
-    ) -> OkxResult<Vec<serde_json::Value>> {
-        self.read_json("/api/v5/trade/orders-algo-pending", query)
-            .await
-    }
-    /// Executes the `algo_advance_orders_history` OKX V5 operation with its classified auth and replay policy.
-    pub async fn algo_advance_orders_history(
-        &self,
-        query: BTreeMap<String, String>,
-    ) -> OkxResult<Vec<serde_json::Value>> {
-        self.read_json("/api/v5/trade/orders-algo-history", query)
-            .await
-    }
-
     /// Gets the conversion currencies available to the account.
     pub async fn easy_convert_currency_list(
         &self,

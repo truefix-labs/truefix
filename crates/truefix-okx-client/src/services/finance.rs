@@ -32,8 +32,8 @@ impl FinanceService<'_> {
             )?)
             .await
     }
-    /// Gets Simple Earn savings products.
-    pub async fn savings_products(
+    /// Gets the public Simple Earn lending-rate summary.
+    pub async fn savings_public_borrow_info(
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
@@ -54,22 +54,6 @@ impl FinanceService<'_> {
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.get("/api/v5/finance/savings/balance", q).await
-    }
-    /// Executes the `savings_purchase_redempt_history` OKX V5 operation with its classified auth and replay policy.
-    pub async fn savings_purchase_redempt_history(
-        &self,
-        q: BTreeMap<String, String>,
-    ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/finance/savings/purchase-redempt-history", q)
-            .await
-    }
-    /// Executes the `savings_interest_accrued` OKX V5 operation with its classified auth and replay policy.
-    pub async fn savings_interest_accrued(
-        &self,
-        q: BTreeMap<String, String>,
-    ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/finance/savings/interest-accrued", q)
-            .await
     }
     /// Executes the `eth_products` OKX V5 operation with its classified auth and replay policy.
     pub async fn eth_products(

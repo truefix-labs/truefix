@@ -823,7 +823,7 @@ pub const BASELINE_OPERATION_MANIFEST: &[BaselineOperation] = &[
         path: "/api/v5/copytrading/current-subpositions",
         auth: AuthClass::Private,
         replay: ReplayClass::ReadOnly,
-        native_entrypoint: "strategy::copy_lead_positions",
+        native_entrypoint: "strategy::leading_positions",
         fixture_id: "operation_inventory::baseline_manifest_is_complete_and_classified",
     },
     BaselineOperation {
@@ -1252,7 +1252,7 @@ pub const BASELINE_OPERATION_MANIFEST: &[BaselineOperation] = &[
         path: "/api/v5/finance/savings/lending-rate-summary",
         auth: AuthClass::Private,
         replay: ReplayClass::ReadOnly,
-        native_entrypoint: "finance::savings_products",
+        native_entrypoint: "finance::savings_public_borrow_info",
         fixture_id: "operation_inventory::baseline_manifest_is_complete_and_classified",
     },
     BaselineOperation {
