@@ -8,8 +8,6 @@
 
 #![cfg(feature = "mssql")]
 
-use std::time::Duration;
-
 use tiberius::{AuthMethod, Client, Config};
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -54,8 +52,9 @@ async fn mssql_log_persists_messages_and_events_if_available() {
     log.on_outgoing("8=FIX.4.4|35=0");
     log.on_event("logged on");
 
-    // Allow the background writer to flush.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // `MssqlLog` writes on a single background connection.  Wait for its explicit drain
+    // boundary instead of racing a fixed delay against the three queued inserts.
+    log.shutdown().await;
 
     let tiberius_config = parse_url(&url);
     let addr = tokio::net::lookup_host(tiberius_config.get_addr())
@@ -121,7 +120,7 @@ async fn mssql_log_rows_carry_logged_at_and_session_id_if_available() {
     };
     let log = MssqlLog::connect_with_config(config).await.unwrap();
     log.on_event("logged on");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    log.shutdown().await;
 
     let tiberius_config = parse_url(&url);
     let addr = tokio::net::lookup_host(tiberius_config.get_addr())

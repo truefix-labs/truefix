@@ -30,16 +30,13 @@ impl HttpTransport {
         })
     }
 
-    fn rest_base(&self) -> &str {
-        match &self.config.environment {
-            Environment::Demo | Environment::Live(_) => "https://www.okx.com",
-            Environment::Custom { rest_base, .. } => rest_base,
-        }
-    }
-
     /// Executes exact canonical bytes and returns raw response bytes for typed decoding.
     pub async fn execute(&self, request: CanonicalRequest) -> OkxResult<Vec<u8>> {
-        let url = format!("{}{}", self.rest_base(), request.path_and_query);
+        let url = format!(
+            "{}{}",
+            self.config.environment.rest_base(),
+            request.path_and_query
+        );
         let mut builder = self
             .client
             .request(request.method.clone(), url)

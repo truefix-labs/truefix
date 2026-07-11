@@ -79,6 +79,51 @@ pub enum Environment {
     },
 }
 
+impl Environment {
+    const OKX_REST_BASE: &str = "https://openapi.okx.com";
+    const LIVE_PUBLIC_WS: &str = "wss://ws.okx.com:8443/ws/v5/public";
+    const LIVE_PRIVATE_WS: &str = "wss://ws.okx.com:8443/ws/v5/private";
+    const LIVE_BUSINESS_WS: &str = "wss://ws.okx.com:8443/ws/v5/business";
+    const DEMO_PUBLIC_WS: &str = "wss://wspap.okx.com:8443/ws/v5/public";
+    const DEMO_PRIVATE_WS: &str = "wss://wspap.okx.com:8443/ws/v5/private";
+    const DEMO_BUSINESS_WS: &str = "wss://wspap.okx.com:8443/ws/v5/business";
+
+    /// Returns the REST API base URL for this environment.
+    pub fn rest_base(&self) -> &str {
+        match self {
+            Self::Demo | Self::Live(_) => Self::OKX_REST_BASE,
+            Self::Custom { rest_base, .. } => rest_base,
+        }
+    }
+
+    /// Returns the public WebSocket URL for this environment.
+    pub fn public_ws_url(&self) -> &str {
+        match self {
+            Self::Demo => Self::DEMO_PUBLIC_WS,
+            Self::Live(_) => Self::LIVE_PUBLIC_WS,
+            Self::Custom { public_ws, .. } => public_ws,
+        }
+    }
+
+    /// Returns the private WebSocket URL for this environment.
+    pub fn private_ws_url(&self) -> &str {
+        match self {
+            Self::Demo => Self::DEMO_PRIVATE_WS,
+            Self::Live(_) => Self::LIVE_PRIVATE_WS,
+            Self::Custom { private_ws, .. } => private_ws,
+        }
+    }
+
+    /// Returns the business WebSocket URL for this environment.
+    pub fn business_ws_url(&self) -> &str {
+        match self {
+            Self::Demo => Self::DEMO_BUSINESS_WS,
+            Self::Live(_) => Self::LIVE_BUSINESS_WS,
+            Self::Custom { business_ws, .. } => business_ws,
+        }
+    }
+}
+
 /// Fully immutable client configuration.
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
@@ -138,5 +183,32 @@ mod tests {
     #[test]
     fn demo_is_the_default_environment() {
         assert_eq!(ClientConfig::default().environment, Environment::Demo);
+    }
+
+    #[test]
+    fn standard_environments_expose_documented_endpoints() {
+        let demo = Environment::Demo;
+        assert_eq!(demo.rest_base(), "https://openapi.okx.com");
+        assert_eq!(
+            demo.public_ws_url(),
+            "wss://wspap.okx.com:8443/ws/v5/public"
+        );
+        assert_eq!(
+            demo.private_ws_url(),
+            "wss://wspap.okx.com:8443/ws/v5/private"
+        );
+        assert_eq!(
+            demo.business_ws_url(),
+            "wss://wspap.okx.com:8443/ws/v5/business"
+        );
+
+        let live = Environment::Live(LiveTradingConfirmation::acknowledge_risk());
+        assert_eq!(live.rest_base(), "https://openapi.okx.com");
+        assert_eq!(live.public_ws_url(), "wss://ws.okx.com:8443/ws/v5/public");
+        assert_eq!(live.private_ws_url(), "wss://ws.okx.com:8443/ws/v5/private");
+        assert_eq!(
+            live.business_ws_url(),
+            "wss://ws.okx.com:8443/ws/v5/business"
+        );
     }
 }
