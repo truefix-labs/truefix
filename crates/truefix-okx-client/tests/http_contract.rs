@@ -211,6 +211,31 @@ fn corrected_domain_paths_match_the_baseline_and_reject_known_invalid_paths() {
             "missing corrected path {required}"
         );
     }
+    for public_spread_method in [
+        "pub async fn spreads",
+        "pub async fn spread_books",
+        "pub async fn spread_ticker",
+        "pub async fn spread_public_trades",
+        "pub async fn public_rfq_trades",
+    ] {
+        assert!(
+            sources.contains(public_spread_method),
+            "missing expected public method {public_spread_method}"
+        );
+    }
+    for public_spread_get in [
+        "spreads(&self, q: BTreeMap<String, String>) -> OkxResult<Vec<serde_json::Value>> {",
+        "self.public_get(\"/api/v5/sprd/spreads\", q).await",
+        "self.public_get(\"/api/v5/sprd/books\", q).await",
+        "self.public_get(\"/api/v5/sprd/ticker\", q).await",
+        "self.public_get(\"/api/v5/sprd/public-trades\", q).await",
+        "self.public_get(\"/api/v5/rfq/public-trades\", q).await",
+    ] {
+        assert!(
+            sources.contains(public_spread_get),
+            "missing expected public endpoint usage {public_spread_get}"
+        );
+    }
     for invalid in [
         "/api/v5/asset/lightning",
         "/api/v5/asset/deposit/currencies",

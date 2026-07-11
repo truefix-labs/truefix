@@ -40,6 +40,18 @@ impl PublicSession {
             args: vec![],
         }
     }
+    pub fn send(
+        &mut self,
+        op: impl Into<String>,
+        args: Vec<serde_json::Value>,
+    ) -> OkxResult<WsCommand<Vec<serde_json::Value>>> {
+        self.active()?;
+        Ok(WsCommand {
+            op: op.into(),
+            id: Some(self.0.next_request_id()),
+            args,
+        })
+    }
     fn active(&self) -> OkxResult<()> {
         if self.0.is_active() {
             Ok(())

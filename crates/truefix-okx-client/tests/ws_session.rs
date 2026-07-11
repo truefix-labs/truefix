@@ -128,6 +128,7 @@ fn subscriptions_require_an_active_session() {
     ));
     public.connected();
     assert!(public.subscribe(vec![ticker()]).is_ok());
+    assert!(public.send("ping", Vec::new()).is_ok());
 
     let mut private = PrivateSession::default();
     assert!(matches!(

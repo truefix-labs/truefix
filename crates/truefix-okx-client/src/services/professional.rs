@@ -230,7 +230,7 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rfq/public-trades", q).await
+        self.public_get("/api/v5/rfq/public-trades", q).await
     }
     /// Executes the `maker_instrument_settings` OKX V5 operation with its classified auth and replay policy.
     pub async fn maker_instrument_settings(
@@ -262,28 +262,28 @@ impl ProfessionalService<'_> {
     }
     /// Executes the `spreads` OKX V5 operation with its classified auth and replay policy.
     pub async fn spreads(&self, q: BTreeMap<String, String>) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/sprd/spreads", q).await
+        self.public_get("/api/v5/sprd/spreads", q).await
     }
     /// Executes the `spread_books` OKX V5 operation with its classified auth and replay policy.
     pub async fn spread_books(
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/sprd/books", q).await
+        self.public_get("/api/v5/sprd/books", q).await
     }
     /// Executes the `spread_ticker` OKX V5 operation with its classified auth and replay policy.
     pub async fn spread_ticker(
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/sprd/ticker", q).await
+        self.public_get("/api/v5/sprd/ticker", q).await
     }
     /// Executes the `spread_public_trades` OKX V5 operation with its classified auth and replay policy.
     pub async fn spread_public_trades(
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/sprd/public-trades", q).await
+        self.public_get("/api/v5/sprd/public-trades", q).await
     }
     /// Executes the `margin_lending_ratio` OKX V5 operation with its classified auth and replay policy.
     pub async fn margin_lending_ratio(
