@@ -1,6 +1,6 @@
 use crate::{
     error::{OkxError, OkxResult},
-    types::websocket::{SubscriptionArg, WsCommand},
+    types::websocket::{SubscriptionArg, WsCommand, WsHeartbeat},
     ws::session::Session,
 };
 
@@ -55,12 +55,8 @@ impl PublicSession {
             args,
         })
     }
-    pub fn ping(&mut self) -> WsCommand<Vec<()>> {
-        WsCommand {
-            op: "ping".to_owned(),
-            id: Some(self.0.next_request_id()),
-            args: vec![],
-        }
+    pub fn ping(&mut self) -> WsHeartbeat {
+        WsHeartbeat
     }
     pub fn send(
         &mut self,

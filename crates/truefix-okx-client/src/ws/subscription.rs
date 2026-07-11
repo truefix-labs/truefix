@@ -7,12 +7,18 @@ use crate::types::websocket::{RequestId, SubscriptionArg};
 pub struct SubscriptionKey {
     pub channel: String,
     pub instrument_id: Option<String>,
+    pub extra: Vec<(String, String)>,
 }
 impl From<&SubscriptionArg> for SubscriptionKey {
     fn from(arg: &SubscriptionArg) -> Self {
         Self {
             channel: arg.channel.clone(),
             instrument_id: arg.instrument_id.clone(),
+            extra: arg
+                .extra
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
         }
     }
 }

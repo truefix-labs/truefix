@@ -353,7 +353,7 @@ impl AccountService<'_> {
         &self,
         request: &serde_json::Value,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.write_json("/api/v5/account/set-risk-offset-type", request)
+        self.write_json("/api/v5/account/set-riskOffset-type", request)
             .await
     }
     /// Executes the `activate_option` OKX V5 operation with its classified auth and replay policy.
@@ -491,7 +491,7 @@ impl AccountService<'_> {
         &self,
         b: &serde_json::Value,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.write_json("/api/v5/account/simulated-margin", b).await
+        self.write_json("/api/v5/account/simulated_margin", b).await
     }
     /// Executes the `position_builder` OKX V5 operation with its classified auth and replay policy.
     pub async fn position_builder(

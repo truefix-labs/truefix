@@ -26,10 +26,7 @@ impl Clock for FixedClock {
 }
 
 fn ticker() -> SubscriptionArg {
-    SubscriptionArg {
-        channel: "tickers".to_owned(),
-        instrument_id: Some("BTC-USDT".to_owned()),
-    }
+    SubscriptionArg::new("tickers", Some("BTC-USDT".to_owned()))
 }
 
 #[tokio::test]
@@ -151,6 +148,7 @@ fn subscriptions_deduplicate_route_only_active_events_and_replay_after_disconnec
     let other = SubscriptionKey {
         channel: "trades".to_owned(),
         instrument_id: Some("BTC-USDT".to_owned()),
+        extra: Vec::new(),
     };
     let mut subscriptions = Subscriptions::default();
     assert!(subscriptions.request(key.clone()));
@@ -187,6 +185,7 @@ fn signed_login_uses_the_injected_clock_for_private_and_business_sessions() {
     let mut private = PrivateSession::default();
     let private_login = private.signed_login(&credentials, &clock).unwrap();
     assert_eq!(private_login.op, "login");
+    assert!(private_login.id.is_none());
     let private_args = &private_login.args[0];
     assert_eq!(private_args["apiKey"], "key");
     assert_eq!(private_args["passphrase"], "passphrase");
@@ -199,6 +198,7 @@ fn signed_login_uses_the_injected_clock_for_private_and_business_sessions() {
     let mut business = BusinessSession::default();
     let business_login = business.signed_login(&credentials, &clock).unwrap();
     assert_eq!(business_login.op, "login");
+    assert!(business_login.id.is_none());
     let business_args = &business_login.args[0];
     assert_eq!(business_args["apiKey"], "key");
     assert_eq!(business_args["passphrase"], "passphrase");
@@ -206,5 +206,15 @@ fn signed_login_uses_the_injected_clock_for_private_and_business_sessions() {
     assert_eq!(
         business_args["sign"],
         sign_websocket_login(&credentials, 1_704_067_200).unwrap()
+    );
+}
+
+#[test]
+fn subscriptions_with_distinct_channel_parameters_have_distinct_keys() {
+    let futures = SubscriptionArg::new("orders", None).with_parameter("instType", "FUTURES");
+    let swaps = SubscriptionArg::new("orders", None).with_parameter("instType", "SWAP");
+    assert_ne!(
+        SubscriptionKey::from(&futures),
+        SubscriptionKey::from(&swaps)
     );
 }

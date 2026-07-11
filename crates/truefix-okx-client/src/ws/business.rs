@@ -2,7 +2,7 @@ use crate::{
     auth::{Clock, sign_websocket_login},
     config::Credentials,
     error::{OkxError, OkxResult},
-    types::websocket::{SubscriptionArg, WsCommand, WsMassCancel},
+    types::websocket::{SubscriptionArg, WsCommand, WsHeartbeat, WsMassCancel},
     ws::session::Session,
 };
 
@@ -66,18 +66,14 @@ impl BusinessSession {
             args,
         })
     }
-    pub fn ping(&mut self) -> WsCommand<Vec<()>> {
-        WsCommand {
-            op: "ping".to_owned(),
-            id: Some(self.0.next_request_id()),
-            args: vec![],
-        }
+    pub fn ping(&mut self) -> WsHeartbeat {
+        WsHeartbeat
     }
     pub fn login(&mut self, args: Vec<serde_json::Value>) -> WsCommand<Vec<serde_json::Value>> {
         self.0.login_required();
         WsCommand {
             op: "login".to_owned(),
-            id: Some(self.0.next_request_id()),
+            id: None,
             args,
         }
     }

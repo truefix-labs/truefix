@@ -5,6 +5,13 @@
 #[serde(transparent)]
 pub struct RequestId(pub String);
 
+/// OKX WebSocket application-level heartbeat.
+///
+/// This is deliberately not serializable: OKX requires the literal text frame `ping`,
+/// rather than a JSON command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WsHeartbeat;
+
 /// A channel subscription argument.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubscriptionArg {
@@ -13,6 +20,26 @@ pub struct SubscriptionArg {
     /// Optional instrument identifier.
     #[serde(rename = "instId", skip_serializing_if = "Option::is_none")]
     pub instrument_id: Option<String>,
+    /// Channel-specific parameters such as `instType`, `uly`, and `instFamily`.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, String>,
+}
+
+impl SubscriptionArg {
+    /// Creates an argument with the fields common to most market channels.
+    pub fn new(channel: impl Into<String>, instrument_id: Option<String>) -> Self {
+        Self {
+            channel: channel.into(),
+            instrument_id,
+            extra: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Adds a channel-specific OKX subscription parameter.
+    pub fn with_parameter(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra.insert(name.into(), value.into());
+        self
+    }
 }
 
 /// WebSocket command sent to OKX.
@@ -122,5 +149,20 @@ mod tests {
             Some("1")
         );
         assert!(value.get("size").is_none());
+    }
+
+    #[test]
+    fn subscription_arguments_preserve_channel_specific_fields() {
+        let argument = SubscriptionArg::new("orders", None)
+            .with_parameter("instType", "FUTURES")
+            .with_parameter("instFamily", "BTC-USD");
+        assert_eq!(
+            serde_json::to_value(argument).unwrap(),
+            serde_json::json!({
+                "channel": "orders",
+                "instType": "FUTURES",
+                "instFamily": "BTC-USD",
+            })
+        );
     }
 }

@@ -3,7 +3,10 @@
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-use crate::error::{OkxError, OkxResult};
+use crate::{
+    error::{OkxError, OkxResult},
+    types::websocket::WsHeartbeat,
+};
 
 /// Connected WebSocket transport. Credentials are never retained or logged here.
 pub struct WebSocketTransport {
@@ -21,6 +24,12 @@ impl WebSocketTransport {
     pub async fn send<T: serde::Serialize>(&mut self, value: &T) -> OkxResult<()> {
         let body = serde_json::to_string(value).map_err(OkxError::Decode)?;
         self.socket.send(Message::Text(body.into())).await?;
+        Ok(())
+    }
+
+    /// Sends OKX's required literal application heartbeat text frame.
+    pub async fn send_heartbeat(&mut self, _: WsHeartbeat) -> OkxResult<()> {
+        self.socket.send(Message::Text("ping".into())).await?;
         Ok(())
     }
 

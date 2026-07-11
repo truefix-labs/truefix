@@ -55,6 +55,35 @@ async fn public_requests_are_unsigned_and_preserve_encoded_query() {
 }
 
 #[tokio::test]
+async fn account_operations_use_okx_canonical_risk_offset_and_simulated_margin_paths() {
+    let credentials = Credentials::new("key", "secret", "passphrase").unwrap();
+
+    let (base, captured) = support::http::start(r#"{"code":"0","msg":"","data":[]}"#).await;
+    let client = OkxClient::new(custom_config(base, Some(credentials.clone()))).unwrap();
+    client
+        .account()
+        .set_risk_offset_type(&serde_json::json!({"type": "1"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        captured.await.unwrap().target,
+        "/api/v5/account/set-riskOffset-type"
+    );
+
+    let (base, captured) = support::http::start(r#"{"code":"0","msg":"","data":[]}"#).await;
+    let client = OkxClient::new(custom_config(base, Some(credentials))).unwrap();
+    client
+        .account()
+        .simulated_margin(&serde_json::json!({"instType": "SWAP"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        captured.await.unwrap().target,
+        "/api/v5/account/simulated_margin"
+    );
+}
+
+#[tokio::test]
 async fn baseline_operations_preserve_pagination_and_request_metadata() {
     let (base, captured) = support::http::start_with_headers(
         r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT"}]}"#,

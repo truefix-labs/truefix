@@ -3,7 +3,8 @@ use crate::{
     config::Credentials,
     error::{OkxError, OkxResult},
     types::websocket::{
-        SubscriptionArg, WsAmendOrder, WsCommand, WsMassCancel, WsOrder, WsOrderReference,
+        SubscriptionArg, WsAmendOrder, WsCommand, WsHeartbeat, WsMassCancel, WsOrder,
+        WsOrderReference,
     },
     ws::session::Session,
 };
@@ -36,7 +37,7 @@ impl PrivateSession {
         self.0.login_required();
         WsCommand {
             op: "login".to_owned(),
-            id: Some(self.0.next_request_id()),
+            id: None,
             args,
         }
     }
@@ -98,12 +99,8 @@ impl PrivateSession {
             args,
         })
     }
-    pub fn ping(&mut self) -> WsCommand<Vec<()>> {
-        WsCommand {
-            op: "ping".to_owned(),
-            id: Some(self.0.next_request_id()),
-            args: vec![],
-        }
+    pub fn ping(&mut self) -> WsHeartbeat {
+        WsHeartbeat
     }
     pub fn send(
         &mut self,
