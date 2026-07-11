@@ -80,7 +80,7 @@ pub enum Environment {
 }
 
 impl Environment {
-    const OKX_REST_BASE: &str = "https://openapi.okx.com";
+    const OKX_REST_BASE: &str = "https://www.okx.com";
     const LIVE_PUBLIC_WS: &str = "wss://ws.okx.com:8443/ws/v5/public";
     const LIVE_PRIVATE_WS: &str = "wss://ws.okx.com:8443/ws/v5/private";
     const LIVE_BUSINESS_WS: &str = "wss://ws.okx.com:8443/ws/v5/business";
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn standard_environments_expose_documented_endpoints() {
         let demo = Environment::Demo;
-        assert_eq!(demo.rest_base(), "https://openapi.okx.com");
+        assert_eq!(demo.rest_base(), "https://www.okx.com");
         assert_eq!(
             demo.public_ws_url(),
             "wss://wspap.okx.com:8443/ws/v5/public"
@@ -203,7 +203,7 @@ mod tests {
         );
 
         let live = Environment::Live(LiveTradingConfirmation::acknowledge_risk());
-        assert_eq!(live.rest_base(), "https://openapi.okx.com");
+        assert_eq!(live.rest_base(), "https://www.okx.com");
         assert_eq!(live.public_ws_url(), "wss://ws.okx.com:8443/ws/v5/public");
         assert_eq!(live.private_ws_url(), "wss://ws.okx.com:8443/ws/v5/private");
         assert_eq!(

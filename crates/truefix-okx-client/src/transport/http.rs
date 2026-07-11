@@ -98,9 +98,21 @@ impl HttpTransport {
             });
         }
         let metadata = ResponseMetadata::from_headers(response.headers());
-        Ok(HttpResponse {
-            body: response.bytes().await?.to_vec(),
-            metadata,
-        })
+        let body = response.bytes().await?.to_vec();
+        // OKX can signal a rate-limit rejection in a successful HTTP response.
+        // Surface it before typed envelope decoding so read-only calls receive
+        // the same bounded retry path as an HTTP 429 response.
+        if serde_json::from_slice::<RateLimitEnvelope>(&body)
+            .ok()
+            .is_some_and(|envelope| envelope.code == "50011")
+        {
+            return Err(OkxError::RateLimited { retry_after: None });
+        }
+        Ok(HttpResponse { body, metadata })
     }
+}
+
+#[derive(serde::Deserialize)]
+struct RateLimitEnvelope {
+    code: String,
 }

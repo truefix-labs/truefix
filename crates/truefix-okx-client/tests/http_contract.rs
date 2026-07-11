@@ -277,6 +277,27 @@ async fn safe_read_retries_one_429_after_the_server_throttle() {
 }
 
 #[tokio::test]
+async fn safe_read_retries_an_okx_50011_envelope_returned_with_http_200() {
+    let (base, captured) = support::http::start_sequence(vec![
+        (
+            200,
+            r#"{"code":"50011","msg":"rate limited","data":[]}"#,
+            None,
+        ),
+        (
+            200,
+            r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","last":"1"}]}"#,
+            None,
+        ),
+    ])
+    .await;
+    let client = OkxClient::new(custom_config(base, None)).unwrap();
+
+    assert_eq!(client.market().ticker("BTC-USDT").await.unwrap().len(), 1);
+    assert_eq!(captured.await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn state_changing_write_is_not_replayed_after_429() {
     let (base, captured) = support::http::start_sequence(vec![(
         429,

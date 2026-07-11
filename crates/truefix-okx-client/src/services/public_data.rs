@@ -120,13 +120,6 @@ impl PublicDataService<'_> {
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.get("/api/v5/support/announcements", query).await
     }
-    /// Executes the `platform_status` OKX V5 operation with its classified auth and replay policy.
-    pub async fn platform_status(
-        &self,
-        query: BTreeMap<String, String>,
-    ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/system/status", query).await
-    }
     /// Executes the `position_tiers` OKX V5 operation with its classified auth and replay policy.
     pub async fn position_tiers(
         &self,

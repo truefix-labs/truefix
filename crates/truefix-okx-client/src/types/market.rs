@@ -55,6 +55,9 @@ pub struct Candle(
     pub DecimalValue,
     pub DecimalValue,
     pub DecimalValue,
+    pub DecimalValue,
+    pub DecimalValue,
+    pub String,
 );
 /// Public trade record.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -87,4 +90,23 @@ pub struct FundingRate {
     pub rate: DecimalValue,
     #[serde(rename = "fundingTime")]
     pub funding_time: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Candle;
+
+    #[test]
+    fn candle_deserializes_the_complete_okx_wire_tuple() {
+        let candle: Candle = serde_json::from_str(
+            r#"["1697025780000","27000.5","27001.0","26999.8","27000.2","15","405003","405003","1"]"#,
+        )
+        .unwrap();
+
+        assert_eq!(candle.0, "1697025780000");
+        assert_eq!(candle.5.to_string(), "15");
+        assert_eq!(candle.6.to_string(), "405003");
+        assert_eq!(candle.7.to_string(), "405003");
+        assert_eq!(candle.8, "1");
+    }
 }

@@ -1,4 +1,4 @@
-//! Professional trading, conversion, broker, and platform-status operations.
+//! Professional trading, conversion, broker, and status operations.
 use crate::{
     client::OkxClient,
     error::OkxResult,
