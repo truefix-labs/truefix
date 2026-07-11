@@ -7,7 +7,7 @@ use crate::{
     inventory::{AuthClass, BASELINE_OPERATION_MANIFEST, ReplayClass},
     limiter::RateLimiter,
     request::CanonicalRequest,
-    response::decode_envelope,
+    response::{OkxResponse, decode_envelope_with_metadata},
     services::{
         account::AccountService, finance::FinanceService, funding::FundingService,
         market::MarketService, professional::ProfessionalService, public_data::PublicDataService,
@@ -89,6 +89,20 @@ impl OkxClient {
         query: std::collections::BTreeMap<String, String>,
         body: Option<&serde_json::Value>,
     ) -> OkxResult<Vec<serde_json::Value>> {
+        Ok(self
+            .execute_baseline_operation_with_metadata(domain, operation, query, body)
+            .await?
+            .data)
+    }
+
+    /// Executes a manifest operation and retains OKX pagination and request metadata.
+    pub async fn execute_baseline_operation_with_metadata(
+        &self,
+        domain: &str,
+        operation: &str,
+        query: std::collections::BTreeMap<String, String>,
+        body: Option<&serde_json::Value>,
+    ) -> OkxResult<OkxResponse<serde_json::Value>> {
         let entry = BASELINE_OPERATION_MANIFEST
             .iter()
             .find(|entry| entry.domain == domain && entry.operation == operation)
@@ -117,7 +131,7 @@ impl OkxClient {
                 "POST operations require a JSON body".to_owned(),
             ));
         }
-        self.execute(CanonicalRequest::new(
+        self.execute_with_metadata(CanonicalRequest::new(
             method,
             entry.path,
             query,
@@ -135,6 +149,13 @@ impl OkxClient {
         &self,
         request: CanonicalRequest,
     ) -> OkxResult<Vec<T>> {
+        Ok(self.execute_with_metadata(request).await?.data)
+    }
+
+    async fn execute_with_metadata<T: serde::de::DeserializeOwned>(
+        &self,
+        request: CanonicalRequest,
+    ) -> OkxResult<OkxResponse<T>> {
         self.limiter.reserve().await;
         let safety = request.retry_safety;
         let response = match self.http.execute(request.clone()).await {
@@ -150,7 +171,7 @@ impl OkxClient {
             }
             Err(error) => return Err(error),
         };
-        decode_envelope(&response)
+        decode_envelope_with_metadata(&response.body, response.metadata)
     }
 }
 

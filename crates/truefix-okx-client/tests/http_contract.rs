@@ -55,6 +55,40 @@ async fn public_requests_are_unsigned_and_preserve_encoded_query() {
 }
 
 #[tokio::test]
+async fn baseline_operations_preserve_pagination_and_request_metadata() {
+    let (base, captured) = support::http::start_with_headers(
+        r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT"}]}"#,
+        &[
+            ("OK-BEFORE", "older"),
+            ("OK-AFTER", "newer"),
+            ("x-request-id", "okx-request-42"),
+        ],
+    )
+    .await;
+    let client = OkxClient::new(custom_config(base, None)).unwrap();
+    let response = client
+        .execute_baseline_operation_with_metadata(
+            "market_data",
+            "get_ticker",
+            std::collections::BTreeMap::from([("instId".to_owned(), "BTC-USDT".to_owned())]),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.data.len(), 1);
+    assert_eq!(response.metadata.page.before.as_deref(), Some("older"));
+    assert_eq!(response.metadata.page.after.as_deref(), Some("newer"));
+    assert_eq!(
+        response.metadata.request_id.as_deref(),
+        Some("okx-request-42")
+    );
+    assert_eq!(
+        captured.await.unwrap().target,
+        "/api/v5/market/ticker?instId=BTC-USDT"
+    );
+}
+
+#[tokio::test]
 async fn account_helpers_preserve_optional_filters_and_empty_body_semantics() {
     let (base, captured) = support::http::start(
         r#"{"code":"0","msg":"","data":[{"ccy":"BTC","availBal":"1","eq":"1","frozenBal":"0"}]}"#,

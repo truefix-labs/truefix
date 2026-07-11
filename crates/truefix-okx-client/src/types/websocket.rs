@@ -60,6 +60,7 @@ pub struct WsOrder {
     pub side: String,
     #[serde(rename = "ordType")]
     pub order_type: String,
+    #[serde(rename = "sz")]
     pub size: String,
     #[serde(rename = "px", skip_serializing_if = "Option::is_none")]
     pub price: Option<String>,
@@ -98,4 +99,28 @@ pub struct WsMassCancel {
     pub underlying: Option<String>,
     #[serde(rename = "instFamily", skip_serializing_if = "Option::is_none")]
     pub instrument_family: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn websocket_order_uses_okx_size_field_name() {
+        let order = WsOrder {
+            instrument_id: "BTC-USDT".to_owned(),
+            trade_mode: "cash".to_owned(),
+            side: "buy".to_owned(),
+            order_type: "market".to_owned(),
+            size: "1".to_owned(),
+            price: None,
+            client_order_id: None,
+        };
+        let value = serde_json::to_value(order).unwrap();
+        assert_eq!(
+            value.get("sz").and_then(serde_json::Value::as_str),
+            Some("1")
+        );
+        assert!(value.get("size").is_none());
+    }
 }

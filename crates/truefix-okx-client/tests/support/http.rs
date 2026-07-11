@@ -23,9 +23,21 @@ pub struct CapturedRequest {
 
 /// Starts a one-shot HTTP/1.1 server returning an OKX envelope and its captured request receiver.
 pub async fn start(response_body: &'static str) -> (String, oneshot::Receiver<CapturedRequest>) {
+    start_with_headers(response_body, &[]).await
+}
+
+/// Starts a one-shot HTTP/1.1 server with additional response headers.
+pub async fn start_with_headers(
+    response_body: &'static str,
+    response_headers: &[(&str, &str)],
+) -> (String, oneshot::Receiver<CapturedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (sender, receiver) = oneshot::channel();
+    let response_headers = response_headers
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect::<Vec<_>>();
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut bytes = Vec::new();
@@ -74,8 +86,12 @@ pub async fn start(response_body: &'static str) -> (String, oneshot::Receiver<Ca
             headers,
             body,
         });
+        let extra_headers = response_headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect::<String>();
         let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{extra_headers}content-length: {}\r\nconnection: close\r\n\r\n{}",
             response_body.len(),
             response_body
         );

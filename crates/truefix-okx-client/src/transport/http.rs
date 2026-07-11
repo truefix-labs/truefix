@@ -5,7 +5,14 @@ use crate::{
     config::{ClientConfig, Environment},
     error::{OkxError, OkxResult},
     request::CanonicalRequest,
+    response::ResponseMetadata,
 };
+
+/// Exact HTTP response bytes plus metadata that is not present in the OKX JSON envelope.
+pub(crate) struct HttpResponse {
+    pub body: Vec<u8>,
+    pub metadata: ResponseMetadata,
+}
 
 /// Reusable HTTP transport with the client configuration and signing clock.
 pub struct HttpTransport {
@@ -31,7 +38,7 @@ impl HttpTransport {
     }
 
     /// Executes exact canonical bytes and returns raw response bytes for typed decoding.
-    pub async fn execute(&self, request: CanonicalRequest) -> OkxResult<Vec<u8>> {
+    pub(crate) async fn execute(&self, request: CanonicalRequest) -> OkxResult<HttpResponse> {
         let url = format!(
             "{}{}",
             self.config.environment.rest_base(),
@@ -83,9 +90,17 @@ impl HttpTransport {
             return Err(OkxError::Exchange {
                 code: response.status().as_u16().to_string(),
                 message,
-                request_id: None,
+                request_id: response
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned),
             });
         }
-        Ok(response.bytes().await?.to_vec())
+        let metadata = ResponseMetadata::from_headers(response.headers());
+        Ok(HttpResponse {
+            body: response.bytes().await?.to_vec(),
+            metadata,
+        })
     }
 }
