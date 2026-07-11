@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::error::{OkxError, OkxResult};
+use crate::{
+    error::{OkxError, OkxResult},
+    types::common::ExpirationTime,
+};
 
 /// Whether a request can be retried automatically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +23,8 @@ pub struct CanonicalRequest {
     pub body: Vec<u8>,
     pub retry_safety: RetrySafety,
     pub requires_auth: bool,
+    /// Optional OKX `expTime` deadline for order and amend operations.
+    pub expiration_time: Option<ExpirationTime>,
 }
 
 impl CanonicalRequest {
@@ -59,7 +64,14 @@ impl CanonicalRequest {
             body,
             retry_safety,
             requires_auth,
+            expiration_time: None,
         })
+    }
+
+    /// Adds the OKX order/amend request expiry header.
+    pub fn with_expiration_time(mut self, expiration_time: ExpirationTime) -> Self {
+        self.expiration_time = Some(expiration_time);
+        self
     }
 }
 

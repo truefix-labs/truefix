@@ -20,7 +20,7 @@ pub const BASELINE_OPERATION_MANIFEST: &[BaselineOperation] = &[
         path: "/api/v5/account/balance",
         auth: AuthClass::Private,
         replay: ReplayClass::ReadOnly,
-        native_entrypoint: "account::balances",
+        native_entrypoint: "account::balances_with_currency",
         fixture_id: "operation_inventory::baseline_manifest_is_complete_and_classified",
     },
     BaselineOperation {
@@ -31,7 +31,7 @@ pub const BASELINE_OPERATION_MANIFEST: &[BaselineOperation] = &[
         path: "/api/v5/account/positions",
         auth: AuthClass::Private,
         replay: ReplayClass::ReadOnly,
-        native_entrypoint: "account::positions",
+        native_entrypoint: "account::positions_with_filters",
         fixture_id: "operation_inventory::baseline_manifest_is_complete_and_classified",
     },
     BaselineOperation {
@@ -1516,7 +1516,7 @@ pub const BASELINE_OPERATION_MANIFEST: &[BaselineOperation] = &[
         path: "/api/v5/asset/withdrawal-lightning",
         auth: AuthClass::Private,
         replay: ReplayClass::NeverReplay,
-        native_entrypoint: "funding::lightning",
+        native_entrypoint: "funding::withdrawal_lightning",
         fixture_id: "operation_inventory::baseline_manifest_is_complete_and_classified",
     },
     BaselineOperation {

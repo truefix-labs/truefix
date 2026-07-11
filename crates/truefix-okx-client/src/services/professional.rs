@@ -83,9 +83,17 @@ impl ProfessionalService<'_> {
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.get("/api/v5/rfq/trades", q).await
     }
-    /// Executes the `reset_mmp` OKX V5 operation with its classified auth and replay policy.
-    pub async fn reset_mmp(&self, b: &serde_json::Value) -> OkxResult<Vec<serde_json::Value>> {
-        self.write("/api/v5/rfq/mmp-reset", b).await
+    /// Executes the parameterless `reset_mmp` OKX V5 operation.
+    pub async fn reset_mmp(&self) -> OkxResult<Vec<serde_json::Value>> {
+        self.write("/api/v5/rfq/mmp-reset", &serde_json::json!({}))
+            .await
+    }
+    /// Executes `reset_mmp` with an explicit JSON body for forward-compatible use.
+    pub async fn reset_mmp_request(
+        &self,
+        request: &serde_json::Value,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.write("/api/v5/rfq/mmp-reset", request).await
     }
     /// Executes the `place_spread_order` OKX V5 operation with its classified auth and replay policy.
     pub async fn place_spread_order(

@@ -60,6 +60,30 @@
 - [X] T025 Audit production paths for copied source, secret exposure, and panic-prone code in `crates/truefix-okx-client/`.
 - [X] T026 Run `cargo fmt --check`, `cargo clippy -p truefix-okx-client -- -D warnings`, and `cargo test -p truefix-okx-client` from the repository root.
 
+## Phase 7: Post-Review Protocol Remediation
+
+- [X] T027 Correct generated-inventory path overrides and make regeneration retain canonical OKX paths.
+- [X] T028 Model account-balance summaries and OKX empty numeric sentinels with response fixtures.
+- [X] T029 Require private WebSocket login and route events despite server-added subscription metadata.
+- [X] T030 Add explicit clock-offset and `expTime` support for signed order/amend requests, including command-level WebSocket expiry.
+- [X] T031 Run full OKX-client formatting, tests, clippy, and generated-inventory validation.
+- [X] T032 Integrate session-aware WebSocket heartbeat receive/send helpers and timeout recovery tests.
+
+## Phase 8: Second-Review Correctness Remediation
+
+- [X] T033 [P] Decode native WebSocket `event` acknowledgements and invalidate sessions on transport failure.
+- [X] T034 [P] Measure the OKX server-time offset through the public-time endpoint before client construction.
+- [X] T035 [P] Surface per-item trade command failures instead of returning an unconditional success.
+- [X] T036 Restrict WebSocket `expTime` to supported order/amend commands and add protocol fixtures.
+- [X] T037 Run generated-inventory, formatting, full tests, clippy, and diff validation.
+
+## Phase 9: Third-Review Session and Baseline Remediation
+
+- [X] T038 [P] Match broad WebSocket subscriptions and apply acknowledgements to session/subscription state.
+- [X] T039 [P] Preserve Python no-parameter POST semantics in generic baseline execution and RFQ MMP reset.
+- [X] T040 [P] Disconnect a session after heartbeat-send failure and encapsulate WS expiry fields.
+- [X] T041 Run generated-inventory, formatting, full tests, clippy, and diff validation.
+
 ## Dependencies & Execution Order
 
 - Phase 2 blocks all stories.

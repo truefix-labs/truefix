@@ -116,3 +116,22 @@ fn every_manifest_record_has_operation_transport_and_evidence() {
         assert!(!record.fixture_id.is_empty());
     }
 }
+
+#[test]
+fn parameterless_python_posts_remain_present_in_the_baseline_manifest() {
+    for (source_identity, domain, operation) in [
+        (
+            "Account.py:240:activate_option",
+            "account",
+            "activate_option",
+        ),
+        ("BlockTrading.py:70:reset_mmp", "block_trading", "reset_mmp"),
+    ] {
+        assert!(BASELINE_OPERATION_MANIFEST.iter().any(|entry| {
+            entry.source_identity == source_identity
+                && entry.domain == domain
+                && entry.operation == operation
+                && entry.method == "POST"
+        }));
+    }
+}

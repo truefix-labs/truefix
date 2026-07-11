@@ -3,14 +3,15 @@ use crate::{
     ws::subscription::{SubscriptionKey, Subscriptions},
 };
 
-/// Checks whether an event belongs to an exact subscription key.
+/// Checks whether an event belongs to a client subscription key.
+///
+/// Server-added `arg` metadata is ignored, while requested subscription
+/// parameters remain part of the match.
 pub fn matches(event: &WsEvent, key: &SubscriptionKey) -> bool {
-    SubscriptionKey::from(&event.arg) == *key
+    key.matches_event(&event.arg)
 }
 
-/// Returns an event only after its exact desired subscription became active.
+/// Returns an event only after a matching desired subscription became active.
 pub fn route(subscriptions: &Subscriptions, event: WsEvent) -> Option<WsEvent> {
-    subscriptions
-        .active(&SubscriptionKey::from(&event.arg))
-        .then_some(event)
+    subscriptions.routes_event(&event.arg).then_some(event)
 }

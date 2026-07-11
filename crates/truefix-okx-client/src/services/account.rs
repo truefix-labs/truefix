@@ -2,7 +2,9 @@ use crate::{
     client::OkxClient,
     error::OkxResult,
     request::{CanonicalRequest, RetrySafety},
-    types::account::{Balance, Bill, FeeRate, Leverage, MarginAdjustment, Position, PositionRisk},
+    types::account::{
+        AccountBalance, Bill, FeeRate, Leverage, MarginAdjustment, Position, PositionRisk,
+    },
 };
 use std::collections::BTreeMap;
 pub struct AccountService<'a>(pub(crate) &'a OkxClient);
@@ -40,11 +42,14 @@ impl AccountService<'_> {
             .await
     }
     /// Executes the `balances` OKX V5 operation with its classified auth and replay policy.
-    pub async fn balances(&self) -> OkxResult<Vec<Balance>> {
+    pub async fn balances(&self) -> OkxResult<Vec<AccountBalance>> {
         self.balances_with_currency(None).await
     }
     /// Executes the `balances` OKX V5 operation with an optional currency filter.
-    pub async fn balances_with_currency(&self, ccy: Option<&str>) -> OkxResult<Vec<Balance>> {
+    pub async fn balances_with_currency(
+        &self,
+        ccy: Option<&str>,
+    ) -> OkxResult<Vec<AccountBalance>> {
         let mut query = BTreeMap::new();
         if let Some(ccy) = ccy.filter(|ccy| !ccy.is_empty()) {
             query.insert("ccy".to_owned(), ccy.to_owned());

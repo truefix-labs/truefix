@@ -222,6 +222,37 @@ pub struct OrderAck {
     #[serde(flatten)]
     pub native_fields: NativeFields,
 }
+
+impl OrderAck {
+    /// Whether OKX accepted this individual command item.
+    pub fn is_success(&self) -> bool {
+        self.code == "0"
+    }
+
+    /// Completion state reported for this individual command item.
+    pub fn completion_state(&self) -> CompletionState {
+        if self.is_success() {
+            CompletionState::Confirmed
+        } else {
+            CompletionState::Rejected
+        }
+    }
+}
+
+/// Rejects an otherwise-successful envelope when any contained command item failed.
+///
+/// OKX reports batch item failures through `sCode` while leaving the enclosing response
+/// `code` at `0`. Returning a typed error prevents callers from mistaking that result for a
+/// fully completed state change, while retaining all item acknowledgements for reconciliation.
+pub fn require_successful_acknowledgements(
+    acknowledgements: Vec<OrderAck>,
+) -> crate::error::OkxResult<Vec<OrderAck>> {
+    if acknowledgements.iter().all(OrderAck::is_success) {
+        Ok(acknowledgements)
+    } else {
+        Err(crate::error::OkxError::PartialFailure { acknowledgements })
+    }
+}
 /// Batch result preserving successful and failed item acknowledgements.
 pub type BatchResult = Vec<OrderAck>;
 
@@ -243,5 +274,32 @@ mod tests {
         let rendered = serde_json::to_value(order).unwrap();
         assert_eq!(rendered["isElpTakerAccess"], true);
         assert!(!rendered.as_object().unwrap().contains_key("isElpTaker"));
+    }
+
+    #[test]
+    fn failed_acknowledgements_are_returned_as_a_typed_partial_failure() {
+        let acknowledgements = vec![
+            OrderAck {
+                order_id: "accepted".to_owned(),
+                code: "0".to_owned(),
+                message: String::new(),
+                native_fields: NativeFields::default(),
+            },
+            OrderAck {
+                order_id: String::new(),
+                code: "51008".to_owned(),
+                message: "insufficient balance".to_owned(),
+                native_fields: NativeFields::default(),
+            },
+        ];
+
+        let result = require_successful_acknowledgements(acknowledgements);
+        assert!(matches!(
+            result,
+            Err(crate::error::OkxError::PartialFailure { acknowledgements })
+                if acknowledgements.len() == 2
+                    && acknowledgements[0].completion_state() == CompletionState::Confirmed
+                    && acknowledgements[1].completion_state() == CompletionState::Rejected
+        ));
     }
 }

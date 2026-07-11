@@ -23,6 +23,28 @@ impl From<&SubscriptionArg> for SubscriptionKey {
     }
 }
 
+impl SubscriptionKey {
+    /// Matches an event argument against this client-requested subscription.
+    ///
+    /// OKX may add server metadata (for example `uid`) to the event's `arg`.
+    /// Those fields are not part of the client's subscription identity, whereas
+    /// every parameter the client did request must still agree exactly.
+    pub fn matches_event(&self, event: &SubscriptionArg) -> bool {
+        self.channel == event.channel
+            // A subscription without `instId` is deliberately broad. OKX includes the
+            // concrete instrument in many matching push messages, so requiring `None ==
+            // Some(instId)` here would silently drop every event for an instType-wide feed.
+            && self
+                .instrument_id
+                .as_ref()
+                .is_none_or(|instrument_id| event.instrument_id.as_ref() == Some(instrument_id))
+            && self
+                .extra
+                .iter()
+                .all(|(name, value)| event.extra.get(name) == Some(value))
+    }
+}
+
 /// Desired, active, and in-flight subscriptions. Request identifiers are bounded by
 /// `MAX_IN_FLIGHT`, avoiding unbounded correlation state under a broken peer.
 #[derive(Debug, Default)]
@@ -68,6 +90,10 @@ impl Subscriptions {
     }
     pub fn active(&self, key: &SubscriptionKey) -> bool {
         self.active.contains(key)
+    }
+    /// Returns whether an event belongs to any active client subscription.
+    pub fn routes_event(&self, event: &SubscriptionArg) -> bool {
+        self.active.iter().any(|key| key.matches_event(event))
     }
     pub fn desired(&self, key: &SubscriptionKey) -> bool {
         self.desired.contains(key)

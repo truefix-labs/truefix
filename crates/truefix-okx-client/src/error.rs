@@ -31,8 +31,13 @@ pub enum OkxError {
         message: String,
         request_id: Option<String>,
     },
-    #[error("partial failure: {0}")]
-    PartialFailure(String),
+    #[error("one or more order operations were rejected")]
+    PartialFailure {
+        /// Every acknowledgement returned by OKX, including any items that succeeded.
+        /// Retaining the complete set lets callers reconcile an indeterminate batch without
+        /// treating the enclosing request as successful.
+        acknowledgements: Vec<crate::types::order::OrderAck>,
+    },
     #[error("response decoding failed: {0}")]
     Decode(#[from] serde_json::Error),
     #[error("connection lost before completion could be confirmed")]

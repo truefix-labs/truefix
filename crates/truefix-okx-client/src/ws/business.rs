@@ -16,8 +16,9 @@ impl BusinessSession {
     pub fn login_required(&mut self) {
         self.0.login_required();
     }
-    pub fn login_acknowledged(&mut self) {
-        self.0.login_acknowledged();
+    /// Records whether OKX accepted the optional business login command.
+    pub fn login_acknowledged(&mut self, success: bool) {
+        self.0.login_acknowledged(success);
     }
     pub fn subscriptions_replayed(&mut self) {
         self.0.subscriptions_replayed();
@@ -27,55 +28,51 @@ impl BusinessSession {
         args: Vec<SubscriptionArg>,
     ) -> OkxResult<WsCommand<Vec<SubscriptionArg>>> {
         self.active()?;
-        Ok(WsCommand {
-            op: "subscribe".to_owned(),
-            id: Some(self.0.next_request_id()),
+        Ok(WsCommand::new(
+            "subscribe",
+            Some(self.0.next_request_id()),
             args,
-        })
+        ))
     }
     pub fn subscribe_raw(
         &mut self,
         args: Vec<serde_json::Value>,
     ) -> OkxResult<WsCommand<Vec<serde_json::Value>>> {
         self.active()?;
-        Ok(WsCommand {
-            op: "subscribe".to_owned(),
-            id: Some(self.0.next_request_id()),
+        Ok(WsCommand::new(
+            "subscribe",
+            Some(self.0.next_request_id()),
             args,
-        })
+        ))
     }
     pub fn unsubscribe(
         &mut self,
         args: Vec<SubscriptionArg>,
     ) -> OkxResult<WsCommand<Vec<SubscriptionArg>>> {
         self.active()?;
-        Ok(WsCommand {
-            op: "unsubscribe".to_owned(),
-            id: Some(self.0.next_request_id()),
+        Ok(WsCommand::new(
+            "unsubscribe",
+            Some(self.0.next_request_id()),
             args,
-        })
+        ))
     }
     pub fn unsubscribe_raw(
         &mut self,
         args: Vec<serde_json::Value>,
     ) -> OkxResult<WsCommand<Vec<serde_json::Value>>> {
         self.active()?;
-        Ok(WsCommand {
-            op: "unsubscribe".to_owned(),
-            id: Some(self.0.next_request_id()),
+        Ok(WsCommand::new(
+            "unsubscribe",
+            Some(self.0.next_request_id()),
             args,
-        })
+        ))
     }
     pub fn ping(&mut self) -> WsHeartbeat {
         WsHeartbeat
     }
     pub fn login(&mut self, args: Vec<serde_json::Value>) -> WsCommand<Vec<serde_json::Value>> {
         self.0.login_required();
-        WsCommand {
-            op: "login".to_owned(),
-            id: None,
-            args,
-        }
+        WsCommand::new("login", None, args)
     }
     pub fn signed_login(
         &mut self,
@@ -96,11 +93,7 @@ impl BusinessSession {
         op: impl Into<String>,
         args: Vec<serde_json::Value>,
     ) -> WsCommand<Vec<serde_json::Value>> {
-        WsCommand {
-            op: op.into(),
-            id: Some(self.0.next_request_id()),
-            args,
-        }
+        WsCommand::new(op, Some(self.0.next_request_id()), args)
     }
     /// Business mass cancel has its own server rate-limit class; callers can reserve that
     /// limiter before sending this command. It is never queued or replayed by a session.
@@ -111,11 +104,11 @@ impl BusinessSession {
         if !self.0.can_write() {
             return Err(OkxError::UnknownCompletion);
         }
-        Ok(WsCommand {
-            op: "mass-cancel".to_owned(),
-            id: Some(self.0.next_request_id()),
-            args: vec![request],
-        })
+        Ok(WsCommand::new(
+            "mass-cancel",
+            Some(self.0.next_request_id()),
+            vec![request],
+        ))
     }
     fn active(&self) -> OkxResult<()> {
         if self.0.is_active() {

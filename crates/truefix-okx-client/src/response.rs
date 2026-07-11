@@ -25,6 +25,8 @@ impl<T> ResponseEnvelope<T> {
                 data: self.data,
                 metadata,
             })
+        } else if self.code == "50102" {
+            Err(OkxError::ClockSkew)
         } else {
             Err(OkxError::Exchange {
                 code: self.code,

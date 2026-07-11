@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use time::OffsetDateTime;
+
 use crate::{
-    auth::{Clock, SystemClock},
+    auth::{Clock, OffsetClock, SystemClock},
     config::ClientConfig,
     error::OkxResult,
     inventory::{AuthClass, BASELINE_OPERATION_MANIFEST, ReplayClass},
@@ -31,6 +33,7 @@ impl OkxClient {
     /// Creates a client with a testable signing clock.
     pub fn with_clock(config: ClientConfig, clock: Arc<dyn Clock>) -> OkxResult<Self> {
         let config = Arc::new(config);
+        let clock = Arc::new(OffsetClock::new(clock, config.clock_offset));
         let http = HttpTransport::new(Arc::clone(&config), clock)?;
         Ok(Self {
             config,
@@ -74,6 +77,56 @@ impl OkxClient {
     /// Returns block, spread, broker, conversion, and status operations.
     pub fn professional(&self) -> ProfessionalService<'_> {
         ProfessionalService(self)
+    }
+
+    /// Measures the difference between the local clock and OKX server time.
+    ///
+    /// The returned value is `server_time - local_time_at_response_midpoint` and can be passed
+    /// directly to [`ClientConfig::with_clock_offset`].  Taking local timestamps immediately
+    /// before and after the request compensates for approximately half of the request round-trip
+    /// time. Callers should repeat the measurement and prefer a result with a small round-trip
+    /// time when their network path is asymmetric.
+    pub async fn measure_server_time_offset(&self) -> OkxResult<time::Duration> {
+        #[derive(serde::Deserialize)]
+        struct ServerTime {
+            ts: String,
+        }
+
+        let started_at = OffsetDateTime::now_utc();
+        let response: Vec<ServerTime> = self
+            .execute(CanonicalRequest::new(
+                reqwest::Method::GET,
+                "/api/v5/public/time",
+                std::collections::BTreeMap::new(),
+                None::<&serde_json::Value>,
+                crate::request::RetrySafety::ReadOnly,
+                false,
+            )?)
+            .await?;
+        let received_at = OffsetDateTime::now_utc();
+        let server_time = response
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                crate::error::OkxError::InvalidConfiguration(
+                    "OKX server-time response contained no timestamp".to_owned(),
+                )
+            })?
+            .ts
+            .parse::<i128>()
+            .map_err(|error| {
+                crate::error::OkxError::InvalidConfiguration(format!(
+                    "OKX server-time response contained an invalid millisecond timestamp: {error}"
+                ))
+            })?;
+        let server_time = OffsetDateTime::from_unix_timestamp_nanos(server_time * 1_000_000)
+            .map_err(|error| {
+                crate::error::OkxError::InvalidConfiguration(format!(
+                    "OKX server-time timestamp is out of range: {error}"
+                ))
+            })?;
+        let midpoint = started_at + (received_at - started_at) / 2;
+        Ok(server_time - midpoint)
     }
 
     /// Executes one REST operation recorded in the SDK's audited baseline manifest.
@@ -126,11 +179,21 @@ impl OkxClient {
                 "GET operations do not accept a JSON body".to_owned(),
             ));
         }
-        if entry.method == "POST" && body.is_none() {
+        if entry.method == "POST" && body.is_none() && !baseline_post_accepts_empty_body(entry) {
             return Err(crate::error::OkxError::InvalidConfiguration(
                 "POST operations require a JSON body".to_owned(),
             ));
         }
+        // The pinned python-okx baseline invokes these endpoints via
+        // `_request_without_params(POST, ...)`.  Its request helper sends an
+        // empty JSON object, rather than an absent body; preserve those exact
+        // wire semantics for generic callers too.
+        let empty_body = serde_json::json!({});
+        let body = if body.is_none() && baseline_post_accepts_empty_body(entry) {
+            Some(&empty_body)
+        } else {
+            body
+        };
         self.execute_with_metadata(CanonicalRequest::new(
             method,
             entry.path,
@@ -173,6 +236,13 @@ impl OkxClient {
         };
         decode_envelope_with_metadata(&response.body, response.metadata)
     }
+}
+
+fn baseline_post_accepts_empty_body(entry: &crate::inventory::BaselineOperation) -> bool {
+    matches!(
+        (entry.domain, entry.operation),
+        ("account", "activate_option") | ("block_trading", "reset_mmp")
+    )
 }
 
 #[cfg(test)]

@@ -131,6 +131,12 @@ pub struct ClientConfig {
     pub credentials: Option<Credentials>,
     pub timeout: Duration,
     pub proxy: Option<String>,
+    /// Signed-time adjustment measured against OKX server time.
+    ///
+    /// Leave this at zero unless the application has independently measured a stable clock
+    /// difference. The client never changes it automatically, preventing an untrusted or
+    /// stale time response from silently affecting authenticated requests.
+    pub clock_offset: time::Duration,
 }
 
 impl Default for ClientConfig {
@@ -140,6 +146,7 @@ impl Default for ClientConfig {
             credentials: None,
             timeout: Duration::from_secs(15),
             proxy: None,
+            clock_offset: time::Duration::ZERO,
         }
     }
 }
@@ -160,6 +167,12 @@ impl ClientConfig {
             credentials: Some(credentials),
             ..Self::default()
         }
+    }
+
+    /// Returns this configuration with a measured OKX server-time offset.
+    pub fn with_clock_offset(mut self, offset: time::Duration) -> Self {
+        self.clock_offset = offset;
+        self
     }
 }
 
@@ -209,6 +222,17 @@ mod tests {
         assert_eq!(
             live.business_ws_url(),
             "wss://ws.okx.com:8443/ws/v5/business"
+        );
+    }
+
+    #[test]
+    fn measured_clock_offset_is_opt_in() {
+        assert_eq!(ClientConfig::default().clock_offset, time::Duration::ZERO);
+        assert_eq!(
+            ClientConfig::default()
+                .with_clock_offset(time::Duration::seconds(-3))
+                .clock_offset,
+            time::Duration::seconds(-3)
         );
     }
 }

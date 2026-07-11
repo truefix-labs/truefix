@@ -8,7 +8,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 pub async fn start() -> (String, oneshot::Receiver<String>) {
     start_scripted(
         &[
-            r#"{"op":"subscribe","code":"0"}"#,
+            r#"{"event":"subscribe","code":"0"}"#,
             r#"{"arg":{"channel":"tickers","instId":"BTC-USDT"},"data":[]}"#,
         ],
         false,
@@ -49,13 +49,28 @@ pub async fn start_scripted(
 
 /// Script a successful login acknowledgement followed by a liveness ping and disconnect.
 pub async fn start_login_ping_disconnect() -> (String, oneshot::Receiver<String>) {
-    start_scripted(&[r#"{"op":"login","code":"0"}"#, "ping"], true).await
+    start_scripted(&[r#"{"event":"login","code":"0"}"#, "ping"], true).await
+}
+
+/// Sends a binary frame after capturing one command, to exercise protocol-frame failures.
+pub async fn start_binary_frame() -> (String, oneshot::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, receiver) = oneshot::channel();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        if let Some(Ok(Message::Text(command))) = socket.next().await {
+            let _ = sender.send(command.to_string());
+            socket.send(Message::Binary(vec![1].into())).await.unwrap();
+        }
+    });
+    (format!("ws://{address}"), receiver)
 }
 
 /// Script an exchange error acknowledgement for correlation/error-path tests.
 pub async fn start_error(code: &str, request_id: &str) -> (String, oneshot::Receiver<String>) {
-    let error = format!(
-        r#"{{"op":"subscribe","id":"{request_id}","code":"{code}","msg":"fixture error"}}"#
-    );
+    let error =
+        format!(r#"{{"event":"error","id":"{request_id}","code":"{code}","msg":"fixture error"}}"#);
     start_scripted(&[&error], false).await
 }

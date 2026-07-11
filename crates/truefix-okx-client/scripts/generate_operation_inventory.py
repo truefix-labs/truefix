@@ -12,8 +12,10 @@ SERVICE_ROOT = ROOT / "crates/truefix-okx-client/src/services"
 OUTPUT = ROOT / "crates/truefix-okx-client/src/generated_operation_inventory.rs"
 SKIP = {"consts.py", "exceptions.py", "okxclient.py", "utils.py"}
 PATH_OVERRIDES = {
-    ("Account.py", "get_simulated_margin"): "/api/v5/account/simulated-margin",
-    ("Account.py", "set_risk_offset_typel"): "/api/v5/account/set-risk-offset-type",
+    # Keep the generated manifest aligned with OKX's intentionally irregular
+    # spellings in the pinned Python baseline.
+    ("Account.py", "get_simulated_margin"): "/api/v5/account/simulated_margin",
+    ("Account.py", "set_risk_offset_typel"): "/api/v5/account/set-riskOffset-type",
 }
 DOMAINS = {
     "BlockTrading.py": "block_trading",

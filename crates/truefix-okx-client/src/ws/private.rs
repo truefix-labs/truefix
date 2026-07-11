@@ -14,13 +14,18 @@ use crate::{
 pub struct PrivateSession(pub Session);
 impl PrivateSession {
     pub fn connected(&mut self) {
+        // Private endpoints always require a login, including on the initial
+        // connection. Mark that requirement before Session::connected so it
+        // cannot incorrectly enter Active as a public session would.
+        self.0.login_required();
         self.0.connected();
     }
     pub fn login_required(&mut self) {
         self.0.login_required();
     }
-    pub fn login_acknowledged(&mut self) {
-        self.0.login_acknowledged();
+    /// Records whether OKX accepted the login command.
+    pub fn login_acknowledged(&mut self, success: bool) {
+        self.0.login_acknowledged(success);
     }
     pub fn subscriptions_replayed(&mut self) {
         self.0.subscriptions_replayed();
@@ -35,11 +40,7 @@ impl PrivateSession {
     }
     pub fn login(&mut self, args: Vec<serde_json::Value>) -> WsCommand<Vec<serde_json::Value>> {
         self.0.login_required();
-        WsCommand {
-            op: "login".to_owned(),
-            id: None,
-            args,
-        }
+        WsCommand::new("login", None, args)
     }
     pub fn signed_login(
         &mut self,
@@ -60,44 +61,44 @@ impl PrivateSession {
         args: Vec<SubscriptionArg>,
     ) -> OkxResult<WsCommand<Vec<SubscriptionArg>>> {
         self.active()?;
-        Ok(WsCommand {
-            op: "subscribe".to_owned(),
-            id: Some(self.0.next_request_id()),
+        Ok(WsCommand::new(
+            "subscribe",
+            Some(self.0.next_request_id()),
             args,
-        })
+        ))
     }
     pub fn subscribe_raw(
         &mut self,
         args: Vec<serde_json::Value>,
     ) -> OkxResult<WsCommand<Vec<serde_json::Value>>> {
         self.active()?;
-        Ok(WsCommand {
-            op: "subscribe".to_owned(),
-            id: Some(self.0.next_request_id()),
+        Ok(WsCommand::new(
+            "subscribe",
+            Some(self.0.next_request_id()),
             args,
-        })
+        ))
     }
     pub fn unsubscribe(
         &mut self,
         args: Vec<SubscriptionArg>,
     ) -> OkxResult<WsCommand<Vec<SubscriptionArg>>> {
         self.active()?;
-        Ok(WsCommand {
-            op: "unsubscribe".to_owned(),
-            id: Some(self.0.next_request_id()),
+        Ok(WsCommand::new(
+            "unsubscribe",
+            Some(self.0.next_request_id()),
             args,
-        })
+        ))
     }
     pub fn unsubscribe_raw(
         &mut self,
         args: Vec<serde_json::Value>,
     ) -> OkxResult<WsCommand<Vec<serde_json::Value>>> {
         self.active()?;
-        Ok(WsCommand {
-            op: "unsubscribe".to_owned(),
-            id: Some(self.0.next_request_id()),
+        Ok(WsCommand::new(
+            "unsubscribe",
+            Some(self.0.next_request_id()),
             args,
-        })
+        ))
     }
     pub fn ping(&mut self) -> WsHeartbeat {
         WsHeartbeat
@@ -107,17 +108,33 @@ impl PrivateSession {
         op: impl Into<String>,
         args: Vec<serde_json::Value>,
     ) -> WsCommand<Vec<serde_json::Value>> {
-        WsCommand {
-            op: op.into(),
-            id: Some(self.0.next_request_id()),
-            args,
-        }
+        WsCommand::new(op, Some(self.0.next_request_id()), args)
     }
     pub fn place_order(&mut self, order: WsOrder) -> OkxResult<WsCommand<Vec<WsOrder>>> {
         self.write("order", vec![order])
     }
+    /// Places one order with an OKX processing deadline.
+    pub fn place_order_with_expiration(
+        &mut self,
+        order: WsOrder,
+        expiration_time: crate::types::common::ExpirationTime,
+    ) -> OkxResult<WsCommand<Vec<WsOrder>>> {
+        Ok(self
+            .write("order", vec![order])?
+            .with_expiration_time(expiration_time))
+    }
     pub fn batch_orders(&mut self, orders: Vec<WsOrder>) -> OkxResult<WsCommand<Vec<WsOrder>>> {
         self.write("batch-orders", orders)
+    }
+    /// Places a batch of orders with one shared OKX processing deadline.
+    pub fn batch_orders_with_expiration(
+        &mut self,
+        orders: Vec<WsOrder>,
+        expiration_time: crate::types::common::ExpirationTime,
+    ) -> OkxResult<WsCommand<Vec<WsOrder>>> {
+        Ok(self
+            .write("batch-orders", orders)?
+            .with_expiration_time(expiration_time))
     }
     pub fn cancel_order(
         &mut self,
@@ -134,11 +151,31 @@ impl PrivateSession {
     pub fn amend_order(&mut self, order: WsAmendOrder) -> OkxResult<WsCommand<Vec<WsAmendOrder>>> {
         self.write("amend-order", vec![order])
     }
+    /// Amends one order with an OKX processing deadline.
+    pub fn amend_order_with_expiration(
+        &mut self,
+        order: WsAmendOrder,
+        expiration_time: crate::types::common::ExpirationTime,
+    ) -> OkxResult<WsCommand<Vec<WsAmendOrder>>> {
+        Ok(self
+            .write("amend-order", vec![order])?
+            .with_expiration_time(expiration_time))
+    }
     pub fn batch_amend_orders(
         &mut self,
         orders: Vec<WsAmendOrder>,
     ) -> OkxResult<WsCommand<Vec<WsAmendOrder>>> {
         self.write("batch-amend-orders", orders)
+    }
+    /// Amends a batch with one shared OKX processing deadline.
+    pub fn batch_amend_orders_with_expiration(
+        &mut self,
+        orders: Vec<WsAmendOrder>,
+        expiration_time: crate::types::common::ExpirationTime,
+    ) -> OkxResult<WsCommand<Vec<WsAmendOrder>>> {
+        Ok(self
+            .write("batch-amend-orders", orders)?
+            .with_expiration_time(expiration_time))
     }
     pub fn mass_cancel(
         &mut self,
@@ -148,11 +185,7 @@ impl PrivateSession {
     }
     fn write<T>(&mut self, op: &str, args: T) -> OkxResult<WsCommand<T>> {
         self.write_allowed()?;
-        Ok(WsCommand {
-            op: op.to_owned(),
-            id: Some(self.0.next_request_id()),
-            args,
-        })
+        Ok(WsCommand::new(op, Some(self.0.next_request_id()), args))
     }
     fn active(&self) -> OkxResult<()> {
         if self.0.is_active() {

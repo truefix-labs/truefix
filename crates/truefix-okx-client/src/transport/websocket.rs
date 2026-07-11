@@ -6,6 +6,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungsten
 use crate::{
     error::{OkxError, OkxResult},
     types::websocket::WsHeartbeat,
+    ws::session::Session,
 };
 
 /// Connected WebSocket transport. Credentials are never retained or logged here.
@@ -33,6 +34,15 @@ impl WebSocketTransport {
         Ok(())
     }
 
+    /// Sends an OKX application heartbeat when the session's inbound-idle timer expires.
+    pub async fn send_heartbeat_if_due(&mut self, session: &mut Session) -> OkxResult<bool> {
+        if session.ping_due(std::time::Instant::now()) {
+            heartbeat_send_result(session, self.send_heartbeat(WsHeartbeat).await)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Receives one text event; close before acknowledgement is an unknown completion.
     pub async fn receive(&mut self) -> OkxResult<String> {
         match self.socket.next().await {
@@ -45,9 +55,69 @@ impl WebSocketTransport {
         }
     }
 
+    /// Receives one application message while keeping the supplied session's heartbeat state in
+    /// sync. A `pong` is consumed after acknowledging the pending heartbeat; other text is
+    /// returned to the caller for normal acknowledgement/event handling.
+    pub async fn receive_for_session(
+        &mut self,
+        session: &mut Session,
+    ) -> OkxResult<Option<String>> {
+        let message = match self.receive().await {
+            Ok(message) => message,
+            Err(error) => {
+                // A close frame, transport failure, and malformed frame all make the
+                // connection unusable.  Do not leave callers with an Active session
+                // after returning an error.
+                session.disconnected();
+                return Err(error);
+            }
+        };
+        let now = std::time::Instant::now();
+        if message == "pong" {
+            session.pong_received();
+            Ok(None)
+        } else {
+            session.message_received(now);
+            Ok(Some(message))
+        }
+    }
+
     /// Sends a normal close frame.
     pub async fn close(&mut self) -> OkxResult<()> {
         self.socket.close(None).await?;
         Ok(())
+    }
+}
+
+/// Applies the lifecycle effect of a heartbeat write. Kept separate from the socket I/O so the
+/// connection-state invariant remains directly testable.
+fn heartbeat_send_result(session: &mut Session, result: OkxResult<()>) -> OkxResult<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            // `ping_due` has already recorded an outstanding pong. A failed write means that
+            // pong can never arrive through this transport, so keep the lifecycle gate closed
+            // until reconnect recovery completes.
+            session.disconnected();
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ws::session::SessionState;
+
+    #[test]
+    fn failed_heartbeat_write_disconnects_the_session() {
+        let mut session = Session::default();
+        session.connected();
+
+        assert!(matches!(
+            heartbeat_send_result(&mut session, Err(OkxError::UnknownCompletion)),
+            Err(OkxError::UnknownCompletion)
+        ));
+        assert_eq!(session.state(), SessionState::Backoff);
     }
 }

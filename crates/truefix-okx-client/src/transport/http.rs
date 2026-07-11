@@ -60,6 +60,9 @@ impl HttpTransport {
             } => "0",
         };
         builder = builder.header("x-simulated-trading", simulated);
+        if let Some(expiration_time) = request.expiration_time {
+            builder = builder.header("expTime", expiration_time.unix_milliseconds().to_string());
+        }
         if request.requires_auth {
             let credentials = self
                 .config

@@ -16,12 +16,44 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> OffsetDateTime;
 }
 
+impl<C: Clock + ?Sized> Clock for std::sync::Arc<C> {
+    fn now(&self) -> OffsetDateTime {
+        self.as_ref().now()
+    }
+}
+
 /// Production system clock.
 #[derive(Debug, Default)]
 pub struct SystemClock;
 impl Clock for SystemClock {
     fn now(&self) -> OffsetDateTime {
         OffsetDateTime::now_utc()
+    }
+}
+
+/// A clock which applies a known offset to another clock.
+///
+/// Use this when an application has measured the difference between its local clock and
+/// OKX server time. The offset is applied consistently to REST signatures and to WebSocket
+/// login timestamps when this clock is supplied to those APIs. It deliberately does not
+/// contact OKX or silently adjust time: applications control when and how an offset is
+/// measured.
+#[derive(Debug)]
+pub struct OffsetClock<C> {
+    inner: C,
+    offset: time::Duration,
+}
+
+impl<C> OffsetClock<C> {
+    /// Wraps `inner`, adding `offset` to every reported time.
+    pub const fn new(inner: C, offset: time::Duration) -> Self {
+        Self { inner, offset }
+    }
+}
+
+impl<C: Clock> Clock for OffsetClock<C> {
+    fn now(&self) -> OffsetDateTime {
+        self.inner.now() + self.offset
     }
 }
 
@@ -169,5 +201,17 @@ mod tests {
         ] {
             assert_eq!(sign_rest(&credentials, &request, now).unwrap().1, expected);
         }
+    }
+
+    #[test]
+    fn offset_clock_applies_a_measured_server_time_difference() {
+        struct FixedClock;
+        impl Clock for FixedClock {
+            fn now(&self) -> OffsetDateTime {
+                datetime!(2024-01-01 0:00 UTC)
+            }
+        }
+        let clock = OffsetClock::new(FixedClock, time::Duration::seconds(2));
+        assert_eq!(clock.now(), datetime!(2024-01-01 0:00:02 UTC));
     }
 }

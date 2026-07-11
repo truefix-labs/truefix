@@ -50,15 +50,54 @@ pub struct WsCommand<T> {
     /// Correlation identifier.
     #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
     pub id: Option<RequestId>,
+    /// Optional Unix-millisecond deadline for order and amendment commands.
+    #[serde(rename = "expTime", skip_serializing_if = "Option::is_none")]
+    expiration_time: Option<crate::types::common::ExpirationTime>,
     /// Command arguments.
     pub args: T,
+}
+
+impl<T> WsCommand<T> {
+    /// Builds a WebSocket command without a processing deadline.
+    ///
+    /// OKX only accepts `expTime` for private order and amendment operations. Those
+    /// operations are exposed through the dedicated `PrivateSession` helpers rather
+    /// than this general-purpose constructor.
+    pub fn new(op: impl Into<String>, id: Option<RequestId>, args: T) -> Self {
+        Self {
+            op: op.into(),
+            id,
+            expiration_time: None,
+            args,
+        }
+    }
+
+    /// Returns the optional processing deadline selected by a supported private
+    /// order or amendment helper.
+    pub fn expiration_time(&self) -> Option<crate::types::common::ExpirationTime> {
+        self.expiration_time
+    }
+
+    /// Adds an OKX command-level processing deadline for supported order and amendment
+    /// operations. Public session methods enforce that scope.
+    pub(crate) fn with_expiration_time(
+        mut self,
+        expiration_time: crate::types::common::ExpirationTime,
+    ) -> Self {
+        self.expiration_time = Some(expiration_time);
+        self
+    }
 }
 
 /// Server acknowledgement or error.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct WsAcknowledgement {
     /// Acknowledged operation.
-    pub op: Option<String>,
+    ///
+    /// OKX names this field `event` (for example `login`, `subscribe`,
+    /// `unsubscribe`, `error`, or `notice`); it is distinct from the `op`
+    /// field used in client commands.
+    pub event: Option<String>,
     /// Server correlation identifier.
     #[serde(rename = "id")]
     pub request_id: Option<RequestId>,
@@ -152,6 +191,27 @@ mod tests {
     }
 
     #[test]
+    fn websocket_command_expiry_is_encoded_at_the_top_level() {
+        let order = WsOrder {
+            instrument_id: "BTC-USDT".to_owned(),
+            trade_mode: "cash".to_owned(),
+            side: "buy".to_owned(),
+            order_type: "market".to_owned(),
+            size: "1".to_owned(),
+            price: None,
+            client_order_id: None,
+        };
+        let command = WsCommand::new("order", Some(RequestId("1".to_owned())), vec![order])
+            .with_expiration_time(
+                crate::types::common::ExpirationTime::new(1_704_067_200_123).unwrap(),
+            );
+        assert_eq!(
+            serde_json::to_value(command).unwrap()["expTime"],
+            "1704067200123"
+        );
+    }
+
+    #[test]
     fn subscription_arguments_preserve_channel_specific_fields() {
         let argument = SubscriptionArg::new("orders", None)
             .with_parameter("instType", "FUTURES")
@@ -164,5 +224,17 @@ mod tests {
                 "instFamily": "BTC-USD",
             })
         );
+    }
+
+    #[test]
+    fn acknowledgements_use_the_okx_event_field() {
+        for event in ["login", "subscribe", "unsubscribe", "error", "notice"] {
+            let acknowledgement: WsAcknowledgement = serde_json::from_value(serde_json::json!({
+                "event": event,
+                "code": "0",
+            }))
+            .unwrap();
+            assert_eq!(acknowledgement.event.as_deref(), Some(event));
+        }
     }
 }

@@ -2,7 +2,13 @@ use crate::{
     client::OkxClient,
     error::OkxResult,
     request::{CanonicalRequest, RetrySafety},
-    types::order::{AmendOrder, BatchResult, Fill, Order, OrderAck, OrderReference, PlaceOrder},
+    types::{
+        common::ExpirationTime,
+        order::{
+            AmendOrder, BatchResult, Fill, Order, OrderAck, OrderReference, PlaceOrder,
+            require_successful_acknowledgements,
+        },
+    },
 };
 use std::collections::BTreeMap;
 pub struct TradeService<'a>(pub(crate) &'a OkxClient);
@@ -39,95 +45,112 @@ impl TradeService<'_> {
             )?)
             .await
     }
-    /// Executes the `place_order` OKX V5 operation with its classified auth and replay policy.
-    pub async fn place_order(&self, order: &PlaceOrder) -> OkxResult<Vec<OrderAck>> {
-        self.0
-            .execute(CanonicalRequest::new(
-                reqwest::Method::POST,
-                "/api/v5/trade/order",
-                BTreeMap::new(),
-                Some(order),
-                RetrySafety::NeverReplay,
-                true,
-            )?)
-            .await
+    async fn write_order_json<T: serde::Serialize + ?Sized>(
+        &self,
+        path: &'static str,
+        request: &T,
+        expiration_time: ExpirationTime,
+    ) -> OkxResult<Vec<OrderAck>> {
+        let acknowledgements = self
+            .0
+            .execute(
+                CanonicalRequest::new(
+                    reqwest::Method::POST,
+                    path,
+                    BTreeMap::new(),
+                    Some(request),
+                    RetrySafety::NeverReplay,
+                    true,
+                )?
+                .with_expiration_time(expiration_time),
+            )
+            .await?;
+        require_successful_acknowledgements(acknowledgements)
     }
-    /// Places a batch of orders; each acknowledgement retains its own exchange code.
-    pub async fn place_batch(&self, orders: &[PlaceOrder]) -> OkxResult<BatchResult> {
-        self.0
+
+    async fn write_order<T: serde::Serialize + ?Sized>(
+        &self,
+        path: &'static str,
+        request: &T,
+    ) -> OkxResult<Vec<OrderAck>> {
+        let acknowledgements = self
+            .0
             .execute(CanonicalRequest::new(
                 reqwest::Method::POST,
-                "/api/v5/trade/batch-orders",
-                BTreeMap::new(),
-                Some(orders),
-                RetrySafety::NeverReplay,
-                true,
-            )?)
-            .await
-    }
-    /// Cancels one order.
-    pub async fn cancel_order(&self, order: &OrderReference) -> OkxResult<Vec<OrderAck>> {
-        self.0
-            .execute(CanonicalRequest::new(
-                reqwest::Method::POST,
-                "/api/v5/trade/cancel-order",
-                BTreeMap::new(),
-                Some(order),
-                RetrySafety::NeverReplay,
-                true,
-            )?)
-            .await
-    }
-    /// Cancels a batch of orders without replaying the write.
-    pub async fn cancel_batch(&self, orders: &[OrderReference]) -> OkxResult<BatchResult> {
-        self.0
-            .execute(CanonicalRequest::new(
-                reqwest::Method::POST,
-                "/api/v5/trade/cancel-batch-orders",
-                BTreeMap::new(),
-                Some(orders),
-                RetrySafety::NeverReplay,
-                true,
-            )?)
-            .await
-    }
-    /// Amends one order.
-    pub async fn amend_order(&self, order: &AmendOrder) -> OkxResult<Vec<OrderAck>> {
-        self.0
-            .execute(CanonicalRequest::new(
-                reqwest::Method::POST,
-                "/api/v5/trade/amend-order",
-                BTreeMap::new(),
-                Some(order),
-                RetrySafety::NeverReplay,
-                true,
-            )?)
-            .await
-    }
-    /// Amends a batch of orders without replaying the write.
-    pub async fn amend_batch(&self, orders: &[AmendOrder]) -> OkxResult<BatchResult> {
-        self.0
-            .execute(CanonicalRequest::new(
-                reqwest::Method::POST,
-                "/api/v5/trade/amend-batch-orders",
-                BTreeMap::new(),
-                Some(orders),
-                RetrySafety::NeverReplay,
-                true,
-            )?)
-            .await
-    }
-    /// Closes positions according to the supplied native request.
-    pub async fn close_positions(&self, request: &serde_json::Value) -> OkxResult<Vec<OrderAck>> {
-        self.0
-            .execute(CanonicalRequest::new(
-                reqwest::Method::POST,
-                "/api/v5/trade/close-position",
+                path,
                 BTreeMap::new(),
                 Some(request),
                 RetrySafety::NeverReplay,
                 true,
             )?)
+            .await?;
+        require_successful_acknowledgements(acknowledgements)
+    }
+    /// Executes the `place_order` OKX V5 operation with its classified auth and replay policy.
+    pub async fn place_order(&self, order: &PlaceOrder) -> OkxResult<Vec<OrderAck>> {
+        self.write_order("/api/v5/trade/order", order).await
+    }
+    /// Places an order which OKX must reject if it has not begun processing by `expiration_time`.
+    pub async fn place_order_with_expiration(
+        &self,
+        order: &PlaceOrder,
+        expiration_time: ExpirationTime,
+    ) -> OkxResult<Vec<OrderAck>> {
+        self.write_order_json("/api/v5/trade/order", order, expiration_time)
+            .await
+    }
+    /// Places a batch of orders; each acknowledgement retains its own exchange code.
+    pub async fn place_batch(&self, orders: &[PlaceOrder]) -> OkxResult<BatchResult> {
+        self.write_order("/api/v5/trade/batch-orders", orders).await
+    }
+    /// Places a batch with one shared OKX processing deadline.
+    pub async fn place_batch_with_expiration(
+        &self,
+        orders: &[PlaceOrder],
+        expiration_time: ExpirationTime,
+    ) -> OkxResult<BatchResult> {
+        self.write_order_json("/api/v5/trade/batch-orders", orders, expiration_time)
+            .await
+    }
+    /// Cancels one order.
+    pub async fn cancel_order(&self, order: &OrderReference) -> OkxResult<Vec<OrderAck>> {
+        self.write_order("/api/v5/trade/cancel-order", order).await
+    }
+    /// Cancels a batch of orders without replaying the write.
+    pub async fn cancel_batch(&self, orders: &[OrderReference]) -> OkxResult<BatchResult> {
+        self.write_order("/api/v5/trade/cancel-batch-orders", orders)
+            .await
+    }
+    /// Amends one order.
+    pub async fn amend_order(&self, order: &AmendOrder) -> OkxResult<Vec<OrderAck>> {
+        self.write_order("/api/v5/trade/amend-order", order).await
+    }
+    /// Amends an order with an OKX processing deadline.
+    pub async fn amend_order_with_expiration(
+        &self,
+        order: &AmendOrder,
+        expiration_time: ExpirationTime,
+    ) -> OkxResult<Vec<OrderAck>> {
+        self.write_order_json("/api/v5/trade/amend-order", order, expiration_time)
+            .await
+    }
+    /// Amends a batch of orders without replaying the write.
+    pub async fn amend_batch(&self, orders: &[AmendOrder]) -> OkxResult<BatchResult> {
+        self.write_order("/api/v5/trade/amend-batch-orders", orders)
+            .await
+    }
+    /// Amends a batch with one shared OKX processing deadline.
+    pub async fn amend_batch_with_expiration(
+        &self,
+        orders: &[AmendOrder],
+        expiration_time: ExpirationTime,
+    ) -> OkxResult<BatchResult> {
+        self.write_order_json("/api/v5/trade/amend-batch-orders", orders, expiration_time)
+            .await
+    }
+    /// Closes positions according to the supplied native request.
+    pub async fn close_positions(&self, request: &serde_json::Value) -> OkxResult<Vec<OrderAck>> {
+        self.write_order("/api/v5/trade/close-position", request)
             .await
     }
     /// Gets a single order by exchange or client identifier.
