@@ -1,0 +1,29 @@
+[package]
+name = "truefix-okx-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native, typed OKX V5 REST and WebSocket client for TrueFix."
+publish = false
+
+[dependencies]
+base64.workspace = true
+futures-util.workspace = true
+hmac.workspace = true
+reqwest.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

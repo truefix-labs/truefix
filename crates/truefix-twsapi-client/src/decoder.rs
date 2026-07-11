@@ -7,11 +7,12 @@ use crate::message::{Incoming, PROTOBUF_MSG_ID};
 use crate::protobuf;
 use crate::types::{
     BarData, ComboLeg, CommissionAndFeesReport, Contract, ContractDescription, ContractDetails,
-    DeltaNeutralContract, Execution, HistoricalSession, HistoricalTick, HistoricalTickBidAsk,
-    HistoricalTickLast, IneligibilityReason, LegOpenClose, Order, OrderAllocation, OrderCondition,
-    OrderState, Origin, SmartComponent, SoftDollarTier, TagValue, TickAttribBidAsk, TickAttribLast,
-    TickByTick,
+    DeltaNeutralContract, Execution, HistogramEntry, HistoricalSession, HistoricalTick,
+    HistoricalTickBidAsk, HistoricalTickLast, IneligibilityReason, LegOpenClose, NewsProvider,
+    Order, OrderAllocation, OrderCondition, OrderState, Origin, PriceIncrement, SmartComponent,
+    SoftDollarTier, TagValue, TickAttribBidAsk, TickAttribLast, TickByTick,
 };
+use crate::types::{DepthMarketDataDescription, FamilyCode};
 
 mod order;
 mod order_proto;
@@ -513,7 +514,13 @@ pub fn decode_protobuf_event(msg_id: i32, payload: &[u8]) -> TwsApiResult<Event>
                 descriptions: msg
                     .depth_market_data_descriptions
                     .into_iter()
-                    .map(|description| format!("{description:?}"))
+                    .map(|description| DepthMarketDataDescription {
+                        exchange: description.exchange.unwrap_or_default(),
+                        security_type: description.sec_type.unwrap_or_default(),
+                        listing_exchange: description.listing_exch.unwrap_or_default(),
+                        service_data_type: description.service_data_type.unwrap_or_default(),
+                        aggregate_group: description.agg_group.unwrap_or_default(),
+                    })
                     .collect(),
             })
         }
@@ -645,10 +652,10 @@ pub fn decode_protobuf_event(msg_id: i32, payload: &[u8]) -> TwsApiResult<Event>
                     .histogram_data_entries
                     .into_iter()
                     .map(|entry| {
-                        Ok((
-                            entry.price.unwrap_or_default(),
-                            parse_decimal_string(entry.size.as_deref())?,
-                        ))
+                        Ok(HistogramEntry {
+                            price: entry.price.unwrap_or_default(),
+                            size: parse_decimal_string(entry.size.as_deref())?,
+                        })
                     })
                     .collect::<TwsApiResult<Vec<_>>>()?,
             })
@@ -699,11 +706,9 @@ pub fn decode_protobuf_event(msg_id: i32, payload: &[u8]) -> TwsApiResult<Event>
                 family_codes: msg
                     .family_codes
                     .into_iter()
-                    .map(|code| {
-                        (
-                            code.account_id.unwrap_or_default(),
-                            code.family_code.unwrap_or_default(),
-                        )
+                    .map(|code| FamilyCode {
+                        account_id: code.account_id.unwrap_or_default(),
+                        family_code: code.family_code.unwrap_or_default(),
                     })
                     .collect(),
             })
@@ -726,11 +731,9 @@ pub fn decode_protobuf_event(msg_id: i32, payload: &[u8]) -> TwsApiResult<Event>
                 price_increments: msg
                     .price_increments
                     .into_iter()
-                    .map(|increment| {
-                        (
-                            increment.low_edge.unwrap_or_default(),
-                            increment.increment.unwrap_or_default(),
-                        )
+                    .map(|increment| PriceIncrement {
+                        low_edge: increment.low_edge.unwrap_or_default(),
+                        increment: increment.increment.unwrap_or_default(),
                     })
                     .collect(),
             })
@@ -904,11 +907,9 @@ pub fn decode_protobuf_event(msg_id: i32, payload: &[u8]) -> TwsApiResult<Event>
                 providers: msg
                     .news_providers
                     .into_iter()
-                    .map(|provider| {
-                        (
-                            provider.provider_code.unwrap_or_default(),
-                            provider.provider_name.unwrap_or_default(),
-                        )
+                    .map(|provider| NewsProvider {
+                        code: provider.provider_code.unwrap_or_default(),
+                        name: provider.provider_name.unwrap_or_default(),
                     })
                     .collect(),
             })
@@ -1224,6 +1225,13 @@ fn proto_contract_details_to_contract_details(
         });
     };
 
+    let mut sec_id_list = details
+        .sec_id_list
+        .into_iter()
+        .map(|(tag, value)| TagValue { tag, value })
+        .collect::<Vec<_>>();
+    sec_id_list.sort_by(|left, right| left.tag.cmp(&right.tag));
+
     Ok(ContractDetails {
         contract: proto_contract_to_contract(contract),
         market_name: details.market_name.unwrap_or_default(),
@@ -1244,6 +1252,12 @@ fn proto_contract_details_to_contract_details(
         time_zone_id: details.time_zone_id.unwrap_or_default(),
         trading_hours: details.trading_hours.unwrap_or_default(),
         liquid_hours: details.liquid_hours.unwrap_or_default(),
+        ev_rule: details.ev_rule.unwrap_or_default(),
+        ev_multiplier: details.ev_multiplier.unwrap_or_default(),
+        sec_id_list,
+        aggregate_group: details.agg_group.unwrap_or_default(),
+        under_symbol: details.under_symbol.unwrap_or_default(),
+        under_sec_type: details.under_sec_type.unwrap_or_default(),
         market_rule_ids: details.market_rule_ids.unwrap_or_default(),
         cusip: details.cusip.unwrap_or_default(),
         issue_date: details.issue_date.unwrap_or_default(),
@@ -1570,10 +1584,10 @@ fn decode_family_codes_fields(fields: &[String]) -> TwsApiResult<Event> {
     let count = next_i32(fields, &mut index)?.max(0) as usize;
     let mut family_codes = Vec::with_capacity(count);
     for _ in 0..count {
-        family_codes.push((
-            next_string(fields, &mut index),
-            next_string(fields, &mut index),
-        ));
+        family_codes.push(FamilyCode {
+            account_id: next_string(fields, &mut index),
+            family_code: next_string(fields, &mut index),
+        });
     }
     Ok(Event::FamilyCodes { family_codes })
 }
@@ -1632,14 +1646,13 @@ fn decode_market_depth_exchanges_fields(fields: &[String]) -> TwsApiResult<Event
     let count = next_i32(fields, &mut index)?.max(0) as usize;
     let mut descriptions = Vec::with_capacity(count);
     for _ in 0..count {
-        let exchange = next_string(fields, &mut index);
-        let sec_type = next_string(fields, &mut index);
-        let listing_exch = next_string(fields, &mut index);
-        let service_data_type = next_string(fields, &mut index);
-        let agg_group = next_i32(fields, &mut index).unwrap_or_default();
-        descriptions.push(format!(
-            "{exchange}:{sec_type}:{listing_exch}:{service_data_type}:{agg_group}"
-        ));
+        descriptions.push(DepthMarketDataDescription {
+            exchange: next_string(fields, &mut index),
+            security_type: next_string(fields, &mut index),
+            listing_exchange: next_string(fields, &mut index),
+            service_data_type: next_string(fields, &mut index),
+            aggregate_group: next_i32(fields, &mut index).unwrap_or_default(),
+        });
     }
     Ok(Event::MarketDepthExchanges { descriptions })
 }
@@ -1650,10 +1663,10 @@ fn decode_histogram_data_fields(fields: &[String]) -> TwsApiResult<Event> {
     let count = next_i32(fields, &mut index)?.max(0) as usize;
     let mut items = Vec::with_capacity(count);
     for _ in 0..count {
-        items.push((
-            next_f64(fields, &mut index)?,
-            next_decimal(fields, &mut index)?,
-        ));
+        items.push(HistogramEntry {
+            price: next_f64(fields, &mut index)?,
+            size: next_decimal(fields, &mut index)?,
+        });
     }
     Ok(Event::HistogramData { req_id, items })
 }
@@ -1664,7 +1677,10 @@ fn decode_market_rule_fields(fields: &[String]) -> TwsApiResult<Event> {
     let count = next_i32(fields, &mut index)?.max(0) as usize;
     let mut price_increments = Vec::with_capacity(count);
     for _ in 0..count {
-        price_increments.push((next_f64(fields, &mut index)?, next_f64(fields, &mut index)?));
+        price_increments.push(PriceIncrement {
+            low_edge: next_f64(fields, &mut index)?,
+            increment: next_f64(fields, &mut index)?,
+        });
     }
     Ok(Event::MarketRule {
         market_rule_id,
@@ -1727,10 +1743,10 @@ fn decode_news_providers_fields(fields: &[String]) -> TwsApiResult<Event> {
     let count = next_i32(fields, &mut index)?.max(0) as usize;
     let mut providers = Vec::with_capacity(count);
     for _ in 0..count {
-        providers.push((
-            next_string(fields, &mut index),
-            next_string(fields, &mut index),
-        ));
+        providers.push(NewsProvider {
+            code: next_string(fields, &mut index),
+            name: next_string(fields, &mut index),
+        });
     }
     Ok(Event::NewsProviders { providers })
 }
@@ -1902,22 +1918,24 @@ fn decode_contract_data_fields(fields: &[String]) -> TwsApiResult<Event> {
         details.liquid_hours = next_string(fields, &mut index);
     }
     if version >= 8 && index + 1 < fields.len() {
-        let _ev_rule = next_string(fields, &mut index);
-        let _ev_multiplier = next_f64(fields, &mut index).unwrap_or_default();
+        details.ev_rule = next_string(fields, &mut index);
+        details.ev_multiplier = next_f64(fields, &mut index).unwrap_or_default();
     }
     if version >= 7 && index < fields.len() {
         let sec_id_count = next_i32(fields, &mut index).unwrap_or_default().max(0) as usize;
         for _ in 0..sec_id_count {
-            let _tag = next_string(fields, &mut index);
-            let _value = next_string(fields, &mut index);
+            details.sec_id_list.push(TagValue {
+                tag: next_string(fields, &mut index),
+                value: next_string(fields, &mut index),
+            });
         }
     }
     if index < fields.len() {
-        let _agg_group = next_i32(fields, &mut index).unwrap_or_default();
+        details.aggregate_group = next_i32(fields, &mut index).unwrap_or_default();
     }
     if index + 1 < fields.len() {
-        let _under_symbol = next_string(fields, &mut index);
-        let _under_sec_type = next_string(fields, &mut index);
+        details.under_symbol = next_string(fields, &mut index);
+        details.under_sec_type = next_string(fields, &mut index);
     }
     if index < fields.len() {
         details.market_rule_ids = next_string(fields, &mut index);
@@ -2030,18 +2048,20 @@ fn decode_bond_contract_data_fields(fields: &[String]) -> TwsApiResult<Event> {
         details.liquid_hours = next_string(fields, &mut index);
     }
     if version >= 6 && index + 1 < fields.len() {
-        let _ev_rule = next_string(fields, &mut index);
-        let _ev_multiplier = next_f64(fields, &mut index).unwrap_or_default();
+        details.ev_rule = next_string(fields, &mut index);
+        details.ev_multiplier = next_f64(fields, &mut index).unwrap_or_default();
     }
     if version >= 5 && index < fields.len() {
         let sec_id_count = next_i32(fields, &mut index).unwrap_or_default().max(0) as usize;
         for _ in 0..sec_id_count {
-            let _tag = next_string(fields, &mut index);
-            let _value = next_string(fields, &mut index);
+            details.sec_id_list.push(TagValue {
+                tag: next_string(fields, &mut index),
+                value: next_string(fields, &mut index),
+            });
         }
     }
     if index < fields.len() {
-        let _agg_group = next_i32(fields, &mut index).unwrap_or_default();
+        details.aggregate_group = next_i32(fields, &mut index).unwrap_or_default();
     }
     if index < fields.len() {
         details.market_rule_ids = next_string(fields, &mut index);

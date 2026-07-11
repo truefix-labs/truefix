@@ -185,10 +185,12 @@ impl TwsField for usize {
 
 impl TwsField for f64 {
     fn to_tws_field(self) -> TwsApiResult<String> {
-        if self.is_infinite() && self.is_sign_positive() {
-            return Ok(INFINITY_STR.to_owned());
+        let mut value = self.to_string();
+        if self.is_finite() && !value.contains('.') && !value.contains('e') && !value.contains('E')
+        {
+            value.push_str(".0");
         }
-        Ok(self.to_string())
+        Ok(value)
     }
 }
 
@@ -205,6 +207,9 @@ impl TwsNullableField for f64 {
     fn to_tws_nullable_field(self) -> TwsApiResult<String> {
         if self == UNSET_DOUBLE {
             return Ok(String::new());
+        }
+        if self.is_infinite() && self.is_sign_positive() {
+            return Ok(INFINITY_STR.to_owned());
         }
         self.to_tws_field()
     }

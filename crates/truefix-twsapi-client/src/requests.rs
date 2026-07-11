@@ -14,28 +14,34 @@ use crate::server_versions::{
     MIN_SERVER_VER_CONTRACT_DATA_CHAIN, MIN_SERVER_VER_CUSTOMER_ACCOUNT,
     MIN_SERVER_VER_D_PEG_ORDERS, MIN_SERVER_VER_DECISION_MAKER, MIN_SERVER_VER_DELTA_NEUTRAL,
     MIN_SERVER_VER_DELTA_NEUTRAL_CONID, MIN_SERVER_VER_DELTA_NEUTRAL_OPEN_CLOSE,
-    MIN_SERVER_VER_DURATION, MIN_SERVER_VER_EXT_OPERATOR, MIN_SERVER_VER_HEDGE_MAX_SIZE,
+    MIN_SERVER_VER_DURATION, MIN_SERVER_VER_EXECUTION_DATA_CHAIN, MIN_SERVER_VER_EXT_OPERATOR,
+    MIN_SERVER_VER_FA_PROFILE_DESUPPORT, MIN_SERVER_VER_HEDGE_MAX_SIZE,
     MIN_SERVER_VER_HEDGE_ORDERS, MIN_SERVER_VER_HISTORICAL_TICKS, MIN_SERVER_VER_IMBALANCE_ONLY,
     MIN_SERVER_VER_INCLUDE_OVERNIGHT, MIN_SERVER_VER_LINKING, MIN_SERVER_VER_MANUAL_ORDER_TIME,
     MIN_SERVER_VER_MANUAL_ORDER_TIME_EXERCISE_OPTIONS, MIN_SERVER_VER_MIFID_EXECUTION,
-    MIN_SERVER_VER_MODELS_SUPPORT, MIN_SERVER_VER_NOT_HELD, MIN_SERVER_VER_OPT_OUT_SMART_ROUTING,
-    MIN_SERVER_VER_ORDER_COMBO_LEGS_PRICE, MIN_SERVER_VER_ORDER_CONTAINER,
-    MIN_SERVER_VER_ORDER_SOLICITED, MIN_SERVER_VER_PEGGED_TO_BENCHMARK,
-    MIN_SERVER_VER_PLACE_ORDER_CONID, MIN_SERVER_VER_POST_TO_ATS, MIN_SERVER_VER_PRICE_MGMT_ALGO,
-    MIN_SERVER_VER_PRIMARYEXCH, MIN_SERVER_VER_PROFESSIONAL_CUSTOMER, MIN_SERVER_VER_PROTOBUF,
+    MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE, MIN_SERVER_VER_MODELS_SUPPORT,
+    MIN_SERVER_VER_NEWS_QUERY_ORIGINS, MIN_SERVER_VER_NOT_HELD,
+    MIN_SERVER_VER_OPT_OUT_SMART_ROUTING, MIN_SERVER_VER_ORDER_COMBO_LEGS_PRICE,
+    MIN_SERVER_VER_ORDER_CONTAINER, MIN_SERVER_VER_ORDER_SOLICITED,
+    MIN_SERVER_VER_PARAMETRIZED_DAYS_OF_EXECUTIONS, MIN_SERVER_VER_PEGBEST_PEGMID_OFFSETS,
+    MIN_SERVER_VER_PEGGED_TO_BENCHMARK, MIN_SERVER_VER_PLACE_ORDER_CONID,
+    MIN_SERVER_VER_POST_TO_ATS, MIN_SERVER_VER_PRICE_MGMT_ALGO, MIN_SERVER_VER_PRIMARYEXCH,
+    MIN_SERVER_VER_PROFESSIONAL_CUSTOMER, MIN_SERVER_VER_PROTOBUF,
     MIN_SERVER_VER_PROTOBUF_ACCOUNTS_POSITIONS, MIN_SERVER_VER_PROTOBUF_COMPLETED_ORDER,
     MIN_SERVER_VER_PROTOBUF_CONTRACT_DATA, MIN_SERVER_VER_PROTOBUF_HISTORICAL_DATA,
     MIN_SERVER_VER_PROTOBUF_MARKET_DATA, MIN_SERVER_VER_PROTOBUF_NEWS_DATA,
     MIN_SERVER_VER_PROTOBUF_PLACE_ORDER, MIN_SERVER_VER_PROTOBUF_REST_MESSAGES_1,
     MIN_SERVER_VER_PROTOBUF_REST_MESSAGES_2, MIN_SERVER_VER_PROTOBUF_REST_MESSAGES_3,
     MIN_SERVER_VER_PROTOBUF_SCAN_DATA, MIN_SERVER_VER_PTA_ORDERS,
-    MIN_SERVER_VER_RANDOMIZE_SIZE_AND_PRICE, MIN_SERVER_VER_REQ_CALC_IMPLIED_VOLAT,
-    MIN_SERVER_VER_REQ_MKT_DATA_CONID, MIN_SERVER_VER_REQ_SMART_COMPONENTS,
-    MIN_SERVER_VER_SCALE_ORDERS2, MIN_SERVER_VER_SCALE_ORDERS3, MIN_SERVER_VER_SCALE_TABLE,
+    MIN_SERVER_VER_RANDOMIZE_SIZE_AND_PRICE, MIN_SERVER_VER_REPLACE_FA_END,
+    MIN_SERVER_VER_REQ_CALC_IMPLIED_VOLAT, MIN_SERVER_VER_REQ_MKT_DATA_CONID,
+    MIN_SERVER_VER_REQ_SMART_COMPONENTS, MIN_SERVER_VER_RFQ_FIELDS, MIN_SERVER_VER_SCALE_ORDERS2,
+    MIN_SERVER_VER_SCALE_ORDERS3, MIN_SERVER_VER_SCALE_TABLE, MIN_SERVER_VER_SCANNER_GENERIC_OPTS,
     MIN_SERVER_VER_SEC_ID_TYPE, MIN_SERVER_VER_SMART_COMBO_ROUTING_PARAMS,
-    MIN_SERVER_VER_SOFT_DOLLAR_TIER, MIN_SERVER_VER_SSHORTX_OLD, MIN_SERVER_VER_SYNT_REALTIME_BARS,
-    MIN_SERVER_VER_TICK_BY_TICK, MIN_SERVER_VER_TICK_BY_TICK_IGNORE_SIZE,
-    MIN_SERVER_VER_TRADING_CLASS, MIN_SERVER_VER_TRAILING_PERCENT,
+    MIN_SERVER_VER_SMART_DEPTH, MIN_SERVER_VER_SOFT_DOLLAR_TIER, MIN_SERVER_VER_SSHORTX_OLD,
+    MIN_SERVER_VER_SYNT_REALTIME_BARS, MIN_SERVER_VER_TICK_BY_TICK,
+    MIN_SERVER_VER_TICK_BY_TICK_IGNORE_SIZE, MIN_SERVER_VER_TRADING_CLASS,
+    MIN_SERVER_VER_TRAILING_PERCENT, MIN_SERVER_VER_UNDO_RFQ_FIELDS,
 };
 use crate::types::{
     Contract, ExecutionFilter, Order, OrderCancel, ScannerSubscription, TagValue, TickerId,
@@ -467,10 +473,18 @@ impl EncodableRequest for CancelMarketDepthRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
-        fields
-            .push(1)?
-            .push(self.req_id)?
-            .push(self.is_smart_depth)?;
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        fields.push(1)?.push(self.req_id)?;
+        if server_version >= MIN_SERVER_VER_SMART_DEPTH {
+            fields.push(self.is_smart_depth)?;
+        }
         Ok(())
     }
 
@@ -525,11 +539,21 @@ impl EncodableRequest for GlobalCancelRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
-        fields
-            .push(1)?
-            .push(&self.order_cancel.manual_order_cancel_time)?
-            .push(&self.order_cancel.ext_operator)?
-            .push(self.order_cancel.manual_order_indicator)?;
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        if server_version < MIN_SERVER_VER_CME_TAGGING_FIELDS {
+            fields.push(1)?;
+        } else {
+            fields
+                .push(&self.order_cancel.ext_operator)?
+                .push_empty(self.order_cancel.manual_order_indicator)?;
+        }
         Ok(())
     }
 
@@ -786,11 +810,22 @@ impl EncodableRequest for NewsArticleRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         fields
             .push(self.req_id)?
             .push(&self.provider_code)?
             .push(&self.article_id)?;
-        encode_tag_values(fields, &self.options)
+        if server_version >= MIN_SERVER_VER_NEWS_QUERY_ORIGINS {
+            fields.push(tag_values_to_tws_options(&self.options))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -831,6 +866,14 @@ impl EncodableRequest for HistoricalNewsRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         fields
             .push(self.req_id)?
             .push(self.con_id)?
@@ -838,7 +881,10 @@ impl EncodableRequest for HistoricalNewsRequest {
             .push(&self.start_date_time)?
             .push(&self.end_date_time)?
             .push(self.total_results)?;
-        encode_tag_values(fields, &self.options)
+        if server_version >= MIN_SERVER_VER_NEWS_QUERY_ORIGINS {
+            fields.push(tag_values_to_tws_options(&self.options))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -1002,11 +1048,18 @@ impl EncodableRequest for ReplaceFinancialAdvisorRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
-        fields
-            .push(1)?
-            .push(self.req_id)?
-            .push(self.fa_data_type)?
-            .push(&self.xml)?;
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        fields.push(1)?.push(self.fa_data_type)?.push(&self.xml)?;
+        if server_version >= MIN_SERVER_VER_REPLACE_FA_END {
+            fields.push(self.req_id)?;
+        }
         Ok(())
     }
 
@@ -1044,7 +1097,7 @@ impl EncodableRequest for HeadTimestampRequest {
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
         fields.push(self.req_id)?;
-        encode_contract_core(fields, &self.contract)?;
+        encode_contract_head_or_histogram(fields, &self.contract)?;
         fields
             .push(self.use_rth)?
             .push(&self.what_to_show)?
@@ -1086,7 +1139,7 @@ impl EncodableRequest for HistogramDataRequest {
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
         fields.push(self.req_id)?;
-        encode_contract_core(fields, &self.contract)?;
+        encode_contract_head_or_histogram(fields, &self.contract)?;
         fields.push(self.use_rth)?.push(&self.time_period)?;
         Ok(())
     }
@@ -1127,13 +1180,24 @@ impl EncodableRequest for RealTimeBarsRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         fields.push(3)?.push(self.req_id)?;
-        encode_contract_core(fields, &self.contract)?;
+        encode_contract_real_time_bars(fields, &self.contract, server_version)?;
         fields
             .push(self.bar_size)?
             .push(&self.what_to_show)?
             .push(self.use_rth)?;
-        encode_tag_values(fields, &self.options)
+        if server_version >= MIN_SERVER_VER_LINKING {
+            fields.push(tag_values_to_tws_options(&self.options))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -1980,10 +2044,43 @@ impl EncodableRequest for MarketDepthRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         fields.push(5)?.push(self.req_id)?;
-        encode_contract_core(fields, &self.contract)?;
-        fields.push(self.num_rows)?.push(self.is_smart_depth)?;
-        encode_tag_values(fields, &self.market_depth_options)
+        if server_version >= MIN_SERVER_VER_TRADING_CLASS {
+            fields.push(self.contract.con_id)?;
+        }
+        fields
+            .push(&self.contract.symbol)?
+            .push(&self.contract.sec_type)?
+            .push(&self.contract.last_trade_date_or_contract_month)?
+            .push_empty(self.contract.strike)?
+            .push(&self.contract.right)?
+            .push(&self.contract.multiplier)?
+            .push(&self.contract.exchange)?;
+        if server_version >= MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE {
+            fields.push(&self.contract.primary_exchange)?;
+        }
+        fields
+            .push(&self.contract.currency)?
+            .push(&self.contract.local_symbol)?;
+        if server_version >= MIN_SERVER_VER_TRADING_CLASS {
+            fields.push(&self.contract.trading_class)?;
+        }
+        fields.push(self.num_rows)?;
+        if server_version >= MIN_SERVER_VER_SMART_DEPTH {
+            fields.push(self.is_smart_depth)?;
+        }
+        if server_version >= MIN_SERVER_VER_LINKING {
+            fields.push(tag_values_to_tws_options(&self.market_depth_options))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -2061,12 +2158,29 @@ impl EncodableRequest for CancelOrderRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
-        fields
-            .push(1)?
-            .push(self.order_id)?
-            .push(&self.order_cancel.manual_order_cancel_time)?
-            .push(&self.order_cancel.ext_operator)?
-            .push(self.order_cancel.manual_order_indicator)?;
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        if server_version < MIN_SERVER_VER_CME_TAGGING_FIELDS {
+            fields.push(1)?;
+        }
+        fields.push(self.order_id)?;
+        if server_version >= MIN_SERVER_VER_MANUAL_ORDER_TIME {
+            fields.push(&self.order_cancel.manual_order_cancel_time)?;
+        }
+        if (MIN_SERVER_VER_RFQ_FIELDS..MIN_SERVER_VER_UNDO_RFQ_FIELDS).contains(&server_version) {
+            fields.push("")?.push("")?.push_empty(UNSET_INTEGER)?;
+        }
+        if server_version >= MIN_SERVER_VER_CME_TAGGING_FIELDS {
+            fields
+                .push(&self.order_cancel.ext_operator)?
+                .push_empty(self.order_cancel.manual_order_indicator)?;
+        }
         Ok(())
     }
 
@@ -2094,9 +2208,19 @@ impl EncodableRequest for ExecutionRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
+        fields.push(3)?;
+        if server_version >= MIN_SERVER_VER_EXECUTION_DATA_CHAIN {
+            fields.push(self.req_id)?;
+        }
         fields
-            .push(3)?
-            .push(self.req_id)?
             .push(self.filter.client_id)?
             .push(&self.filter.acct_code)?
             .push(&self.filter.time)?
@@ -2104,6 +2228,14 @@ impl EncodableRequest for ExecutionRequest {
             .push(&self.filter.sec_type)?
             .push(&self.filter.exchange)?
             .push(&self.filter.side)?;
+        if server_version >= MIN_SERVER_VER_PARAMETRIZED_DAYS_OF_EXECUTIONS {
+            fields
+                .push(self.filter.last_n_days)?
+                .push(self.filter.specific_dates.len())?;
+            for date in &self.filter.specific_dates {
+                fields.push(*date)?;
+            }
+        }
         Ok(())
     }
 
@@ -2309,9 +2441,19 @@ impl EncodableRequest for ScannerSubscriptionRequest {
     }
 
     fn encode_fields(&self, fields: &mut FieldSink) -> TwsApiResult<()> {
+        self.encode_fields_for_server_version(fields, MAX_CLIENT_VER)
+    }
+
+    fn encode_fields_for_server_version(
+        &self,
+        fields: &mut FieldSink,
+        server_version: i32,
+    ) -> TwsApiResult<()> {
         let sub = &self.subscription;
+        if server_version < MIN_SERVER_VER_SCANNER_GENERIC_OPTS {
+            fields.push(4)?;
+        }
         fields
-            .push(4)?
             .push(self.req_id)?
             .push(sub.number_of_rows)?
             .push(&sub.instrument)?
@@ -2334,8 +2476,17 @@ impl EncodableRequest for ScannerSubscriptionRequest {
             .push_empty(sub.average_option_volume_above)?
             .push(&sub.scanner_setting_pairs)?
             .push(&sub.stock_type_filter)?;
-        encode_tag_values(fields, &self.scanner_subscription_options)?;
-        encode_tag_values(fields, &self.scanner_subscription_filter_options)
+        if server_version >= MIN_SERVER_VER_SCANNER_GENERIC_OPTS {
+            fields.push(tag_values_to_tws_options(
+                &self.scanner_subscription_filter_options,
+            ))?;
+        }
+        if server_version >= MIN_SERVER_VER_LINKING {
+            fields.push(tag_values_to_tws_options(
+                &self.scanner_subscription_options,
+            ))?;
+        }
+        Ok(())
     }
 
     fn encode_protobuf(&self) -> TwsApiResult<Option<Vec<u8>>> {
@@ -2353,7 +2504,10 @@ impl EncodableRequest for ScannerSubscriptionRequest {
     }
 }
 
-fn encode_contract_core(fields: &mut FieldSink, contract: &Contract) -> TwsApiResult<()> {
+fn encode_contract_head_or_histogram(
+    fields: &mut FieldSink,
+    contract: &Contract,
+) -> TwsApiResult<()> {
     fields
         .push(contract.con_id)?
         .push(&contract.symbol)?
@@ -2367,9 +2521,32 @@ fn encode_contract_core(fields: &mut FieldSink, contract: &Contract) -> TwsApiRe
         .push(&contract.currency)?
         .push(&contract.local_symbol)?
         .push(&contract.trading_class)?
-        .push(contract.include_expired)?
-        .push(&contract.sec_id_type)?
-        .push(&contract.sec_id)?;
+        .push(contract.include_expired)?;
+    Ok(())
+}
+
+fn encode_contract_real_time_bars(
+    fields: &mut FieldSink,
+    contract: &Contract,
+    server_version: i32,
+) -> TwsApiResult<()> {
+    if server_version >= MIN_SERVER_VER_TRADING_CLASS {
+        fields.push(contract.con_id)?;
+    }
+    fields
+        .push(&contract.symbol)?
+        .push(&contract.sec_type)?
+        .push(&contract.last_trade_date_or_contract_month)?
+        .push_empty(contract.strike)?
+        .push(&contract.right)?
+        .push(&contract.multiplier)?
+        .push(&contract.exchange)?
+        .push(&contract.primary_exchange)?
+        .push(&contract.currency)?
+        .push(&contract.local_symbol)?;
+    if server_version >= MIN_SERVER_VER_TRADING_CLASS {
+        fields.push(&contract.trading_class)?;
+    }
     Ok(())
 }
 
@@ -2532,7 +2709,7 @@ fn encode_place_order_fields(
         .push(&order.fa_group)?
         .push(&order.fa_method)?
         .push(&order.fa_percentage)?;
-    if server_version < 177 {
+    if server_version < MIN_SERVER_VER_FA_PROFILE_DESUPPORT {
         fields.push("")?;
     }
     if server_version >= MIN_SERVER_VER_MODELS_SUPPORT {
@@ -2673,6 +2850,14 @@ fn encode_place_order_fields(
             .push(order.randomize_price)?;
     }
     if server_version >= MIN_SERVER_VER_PEGGED_TO_BENCHMARK {
+        if is_peg_benchmark_order(&order.order_type) {
+            fields
+                .push(order.reference_contract_id)?
+                .push(order.is_pegged_change_amount_decrease)?
+                .push(order.pegged_change_amount)?
+                .push(order.reference_change_amount)?
+                .push(&order.reference_exchange_id)?;
+        }
         fields.push(order.conditions.len())?;
         if !order.conditions.is_empty() {
             for condition in &order.conditions {
@@ -2743,11 +2928,34 @@ fn encode_place_order_fields(
     if server_version >= MIN_SERVER_VER_MANUAL_ORDER_TIME {
         fields.push(&order.manual_order_time)?;
     }
+    if server_version >= MIN_SERVER_VER_PEGBEST_PEGMID_OFFSETS {
+        let mut send_mid_offsets = false;
+        if contract.exchange == "IBKRATS" {
+            fields.push_empty(order.min_trade_qty)?;
+        }
+        if is_peg_best_order(&order.order_type) {
+            fields
+                .push_empty(order.min_compete_size)?
+                .push_empty(order.compete_against_best_offset)?;
+            send_mid_offsets = order.compete_against_best_offset
+                == crate::constants::COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID;
+        } else if is_peg_mid_order(&order.order_type) {
+            send_mid_offsets = true;
+        }
+        if send_mid_offsets {
+            fields
+                .push_empty(order.mid_offset_at_whole)?
+                .push_empty(order.mid_offset_at_half)?;
+        }
+    }
     if server_version >= MIN_SERVER_VER_CUSTOMER_ACCOUNT {
         fields.push(&order.customer_account)?;
     }
     if server_version >= MIN_SERVER_VER_PROFESSIONAL_CUSTOMER {
         fields.push(order.professional_customer)?;
+    }
+    if (MIN_SERVER_VER_RFQ_FIELDS..MIN_SERVER_VER_UNDO_RFQ_FIELDS).contains(&server_version) {
+        fields.push("")?.push_empty(UNSET_INTEGER)?;
     }
     if server_version >= MIN_SERVER_VER_INCLUDE_OVERNIGHT {
         fields.push(order.include_overnight)?;
@@ -2854,6 +3062,18 @@ fn encode_order_condition(
         }
     }
     Ok(())
+}
+
+fn is_peg_benchmark_order(order_type: &str) -> bool {
+    matches!(order_type, "PEG BENCH" | "PEGBENCH")
+}
+
+fn is_peg_mid_order(order_type: &str) -> bool {
+    matches!(order_type, "PEG MID" | "PEGMID")
+}
+
+fn is_peg_best_order(order_type: &str) -> bool {
+    matches!(order_type, "PEG BEST" | "PEGBEST")
 }
 
 fn encode_tag_values(fields: &mut FieldSink, values: &[TagValue]) -> TwsApiResult<()> {
@@ -3268,8 +3488,8 @@ fn execution_filter_to_proto(filter: &ExecutionFilter) -> protobuf::ExecutionFil
         sec_type: non_empty(filter.sec_type.clone()),
         exchange: non_empty(filter.exchange.clone()),
         side: non_empty(filter.side.clone()),
-        last_n_days: None,
-        specific_dates: Vec::new(),
+        last_n_days: valid_i32(filter.last_n_days),
+        specific_dates: filter.specific_dates.clone(),
     }
 }
 

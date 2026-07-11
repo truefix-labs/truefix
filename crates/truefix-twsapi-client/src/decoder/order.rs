@@ -107,10 +107,10 @@ fn decode_order_common_after_perm_id(
     order.fa_group = reader.next_string();
     order.fa_method = reader.next_string();
     order.fa_percentage = reader.next_string();
-    if version < 177 {
+    if version < crate::server_versions::MIN_SERVER_VER_FA_PROFILE_DESUPPORT {
         let _fa_profile = reader.next_string();
     }
-    if version >= 177 {
+    if version >= crate::server_versions::MIN_SERVER_VER_FA_PROFILE_DESUPPORT {
         order.model_code = reader.next_string();
     }
     order.good_till_date = reader.next_string();

@@ -1072,19 +1072,26 @@ impl TwsApiClient {
     }
 
     async fn read_handshake(&mut self) -> TwsApiResult<()> {
-        let payload = self.read_payload().await?;
-        let fields = comm::read_fields(&payload);
-        if fields.len() != 2 {
-            return Err(TwsApiError::MalformedHandshake);
-        }
+        loop {
+            let payload = self.read_payload().await?;
+            let fields = comm::read_fields(&payload);
+            if fields.len() == 2 {
+                let mut fields = fields.into_iter();
+                let server_version =
+                    parse_i32(fields.next().ok_or(TwsApiError::MalformedHandshake)?)?;
+                self.server_version = server_version;
+                self.connection_time =
+                    String::from_utf8_lossy(fields.next().ok_or(TwsApiError::MalformedHandshake)?)
+                        .into_owned();
+                return Ok(());
+            }
 
-        let mut fields = fields.into_iter();
-        let server_version = parse_i32(fields.next().ok_or(TwsApiError::MalformedHandshake)?)?;
-        self.server_version = server_version;
-        self.connection_time =
-            String::from_utf8_lossy(fields.next().ok_or(TwsApiError::MalformedHandshake)?)
-                .into_owned();
-        Ok(())
+            let event = decoder::decode_payload(false, &payload)?;
+            self.pending_events.push_back(event.clone());
+            if let Some(next_event) = follow_up_event(&event) {
+                self.pending_events.push_back(next_event);
+            }
+        }
     }
 }
 

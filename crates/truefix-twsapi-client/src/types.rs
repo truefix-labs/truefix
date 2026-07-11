@@ -54,6 +54,13 @@ pub struct PriceIncrement {
     pub increment: f64,
 }
 
+/// A price/size bucket returned by `reqHistogramData`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HistogramEntry {
+    pub price: f64,
+    pub size: Decimal,
+}
+
 /// Account family-code mapping.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FamilyCode {
@@ -284,6 +291,18 @@ pub struct ContractDetails {
     pub trading_hours: String,
     /// Liquid hours.
     pub liquid_hours: String,
+    /// Economic value rule.
+    pub ev_rule: String,
+    /// Economic value multiplier.
+    pub ev_multiplier: f64,
+    /// Security identifiers returned by TWS.
+    pub sec_id_list: Vec<TagValue>,
+    /// Market-data aggregation group.
+    pub aggregate_group: i32,
+    /// Underlying symbol.
+    pub under_symbol: String,
+    /// Underlying security type.
+    pub under_sec_type: String,
     /// Market rule ids.
     pub market_rule_ids: String,
     /// CUSIP.
@@ -897,7 +916,7 @@ pub struct OrderCancel {
 }
 
 /// Execution filter.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionFilter {
     /// Client id.
     pub client_id: i32,
@@ -913,6 +932,26 @@ pub struct ExecutionFilter {
     pub exchange: String,
     /// Side.
     pub side: String,
+    /// Number of prior days to include. `UNSET_INTEGER` leaves it unspecified.
+    pub last_n_days: i32,
+    /// Specific execution dates, encoded when the server supports parametrized execution days.
+    pub specific_dates: Vec<i32>,
+}
+
+impl Default for ExecutionFilter {
+    fn default() -> Self {
+        Self {
+            client_id: 0,
+            acct_code: String::new(),
+            time: String::new(),
+            symbol: String::new(),
+            sec_type: String::new(),
+            exchange: String::new(),
+            side: String::new(),
+            last_n_days: UNSET_INTEGER,
+            specific_dates: Vec::new(),
+        }
+    }
 }
 
 /// Execution details returned by TWS.

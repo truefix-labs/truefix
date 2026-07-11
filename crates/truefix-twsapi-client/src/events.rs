@@ -3,12 +3,11 @@ use rust_decimal::Decimal;
 use crate::enums::{FaDataType, MarketDataType, TickType};
 use crate::types::{
     BarData, CommissionAndFeesReport, Contract, ContractDescription, ContractDetails,
-    DeltaNeutralContract, Execution, HistoricalSession, HistoricalTick, HistoricalTickBidAsk,
-    HistoricalTickLast, Order, OrderState, SmartComponent, SoftDollarTier, TickByTick,
+    DeltaNeutralContract, Execution, FamilyCode, HistogramEntry, HistoricalSession, HistoricalTick,
+    HistoricalTickBidAsk, HistoricalTickLast, NewsProvider, Order, OrderState, PriceIncrement,
+    SmartComponent, SoftDollarTier, TickByTick,
 };
-use crate::types::{
-    DepthMarketDataDescription, FamilyCode, NewsProvider, PriceIncrement, RealTimeBar, WshEventData,
-};
+use crate::types::{DepthMarketDataDescription, RealTimeBar, WshEventData};
 
 /// Scanner row data.
 #[derive(Debug, Clone, PartialEq)]
@@ -279,8 +278,8 @@ pub enum Event {
     },
     /// Market depth exchanges.
     MarketDepthExchanges {
-        /// Raw exchange descriptions as debug strings.
-        descriptions: Vec<String>,
+        /// Exchange descriptions.
+        descriptions: Vec<DepthMarketDataDescription>,
     },
     /// Smart components callback.
     SmartComponents {
@@ -518,7 +517,7 @@ pub enum Event {
         /// Request id.
         req_id: i32,
         /// Price/size entries.
-        items: Vec<(f64, Decimal)>,
+        items: Vec<HistogramEntry>,
     },
     /// Scanner parameters XML.
     ScannerParameters {
@@ -546,8 +545,8 @@ pub enum Event {
     },
     /// Family codes.
     FamilyCodes {
-        /// `(account_id, family_code)` pairs.
-        family_codes: Vec<(String, String)>,
+        /// Account family-code mappings.
+        family_codes: Vec<FamilyCode>,
     },
     /// Symbol samples callback.
     SymbolSamples {
@@ -582,8 +581,8 @@ pub enum Event {
     MarketRule {
         /// Market rule id.
         market_rule_id: i32,
-        /// `(low_edge, increment)` entries.
-        price_increments: Vec<(f64, f64)>,
+        /// Price increments.
+        price_increments: Vec<PriceIncrement>,
     },
     /// PnL update.
     Pnl {
@@ -633,8 +632,8 @@ pub enum Event {
     },
     /// News providers.
     NewsProviders {
-        /// `(provider_code, provider_name)` pairs.
-        providers: Vec<(String, String)>,
+        /// Provider metadata.
+        providers: Vec<NewsProvider>,
     },
     /// Historical news item.
     HistoricalNews {
@@ -1149,40 +1148,15 @@ pub trait Wrapper: Send {
                 currency,
             } => self.account_update_multi(req_id, account, model_code, key, value, currency),
             Event::AccountUpdateMultiEnd { req_id } => self.account_update_multi_end(req_id),
-            Event::FamilyCodes { family_codes } => self.family_codes(
-                family_codes
-                    .into_iter()
-                    .map(|(account_id, family_code)| FamilyCode {
-                        account_id,
-                        family_code,
-                    })
-                    .collect(),
-            ),
-            Event::NewsProviders { providers } => self.news_providers(
-                providers
-                    .into_iter()
-                    .map(|(code, name)| NewsProvider { code, name })
-                    .collect(),
-            ),
-            Event::MarketDepthExchanges { descriptions } => self.market_depth_exchanges(
-                descriptions
-                    .into_iter()
-                    .filter_map(|value| parse_depth_description(&value))
-                    .collect(),
-            ),
+            Event::FamilyCodes { family_codes } => self.family_codes(family_codes),
+            Event::NewsProviders { providers } => self.news_providers(providers),
+            Event::MarketDepthExchanges { descriptions } => {
+                self.market_depth_exchanges(descriptions)
+            }
             Event::MarketRule {
                 market_rule_id,
                 price_increments,
-            } => self.market_rule(
-                market_rule_id,
-                price_increments
-                    .into_iter()
-                    .map(|(low_edge, increment)| PriceIncrement {
-                        low_edge,
-                        increment,
-                    })
-                    .collect(),
-            ),
+            } => self.market_rule(market_rule_id, price_increments),
             Event::ReceiveFa { fa_data_type, xml } => {
                 self.receive_fa(FaDataType::from_i32(fa_data_type), xml)
             }
@@ -1538,7 +1512,7 @@ pub trait Wrapper: Send {
     }
     fn account_update_multi_end(&mut self, _req_id: i32) {}
     fn head_timestamp(&mut self, _req_id: i32, _timestamp: String) {}
-    fn histogram_data(&mut self, _req_id: i32, _items: Vec<(f64, Decimal)>) {}
+    fn histogram_data(&mut self, _req_id: i32, _items: Vec<HistogramEntry>) {}
     fn scanner_parameters(&mut self, _xml: String) {}
     fn scanner_data(&mut self, _req_id: i32, _rows: Vec<ScannerDataRow>) {}
     fn scanner_data_end(&mut self, _req_id: i32) {}
@@ -1615,17 +1589,6 @@ pub trait Wrapper: Send {
     fn user_info(&mut self, _req_id: i32, _white_branding_id: String) {}
     fn raw(&mut self, _msg_id: i32, _fields: Vec<String>) {}
     fn raw_protobuf(&mut self, _msg_id: i32, _payload: Vec<u8>) {}
-}
-
-fn parse_depth_description(value: &str) -> Option<DepthMarketDataDescription> {
-    let mut parts = value.split(':');
-    Some(DepthMarketDataDescription {
-        exchange: parts.next()?.to_owned(),
-        security_type: parts.next()?.to_owned(),
-        listing_exchange: parts.next()?.to_owned(),
-        service_data_type: parts.next()?.to_owned(),
-        aggregate_group: parts.next()?.parse().ok()?,
-    })
 }
 
 impl Event {

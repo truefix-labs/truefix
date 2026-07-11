@@ -326,7 +326,7 @@ paper = true
 | IB | 美股 Level 1 (NBBO) | 需在账户管理里订阅交易所数据包，区分"专业 / 非专业投资者"身份 | 非专业免费或每月数美元；专业投资者更高 |
 | IB | 美股期权行情 (OPRA) | 需订阅 OPRA 包 | 非专业约每月 $1.5 起，专业投资者显著更高，部分按连接数计费 |
 | 富途 OpenD | 港股 Level 2 十档 | 需综合账户资质 + 付费订阅 | 每月约 HK$100+ |
-| 老虎 / 长桥 | 港 / 美股 Level 2 | 同上，需付费订阅 | 视套餐 |
+| 老nn虎 / 长桥 | 港 / 美股 Level 2 | 同上，需付费订阅 | 视套餐 |
 | Binance | 加密现货 / 合约行情 | 免费，无需订阅 | 免费（仍受 API 限流约束，见 3.2.5） |
 
 **设计要点**：
@@ -1415,3 +1415,23 @@ Phase 5: 插件化架构
 | R-FUTURE-22 | 下单 / 结算路径禁止使用第三方估算汇率兜底，未连接对应券商时直接拒绝而非静默使用估算值 | 第三方汇率与券商实际结算价可能存在点差，静默使用会导致系统展示金额与实际扣款不一致；宁可拒绝下单，也不能让用户在不知情的情况下按错误汇率成交 |
 | R-FUTURE-23 | 行情数据默认按"未授权即拒绝"处理，而非静默降级为延迟数据 | 延迟行情若不被消费方（策略/风控/LLM Agent）感知，等同于让交易决策基于过期价格做出，是隐蔽的系统性风险；显式拒绝能倒逼开发者在配置阶段就处理授权问题 |
 | R-FUTURE-24 | STEP 从 Phase 2 移至 Phase 3，独立为 3.12 节，定位为"国内交易所适配器"而非二进制协议 | 本文档早前版本误将 STEP 描述为"FAST 之上的会话层，用于接入 CME/EUREX"。经核实标准原文（JR/T 0022—2020《证券交易数据交换协议》、JR/T 0182—2020《轻量级实时STEP消息传输协议》LFIXT，以及上交所/深交所各自的 STEP 接口规格书）：STEP 的消息格式与标准 FIX 字节级同构（SOH 分隔 tag=value，`BeginString=STEP.x.yz`，校验和/重复组机制相同），会话机制引用"FIX 标准会话机制"或其轻量化变体 LFIXT，与 FAST/SBE 这类二进制编解码无技术交集；架构上应作为 Phase 3 的适配器（复用 `truefix-session`/`truefix-dict`），而非 Phase 2 的编解码器 |
+
+
+
+
+Binance https://github.com/binance/binance-connector-rust
+IB TWS /Users/jiayin/workspace/dev/dev/rust/truefix/crates/truefix-twsapi-client
+富途 OpenD https://github.com/loadstarCN/nautilus-futu 不完全 https://github.com/tensorchen/futu-rs
+长桥证券 https://github.com/longbridge/openapi/tree/main/rust
+老虎证券 https://github.com/tigerfintech/openapi-rust-sdk
+OKX /Users/jiayin/workspace/dev/dev/rust/truefix/crates/truefix-okx-client https://github.com/fairwic/okx_rs
+Bybit https://github.com/bybit-exchange/bybit-rust-api
+
+
+TradeStation https://github.com/antonio-hickey/tradestation-rs
+Alpaca  https://github.com/jonkarrer/alpaca_api_client
+IG Markets https://github.com/joaquinbejar/ig-client
+Charles Schwab https://github.com/bvelasquez/schwab-api-cli
+
+
+https://github.com/nautechsystems/nautilus_trader/tree/develop

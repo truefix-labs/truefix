@@ -6,10 +6,11 @@ use truefix_twsapi_client::message::{Incoming, Outgoing, PROTOBUF_MSG_ID};
 use truefix_twsapi_client::protobuf;
 use truefix_twsapi_client::requests::{
     AccountSummaryRequest, AccountUpdatesMultiRequest, CalculateImpliedVolatilityRequest,
-    CalculateOptionPriceRequest, CancelOrderRequest, CompletedOrdersRequest,
-    ContractDetailsRequest, EmptyRequest, EncodableRequest, ExecutionRequest,
-    ExerciseOptionsRequest, FieldSink, FinancialAdvisorRequest, HeadTimestampRequest,
-    HistoricalDataRequest, HistoricalTicksRequest, IdRequest, MarketDataRequest,
+    CalculateOptionPriceRequest, CancelMarketDepthRequest, CancelOrderRequest,
+    CompletedOrdersRequest, ContractDetailsRequest, EmptyRequest, EncodableRequest,
+    ExecutionRequest, ExerciseOptionsRequest, FieldSink, FinancialAdvisorRequest,
+    GlobalCancelRequest, HeadTimestampRequest, HistogramDataRequest, HistoricalDataRequest,
+    HistoricalNewsRequest, HistoricalTicksRequest, IdRequest, MarketDataRequest,
     MarketDepthRequest, NewsArticleRequest, PlaceOrderRequest, PnlSingleRequest,
     RealTimeBarsRequest, ReplaceFinancialAdvisorRequest, ScannerSubscriptionRequest,
     StartApiRequest, SubscribeToGroupEventsRequest, TickByTickRequest, UpdateDisplayGroupRequest,
@@ -17,9 +18,15 @@ use truefix_twsapi_client::requests::{
     VersionedRequest, WshEventDataRequest, encode_request_frame,
     encode_request_frame_with_protobuf, protobuf_min_server_version,
 };
-use truefix_twsapi_client::server_versions::{MAX_CLIENT_VER, MIN_SERVER_VER_PROTOBUF_MARKET_DATA};
+use truefix_twsapi_client::server_versions::{
+    MAX_CLIENT_VER, MIN_SERVER_VER_LINKING, MIN_SERVER_VER_MANUAL_ORDER_TIME,
+    MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE, MIN_SERVER_VER_NEWS_QUERY_ORIGINS,
+    MIN_SERVER_VER_PROTOBUF_MARKET_DATA, MIN_SERVER_VER_REPLACE_FA_END, MIN_SERVER_VER_RFQ_FIELDS,
+    MIN_SERVER_VER_SCANNER_GENERIC_OPTS, MIN_SERVER_VER_SMART_DEPTH, MIN_SERVER_VER_TRADING_CLASS,
+};
 use truefix_twsapi_client::types::{
-    Contract, ExecutionFilter, Order, OrderCancel, Origin, ScannerSubscription, TagValue,
+    Contract, DepthMarketDataDescription, ExecutionFilter, FamilyCode, HistogramEntry,
+    NewsProvider, Order, OrderCancel, Origin, PriceIncrement, ScannerSubscription, TagValue,
     TickByTick as TickByTickPayload,
 };
 
@@ -267,14 +274,42 @@ fn typed_request_frames_use_protobuf_when_supported() {
             client_id: 2,
             acct_code: "DU123".to_owned(),
             symbol: "AAPL".to_owned(),
+            last_n_days: 5,
+            specific_dates: vec![20260701, 20260702],
             ..ExecutionFilter::default()
         },
     };
     let frame = encode_request_frame(&execution, MAX_CLIENT_VER).unwrap();
     let decoded = protobuf::ExecutionRequest::decode(&frame[8..]).unwrap();
-    assert_eq!(
-        decoded.execution_filter.and_then(|filter| filter.symbol),
-        Some("AAPL".to_owned())
+    let filter = decoded.execution_filter.unwrap();
+    assert_eq!(filter.symbol.as_deref(), Some("AAPL"));
+    assert_eq!(filter.last_n_days, Some(5));
+    assert_eq!(filter.specific_dates, [20260701, 20260702]);
+
+    let frame = encode_request_frame_with_protobuf(&execution, 200, false).unwrap();
+    let fields = field_strings(&String::from_utf8_lossy(&frame[8..]));
+    assert!(fields.ends_with(&[
+        "5".to_owned(),
+        "2".to_owned(),
+        "20260701".to_owned(),
+        "20260702".to_owned(),
+    ]));
+
+    let mut fields = FieldSink::default();
+    execution
+        .encode_fields_for_server_version(&mut fields, 41)
+        .unwrap();
+    assert_eq!(field_strings(&fields.into_string())[0..2], ["3", "2"]);
+
+    let mut fields = FieldSink::default();
+    ExecutionRequest {
+        req_id: 9,
+        filter: ExecutionFilter::default(),
+    }
+    .encode_fields_for_server_version(&mut fields, 200)
+    .unwrap();
+    assert!(
+        field_strings(&fields.into_string()).ends_with(&["2147483647".to_owned(), "0".to_owned(),])
     );
 }
 
@@ -774,7 +809,10 @@ fn decoder_reads_more_protobuf_news_fa_and_verify_events() {
     assert_eq!(
         event,
         Event::NewsProviders {
-            providers: vec![("BRFG".to_owned(), "Briefing".to_owned())],
+            providers: vec![NewsProvider {
+                code: "BRFG".to_owned(),
+                name: "Briefing".to_owned(),
+            }],
         }
     );
 
@@ -824,7 +862,10 @@ fn decoder_reads_more_protobuf_rules_and_config_events() {
         event,
         Event::MarketRule {
             market_rule_id: 26,
-            price_increments: vec![(0.0, 0.01)],
+            price_increments: vec![PriceIncrement {
+                low_edge: 0.0,
+                increment: 0.01,
+            }],
         }
     );
 
@@ -1054,8 +1095,447 @@ fn place_order_request_encodes_extended_order_fields_to_field_protocol() {
     assert!(parts.contains(&"adaptivePriority".to_owned()));
     assert!(parts.contains(&"Normal".to_owned()));
     assert!(parts.contains(&"algo-1".to_owned()));
-    assert!(parts.contains(&"1000".to_owned()));
+    assert!(parts.contains(&"1000.0".to_owned()));
     assert!(parts.contains(&"1".to_owned()));
+}
+
+#[test]
+fn place_order_field_protocol_keeps_conditional_fields_in_wire_order() {
+    let encode = |contract: Contract, order: Order, server_version| {
+        let request = PlaceOrderRequest {
+            order_id: 1,
+            contract,
+            order,
+            extra_fields: String::new(),
+        };
+        let mut fields = FieldSink::default();
+        request
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    let has_sequence = |fields: &[String], expected: &[&str]| {
+        fields.windows(expected.len()).any(|window| {
+            window
+                .iter()
+                .map(String::as_str)
+                .eq(expected.iter().copied())
+        })
+    };
+
+    let benchmark = encode(
+        Contract {
+            symbol: "AAPL".to_owned(),
+            sec_type: "STK".to_owned(),
+            exchange: "SMART".to_owned(),
+            currency: "USD".to_owned(),
+            ..Contract::default()
+        },
+        Order {
+            action: "BUY".to_owned(),
+            total_quantity: "1".parse().unwrap(),
+            order_type: "PEG BENCH".to_owned(),
+            reference_contract_id: 42,
+            is_pegged_change_amount_decrease: true,
+            pegged_change_amount: 1.25,
+            reference_change_amount: 2.5,
+            reference_exchange_id: "NYSE".to_owned(),
+            ..Order::default()
+        },
+        MAX_CLIENT_VER,
+    );
+    assert!(has_sequence(
+        &benchmark,
+        &["42", "1", "1.25", "2.5", "NYSE", "0"],
+    ));
+
+    let peg_best = encode(
+        Contract {
+            symbol: "AAPL".to_owned(),
+            sec_type: "STK".to_owned(),
+            exchange: "IBKRATS".to_owned(),
+            currency: "USD".to_owned(),
+            ..Contract::default()
+        },
+        Order {
+            action: "BUY".to_owned(),
+            total_quantity: "1".parse().unwrap(),
+            order_type: "PEG BEST".to_owned(),
+            min_trade_qty: 3,
+            min_compete_size: 4,
+            compete_against_best_offset: f64::INFINITY,
+            mid_offset_at_whole: 0.1,
+            mid_offset_at_half: 0.2,
+            customer_account: "customer".to_owned(),
+            professional_customer: true,
+            ..Order::default()
+        },
+        MIN_SERVER_VER_RFQ_FIELDS,
+    );
+    assert!(has_sequence(
+        &peg_best,
+        &["3", "4", "Infinity", "0.1", "0.2", "customer", "1", "", ""],
+    ));
+}
+
+#[test]
+fn legacy_field_encoders_follow_tws_version_gates() {
+    let cancel = CancelOrderRequest {
+        order_id: 7,
+        order_cancel: OrderCancel {
+            manual_order_cancel_time: "20260710-12:00:00".to_owned(),
+            ext_operator: "operator".to_owned(),
+            manual_order_indicator: 1,
+        },
+    };
+    let encode_cancel = |server_version| {
+        let mut fields = FieldSink::default();
+        cancel
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(encode_cancel(168), ["1", "7"]);
+    assert_eq!(
+        encode_cancel(MIN_SERVER_VER_MANUAL_ORDER_TIME),
+        ["1", "7", "20260710-12:00:00"]
+    );
+    assert_eq!(
+        encode_cancel(MIN_SERVER_VER_RFQ_FIELDS),
+        ["1", "7", "20260710-12:00:00", "", "", ""]
+    );
+    assert_eq!(
+        encode_cancel(192),
+        ["7", "20260710-12:00:00", "operator", "1"]
+    );
+
+    let global_cancel = GlobalCancelRequest {
+        order_cancel: cancel.order_cancel.clone(),
+    };
+    let encode_global_cancel = |server_version| {
+        let mut fields = FieldSink::default();
+        global_cancel
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(encode_global_cancel(191), ["1"]);
+    assert_eq!(encode_global_cancel(192), ["operator", "1"]);
+
+    let cancel_depth = CancelMarketDepthRequest {
+        req_id: 9,
+        is_smart_depth: true,
+    };
+    let encode_cancel_depth = |server_version| {
+        let mut fields = FieldSink::default();
+        cancel_depth
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(encode_cancel_depth(145), ["1", "9"]);
+    assert_eq!(
+        encode_cancel_depth(MIN_SERVER_VER_SMART_DEPTH),
+        ["1", "9", "1"]
+    );
+
+    let replace = ReplaceFinancialAdvisorRequest {
+        req_id: 8,
+        fa_data_type: 3,
+        xml: "<xml/>".to_owned(),
+    };
+    let encode_replace = |server_version| {
+        let mut fields = FieldSink::default();
+        replace
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(encode_replace(156), ["1", "3", "<xml/>"]);
+    assert_eq!(
+        encode_replace(MIN_SERVER_VER_REPLACE_FA_END),
+        ["1", "3", "<xml/>", "8"]
+    );
+
+    let depth = MarketDepthRequest {
+        req_id: 9,
+        contract: Contract {
+            con_id: 265598,
+            symbol: "AAPL".to_owned(),
+            sec_type: "STK".to_owned(),
+            last_trade_date_or_contract_month: "202609".to_owned(),
+            strike: 175.0,
+            right: "C".to_owned(),
+            multiplier: "100".to_owned(),
+            exchange: "SMART".to_owned(),
+            primary_exchange: "NASDAQ".to_owned(),
+            currency: "USD".to_owned(),
+            local_symbol: "AAPL".to_owned(),
+            trading_class: "NMS".to_owned(),
+            include_expired: true,
+            sec_id_type: "ISIN".to_owned(),
+            sec_id: "US0378331005".to_owned(),
+            ..Contract::default()
+        },
+        num_rows: 10,
+        is_smart_depth: true,
+        market_depth_options: vec![TagValue {
+            tag: "exchange".to_owned(),
+            value: "ISLAND".to_owned(),
+        }],
+    };
+    let encode_depth = |server_version| {
+        let mut fields = FieldSink::default();
+        depth
+            .encode_fields_for_server_version(&mut fields, server_version)
+            .unwrap();
+        field_strings(&fields.into_string())
+    };
+    assert_eq!(
+        encode_depth(MIN_SERVER_VER_SMART_DEPTH - 1),
+        [
+            "5",
+            "9",
+            "265598",
+            "AAPL",
+            "STK",
+            "202609",
+            "175.0",
+            "C",
+            "100",
+            "SMART",
+            "USD",
+            "AAPL",
+            "NMS",
+            "10",
+            "exchange=ISLAND;"
+        ]
+    );
+    assert_eq!(
+        encode_depth(MIN_SERVER_VER_SMART_DEPTH),
+        [
+            "5",
+            "9",
+            "265598",
+            "AAPL",
+            "STK",
+            "202609",
+            "175.0",
+            "C",
+            "100",
+            "SMART",
+            "USD",
+            "AAPL",
+            "NMS",
+            "10",
+            "1",
+            "exchange=ISLAND;"
+        ]
+    );
+    assert_eq!(
+        encode_depth(MIN_SERVER_VER_MKT_DEPTH_PRIM_EXCHANGE),
+        [
+            "5",
+            "9",
+            "265598",
+            "AAPL",
+            "STK",
+            "202609",
+            "175.0",
+            "C",
+            "100",
+            "SMART",
+            "NASDAQ",
+            "USD",
+            "AAPL",
+            "NMS",
+            "10",
+            "1",
+            "exchange=ISLAND;"
+        ]
+    );
+}
+
+#[test]
+fn scanner_realtime_and_contract_field_encoders_match_python_layouts() {
+    fn encode_fields<R: EncodableRequest>(request: &R) -> Vec<String> {
+        let mut sink = FieldSink::default();
+        request.encode_fields(&mut sink).unwrap();
+        field_strings(&sink.into_string())
+    }
+
+    let contract = Contract {
+        con_id: 265598,
+        symbol: "AAPL".to_owned(),
+        sec_type: "STK".to_owned(),
+        last_trade_date_or_contract_month: "202609".to_owned(),
+        strike: 175.0,
+        right: "C".to_owned(),
+        multiplier: "100".to_owned(),
+        exchange: "SMART".to_owned(),
+        primary_exchange: "NASDAQ".to_owned(),
+        currency: "USD".to_owned(),
+        local_symbol: "AAPL".to_owned(),
+        trading_class: "NMS".to_owned(),
+        include_expired: true,
+        sec_id_type: "ISIN".to_owned(),
+        sec_id: "US0378331005".to_owned(),
+        ..Contract::default()
+    };
+
+    let head = HeadTimestampRequest {
+        req_id: 1,
+        contract: contract.clone(),
+        use_rth: true,
+        what_to_show: "TRADES".to_owned(),
+        format_date: 2,
+    };
+    let histogram = HistogramDataRequest {
+        req_id: 2,
+        contract: contract.clone(),
+        use_rth: true,
+        time_period: "3 days".to_owned(),
+    };
+    for fields in [encode_fields(&head), encode_fields(&histogram)] {
+        assert!(fields.contains(&"265598".to_owned()));
+        assert!(fields.contains(&"NMS".to_owned()));
+        assert!(fields.contains(&"1".to_owned()));
+        assert!(!fields.contains(&"ISIN".to_owned()));
+        assert!(!fields.contains(&"US0378331005".to_owned()));
+    }
+
+    let realtime = RealTimeBarsRequest {
+        req_id: 3,
+        contract: contract.clone(),
+        bar_size: 5,
+        what_to_show: "TRADES".to_owned(),
+        use_rth: true,
+        options: vec![TagValue {
+            tag: "source".to_owned(),
+            value: "api".to_owned(),
+        }],
+    };
+    let encode_realtime = |server_version| {
+        let mut sink = FieldSink::default();
+        realtime
+            .encode_fields_for_server_version(&mut sink, server_version)
+            .unwrap();
+        field_strings(&sink.into_string())
+    };
+    let before_trading_class = encode_realtime(MIN_SERVER_VER_TRADING_CLASS - 1);
+    assert_eq!(before_trading_class[0..3], ["3", "3", "AAPL"]);
+    assert!(!before_trading_class.contains(&"265598".to_owned()));
+    assert!(!before_trading_class.contains(&"NMS".to_owned()));
+    assert!(!before_trading_class.contains(&"source=api;".to_owned()));
+    let with_trading_class = encode_realtime(MIN_SERVER_VER_TRADING_CLASS);
+    assert_eq!(with_trading_class[0..4], ["3", "3", "265598", "AAPL"]);
+    assert!(with_trading_class.contains(&"NMS".to_owned()));
+    let with_options = encode_realtime(MIN_SERVER_VER_LINKING);
+    assert_eq!(with_options.last().map(String::as_str), Some("source=api;"));
+
+    let scanner = ScannerSubscriptionRequest {
+        req_id: 4,
+        subscription: ScannerSubscription {
+            number_of_rows: 10,
+            instrument: "STK".to_owned(),
+            location_code: "STK.US".to_owned(),
+            scan_code: "TOP_PERC_GAIN".to_owned(),
+            ..ScannerSubscription::default()
+        },
+        scanner_subscription_options: vec![TagValue {
+            tag: "option".to_owned(),
+            value: "value".to_owned(),
+        }],
+        scanner_subscription_filter_options: vec![TagValue {
+            tag: "filter".to_owned(),
+            value: "value".to_owned(),
+        }],
+    };
+    let encode_scanner = |server_version| {
+        let mut sink = FieldSink::default();
+        scanner
+            .encode_fields_for_server_version(&mut sink, server_version)
+            .unwrap();
+        field_strings(&sink.into_string())
+    };
+    let before_generic_options = encode_scanner(MIN_SERVER_VER_SCANNER_GENERIC_OPTS - 1);
+    assert_eq!(
+        before_generic_options.first().map(String::as_str),
+        Some("4")
+    );
+    assert!(!before_generic_options.contains(&"filter=value;".to_owned()));
+    assert_eq!(
+        before_generic_options.last().map(String::as_str),
+        Some("option=value;")
+    );
+    let generic_options = encode_scanner(MIN_SERVER_VER_SCANNER_GENERIC_OPTS);
+    assert_eq!(generic_options.first().map(String::as_str), Some("4"));
+    assert!(generic_options.ends_with(&["filter=value;".to_owned(), "option=value;".to_owned()]));
+}
+
+#[test]
+fn news_field_options_are_versioned_single_fields() {
+    let options = vec![
+        TagValue {
+            tag: "origin".to_owned(),
+            value: "BRFG".to_owned(),
+        },
+        TagValue {
+            tag: "format".to_owned(),
+            value: "text".to_owned(),
+        },
+    ];
+    let article = NewsArticleRequest {
+        req_id: 1,
+        provider_code: "BRFG".to_owned(),
+        article_id: "A1".to_owned(),
+        options: options.clone(),
+    };
+    let historical = HistoricalNewsRequest {
+        req_id: 2,
+        con_id: 265598,
+        provider_codes: "BRFG".to_owned(),
+        start_date_time: "20260701 00:00:00".to_owned(),
+        end_date_time: "20260710 00:00:00".to_owned(),
+        total_results: 10,
+        options,
+    };
+
+    let encode = |request: &dyn EncodableRequest, server_version| {
+        let mut sink = FieldSink::default();
+        request
+            .encode_fields_for_server_version(&mut sink, server_version)
+            .unwrap();
+        field_strings(&sink.into_string())
+    };
+    assert_eq!(encode(&article, 127), ["1", "BRFG", "A1"]);
+    assert_eq!(
+        encode(&article, MIN_SERVER_VER_NEWS_QUERY_ORIGINS),
+        ["1", "BRFG", "A1", "origin=BRFG;format=text;"]
+    );
+    assert_eq!(
+        encode(&historical, 127),
+        [
+            "2",
+            "265598",
+            "BRFG",
+            "20260701 00:00:00",
+            "20260710 00:00:00",
+            "10"
+        ]
+    );
+    assert_eq!(
+        encode(&historical, MIN_SERVER_VER_NEWS_QUERY_ORIGINS),
+        [
+            "2",
+            "265598",
+            "BRFG",
+            "20260701 00:00:00",
+            "20260710 00:00:00",
+            "10",
+            "origin=BRFG;format=text;"
+        ]
+    );
 }
 
 #[test]
@@ -1821,7 +2301,9 @@ fn decoder_reads_field_based_contract_details_callback() {
             "20260709:0930-1600",
             "ev",
             "1",
-            "0",
+            "1",
+            "ISIN",
+            "US0378331005",
             "0",
             "AAPL",
             "STK",
@@ -1839,6 +2321,14 @@ fn decoder_reads_field_based_contract_details_callback() {
             assert_eq!(details.contract.con_id, 265598);
             assert_eq!(details.min_tick, 0.01);
             assert_eq!(details.long_name, "Apple Inc");
+            assert_eq!(details.ev_rule, "ev");
+            assert_eq!(details.ev_multiplier, 1.0);
+            assert_eq!(details.sec_id_list.len(), 1);
+            assert_eq!(details.sec_id_list[0].tag, "ISIN");
+            assert_eq!(details.sec_id_list[0].value, "US0378331005");
+            assert_eq!(details.aggregate_group, 0);
+            assert_eq!(details.under_symbol, "AAPL");
+            assert_eq!(details.under_sec_type, "STK");
             assert_eq!(details.market_rule_ids, "26");
         }
         other => panic!("unexpected event: {other:?}"),
@@ -2156,7 +2646,10 @@ fn decoder_reads_field_based_metadata_list_callbacks() {
     assert_eq!(
         decoder::decode_payload(false, &family).unwrap(),
         Event::FamilyCodes {
-            family_codes: vec![("DU123".to_owned(), "family".to_owned())],
+            family_codes: vec![FamilyCode {
+                account_id: "DU123".to_owned(),
+                family_code: "family".to_owned(),
+            }],
         }
     );
 
@@ -2205,7 +2698,16 @@ fn decoder_reads_field_based_metadata_list_callbacks() {
     );
     match decoder::decode_payload(false, &depth).unwrap() {
         Event::MarketDepthExchanges { descriptions } => {
-            assert_eq!(descriptions[0], "ISLAND:STK:NASDAQ:Deep2:1");
+            assert_eq!(
+                descriptions[0],
+                DepthMarketDataDescription {
+                    exchange: "ISLAND".to_owned(),
+                    security_type: "STK".to_owned(),
+                    listing_exchange: "NASDAQ".to_owned(),
+                    service_data_type: "Deep2".to_owned(),
+                    aggregate_group: 1,
+                }
+            );
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -2288,7 +2790,10 @@ fn decoder_reads_field_based_pnl_news_and_rule_callbacks() {
         decoder::decode_payload(false, &histogram).unwrap(),
         Event::HistogramData {
             req_id: 2,
-            items: vec![(175.5, "10".parse().unwrap())],
+            items: vec![HistogramEntry {
+                price: 175.5,
+                size: "10".parse().unwrap(),
+            }],
         }
     );
 
@@ -2297,7 +2802,10 @@ fn decoder_reads_field_based_pnl_news_and_rule_callbacks() {
         decoder::decode_payload(false, &market_rule).unwrap(),
         Event::MarketRule {
             market_rule_id: 26,
-            price_increments: vec![(0.0, 0.01)],
+            price_increments: vec![PriceIncrement {
+                low_edge: 0.0,
+                increment: 0.01,
+            }],
         }
     );
 
@@ -2334,7 +2842,10 @@ fn decoder_reads_field_based_pnl_news_and_rule_callbacks() {
     assert_eq!(
         decoder::decode_payload(false, &providers).unwrap(),
         Event::NewsProviders {
-            providers: vec![("BRFG".to_owned(), "Briefing".to_owned())],
+            providers: vec![NewsProvider {
+                code: "BRFG".to_owned(),
+                name: "Briefing".to_owned(),
+            }],
         }
     );
 }
@@ -2825,6 +3336,14 @@ fn decoder_reads_protobuf_contract_and_execution_events() {
             order_types: Some("LMT,MKT".to_owned()),
             valid_exchanges: Some("SMART,NASDAQ".to_owned()),
             long_name: Some("Apple Inc".to_owned()),
+            ev_rule: Some("ev-rule".to_owned()),
+            ev_multiplier: Some(2.5),
+            sec_id_list: [("ISIN".to_owned(), "US0378331005".to_owned())]
+                .into_iter()
+                .collect(),
+            agg_group: Some(7),
+            under_symbol: Some("AAPL".to_owned()),
+            under_sec_type: Some("STK".to_owned()),
             market_rule_ids: Some("26".to_owned()),
             ..protobuf::ContractDetails::default()
         }),
@@ -2841,6 +3360,12 @@ fn decoder_reads_protobuf_contract_and_execution_events() {
             assert_eq!(details.contract.symbol, "AAPL");
             assert_eq!(details.market_name, "NASDAQ");
             assert_eq!(details.min_tick, 0.01);
+            assert_eq!(details.ev_rule, "ev-rule");
+            assert_eq!(details.ev_multiplier, 2.5);
+            assert_eq!(details.sec_id_list[0].tag, "ISIN");
+            assert_eq!(details.aggregate_group, 7);
+            assert_eq!(details.under_symbol, "AAPL");
+            assert_eq!(details.under_sec_type, "STK");
             assert_eq!(details.market_rule_ids, "26");
         }
         other => panic!("unexpected event: {other:?}"),

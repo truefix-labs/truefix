@@ -108,22 +108,33 @@ async fn initiator_connects_from_the_configured_local_bind_address() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    // Reserve a specific local port, then release it for the initiator to bind — a strong
-    // assertion (the peer-observed source *port* must match exactly) that the bind actually
-    // took effect, unlike merely checking the source IP (which would be 127.0.0.1 regardless).
-    let local_bind_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let local_port = local_bind_listener.local_addr().unwrap().port();
-    drop(local_bind_listener);
-
     let mut cfg = SessionConfig::new("FIX.4.4", "CLIENT", "SERVER", Role::Initiator);
-    cfg.local_bind_addr = Some(([127, 0, 0, 1], local_port).into());
+    // A port has to be released before the initiator can bind it. Another concurrently running
+    // test may claim it in that tiny interval, so retry an `AddrInUse` allocation race while
+    // retaining the stronger peer-source-port assertion.
+    let (local_port, handle) = {
+        let mut result = None;
+        for _ in 0..16 {
+            let local_bind_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let local_port = local_bind_listener.local_addr().unwrap().port();
+            drop(local_bind_listener);
 
-    let (accepted, handle) = tokio::join!(listener.accept(), async {
-        connect_initiator_with(addr, cfg, Arc::new(NoopApp), Services::default())
-            .await
-            .unwrap()
-    });
-    let (server_stream, _) = accepted.unwrap();
+            cfg.local_bind_addr = Some(([127, 0, 0, 1], local_port).into());
+            match connect_initiator_with(addr, cfg.clone(), Arc::new(NoopApp), Services::default())
+                .await
+            {
+                Ok(handle) => {
+                    result = Some((local_port, handle));
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(error) => panic!("initiator connection failed: {error}"),
+            }
+        }
+        result.expect("a local port should become available for the initiator")
+    };
+
+    let (server_stream, _) = listener.accept().await.unwrap();
     let peer = server_stream.peer_addr().unwrap();
     assert_eq!(peer.port(), local_port);
     handle.logout().await;
