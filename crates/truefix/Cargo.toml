@@ -39,6 +39,10 @@ tracing-subscriber = "0.3"
 time = { workspace = true }
 truefix-log = { workspace = true, features = ["redb"] }
 redb.workspace = true
+# Official Binance Spot REST connector, pinned for reproducible examples.
+binance-sdk = { git = "https://github.com/binance/binance-connector-rust", rev = "8cfe7d023236280e9356f84a8c4a12eff558d4aa", features = ["spot", "margin_trading", "convert", "derivatives_trading_options"] }
+http = "1"
+serde_json.workspace = true
 
 [features]
 # `.cfg`-driven SQL/MSSQL backend selection (US3, feature 004, FR-003) needs the matching feature

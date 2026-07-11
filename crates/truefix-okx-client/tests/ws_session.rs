@@ -1,6 +1,9 @@
 mod support;
 
+use time::macros::datetime;
 use truefix_okx_client::{
+    auth::{Clock, sign_websocket_login},
+    config::Credentials,
     error::OkxError,
     transport::websocket::WebSocketTransport,
     types::websocket::{RequestId, SubscriptionArg, WsAcknowledgement, WsCommand, WsEvent},
@@ -8,10 +11,19 @@ use truefix_okx_client::{
         business::BusinessSession,
         event,
         private::PrivateSession,
+        public::PublicSession,
         session::{Session, SessionState},
         subscription::{SubscriptionKey, Subscriptions},
     },
 };
+
+struct FixedClock(time::OffsetDateTime);
+
+impl Clock for FixedClock {
+    fn now(&self) -> time::OffsetDateTime {
+        self.0
+    }
+}
 
 fn ticker() -> SubscriptionArg {
     SubscriptionArg {
@@ -108,6 +120,23 @@ fn session_login_recovery_and_private_write_gate() {
 }
 
 #[test]
+fn subscriptions_require_an_active_session() {
+    let mut public = PublicSession::default();
+    assert!(matches!(
+        public.subscribe(vec![ticker()]),
+        Err(OkxError::UnknownCompletion)
+    ));
+    public.connected();
+    assert!(public.subscribe(vec![ticker()]).is_ok());
+
+    let mut private = PrivateSession::default();
+    assert!(matches!(
+        private.subscribe(vec![ticker()]),
+        Err(OkxError::UnknownCompletion)
+    ));
+}
+
+#[test]
 fn subscriptions_deduplicate_route_only_active_events_and_replay_after_disconnect() {
     let key = SubscriptionKey::from(&ticker());
     let other = SubscriptionKey {
@@ -139,4 +168,34 @@ fn business_session_keeps_optional_login_state_separate_from_private_writes() {
         private.write_allowed(),
         Err(OkxError::UnknownCompletion)
     ));
+}
+
+#[test]
+fn signed_login_uses_the_injected_clock_for_private_and_business_sessions() {
+    let credentials = Credentials::new("key", "secret", "passphrase").unwrap();
+    let clock = FixedClock(datetime!(2024-01-01 0:00 UTC));
+
+    let mut private = PrivateSession::default();
+    let private_login = private.signed_login(&credentials, &clock).unwrap();
+    assert_eq!(private_login.op, "login");
+    let private_args = &private_login.args[0];
+    assert_eq!(private_args["apiKey"], "key");
+    assert_eq!(private_args["passphrase"], "passphrase");
+    assert_eq!(private_args["timestamp"], "1704067200");
+    assert_eq!(
+        private_args["sign"],
+        sign_websocket_login(&credentials, 1_704_067_200).unwrap()
+    );
+
+    let mut business = BusinessSession::default();
+    let business_login = business.signed_login(&credentials, &clock).unwrap();
+    assert_eq!(business_login.op, "login");
+    let business_args = &business_login.args[0];
+    assert_eq!(business_args["apiKey"], "key");
+    assert_eq!(business_args["passphrase"], "passphrase");
+    assert_eq!(business_args["timestamp"], "1704067200");
+    assert_eq!(
+        business_args["sign"],
+        sign_websocket_login(&credentials, 1_704_067_200).unwrap()
+    );
 }

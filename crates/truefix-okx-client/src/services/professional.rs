@@ -20,6 +20,22 @@ impl ProfessionalService<'_> {
             )?)
             .await
     }
+    async fn public_get(
+        &self,
+        p: &str,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.0
+            .execute(CanonicalRequest::new(
+                reqwest::Method::GET,
+                p,
+                q,
+                None::<&serde_json::Value>,
+                RetrySafety::ReadOnly,
+                false,
+            )?)
+            .await
+    }
     async fn write(&self, p: &str, b: &serde_json::Value) -> OkxResult<Vec<serde_json::Value>> {
         self.0
             .execute(CanonicalRequest::new(
@@ -108,7 +124,7 @@ impl ProfessionalService<'_> {
     }
     /// Executes the `support_coin` OKX V5 operation with its classified auth and replay policy.
     pub async fn support_coin(&self) -> OkxResult<Vec<serde_json::Value>> {
-        self.get(
+        self.public_get(
             "/api/v5/rubik/stat/trading-data/support-coin",
             BTreeMap::new(),
         )
@@ -119,14 +135,14 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/taker-volume", q).await
+        self.public_get("/api/v5/rubik/stat/taker-volume", q).await
     }
     /// Executes the `long_short_ratio` OKX V5 operation with its classified auth and replay policy.
     pub async fn long_short_ratio(
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/contracts/long-short-account-ratio", q)
+        self.public_get("/api/v5/rubik/stat/contracts/long-short-account-ratio", q)
             .await
     }
     /// Executes the `convert_currencies` OKX V5 operation with its classified auth and replay policy.
@@ -155,6 +171,13 @@ impl ProfessionalService<'_> {
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.get("/api/v5/broker/fd/rebate-per-orders", q).await
+    }
+    /// Generates a rebate-details download link.
+    pub async fn generate_rebate_details_download_link(
+        &self,
+        b: &serde_json::Value,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.write("/api/v5/broker/fd/rebate-per-orders", b).await
     }
     /// Returns exchange/platform status; this endpoint is public.
     pub async fn status(&self, q: BTreeMap<String, String>) -> OkxResult<Vec<serde_json::Value>> {
@@ -267,14 +290,15 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/margin/loan-ratio", q).await
+        self.public_get("/api/v5/rubik/stat/margin/loan-ratio", q)
+            .await
     }
     /// Executes the `contracts_interest_volume` OKX V5 operation with its classified auth and replay policy.
     pub async fn contracts_interest_volume(
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/contracts/open-interest-volume", q)
+        self.public_get("/api/v5/rubik/stat/contracts/open-interest-volume", q)
             .await
     }
     /// Executes the `options_interest_volume` OKX V5 operation with its classified auth and replay policy.
@@ -282,7 +306,7 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/option/open-interest-volume", q)
+        self.public_get("/api/v5/rubik/stat/option/open-interest-volume", q)
             .await
     }
     /// Executes the `put_call_ratio` OKX V5 operation with its classified auth and replay policy.
@@ -290,7 +314,7 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/option/open-interest-volume-ratio", q)
+        self.public_get("/api/v5/rubik/stat/option/open-interest-volume-ratio", q)
             .await
     }
     /// Executes the `interest_volume_expiry` OKX V5 operation with its classified auth and replay policy.
@@ -298,7 +322,7 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/option/open-interest-volume-expiry", q)
+        self.public_get("/api/v5/rubik/stat/option/open-interest-volume-expiry", q)
             .await
     }
     /// Executes the `interest_volume_strike` OKX V5 operation with its classified auth and replay policy.
@@ -306,7 +330,7 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/option/open-interest-volume-strike", q)
+        self.public_get("/api/v5/rubik/stat/option/open-interest-volume-strike", q)
             .await
     }
     /// Executes the `taker_block_volume` OKX V5 operation with its classified auth and replay policy.
@@ -314,7 +338,7 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/option/taker-block-volume", q)
+        self.public_get("/api/v5/rubik/stat/option/taker-block-volume", q)
             .await
     }
     /// Executes the `open_interest_history` OKX V5 operation with its classified auth and replay policy.
@@ -322,7 +346,7 @@ impl ProfessionalService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/rubik/stat/contracts/open-interest-history", q)
+        self.public_get("/api/v5/rubik/stat/contracts/open-interest-history", q)
             .await
     }
     /// Executes the `convert_currency_pair` OKX V5 operation with its classified auth and replay policy.

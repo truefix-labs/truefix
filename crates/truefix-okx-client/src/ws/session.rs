@@ -68,6 +68,9 @@ impl Session {
     pub fn can_write(&self) -> bool {
         self.authentication_required && self.authenticated && self.state == SessionState::Active
     }
+    pub fn is_active(&self) -> bool {
+        self.state == SessionState::Active
+    }
     pub fn is_authenticated(&self) -> bool {
         self.authenticated
     }

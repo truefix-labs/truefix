@@ -31,15 +31,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Order placement is disabled; set OKX_DEMO_PLACE_ORDER=1 to continue.");
         return Ok(());
     }
-    let order = PlaceOrder {
-        instrument_id: "BTC-USDT".to_owned(),
-        trade_mode: "cash".to_owned(),
-        side: "buy".to_owned(),
-        order_type: "market".to_owned(),
-        size: "0.00001".parse::<DecimalValue>()?,
-        price: None,
-        client_order_id: None,
-    };
+    let order = PlaceOrder::new(
+        "BTC-USDT",
+        "cash",
+        "buy",
+        "market",
+        "0.00001".parse::<DecimalValue>()?,
+    );
     println!(
         "Demo order acknowledgement: {:?}",
         client.trade().place_order(&order).await?

@@ -1,4 +1,5 @@
 use crate::{
+    error::{OkxError, OkxResult},
     types::websocket::{SubscriptionArg, WsCommand},
     ws::session::Session,
 };
@@ -10,25 +11,40 @@ impl PublicSession {
     pub fn connected(&mut self) {
         self.0.connected();
     }
-    pub fn subscribe(&mut self, args: Vec<SubscriptionArg>) -> WsCommand<Vec<SubscriptionArg>> {
-        WsCommand {
+    pub fn subscribe(
+        &mut self,
+        args: Vec<SubscriptionArg>,
+    ) -> OkxResult<WsCommand<Vec<SubscriptionArg>>> {
+        self.active()?;
+        Ok(WsCommand {
             op: "subscribe".to_owned(),
             id: Some(self.0.next_request_id()),
             args,
-        }
+        })
     }
-    pub fn unsubscribe(&mut self, args: Vec<SubscriptionArg>) -> WsCommand<Vec<SubscriptionArg>> {
-        WsCommand {
+    pub fn unsubscribe(
+        &mut self,
+        args: Vec<SubscriptionArg>,
+    ) -> OkxResult<WsCommand<Vec<SubscriptionArg>>> {
+        self.active()?;
+        Ok(WsCommand {
             op: "unsubscribe".to_owned(),
             id: Some(self.0.next_request_id()),
             args,
-        }
+        })
     }
     pub fn ping(&mut self) -> WsCommand<Vec<()>> {
         WsCommand {
             op: "ping".to_owned(),
             id: Some(self.0.next_request_id()),
             args: vec![],
+        }
+    }
+    fn active(&self) -> OkxResult<()> {
+        if self.0.is_active() {
+            Ok(())
+        } else {
+            Err(OkxError::UnknownCompletion)
         }
     }
 }

@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
 
 use crate::{
     config::Credentials,
@@ -31,19 +31,17 @@ pub fn sign_rest(
     request: &CanonicalRequest,
     now: OffsetDateTime,
 ) -> OkxResult<(String, String)> {
-    let rfc3339 = now
-        .format(&Rfc3339)
-        .map_err(|error| OkxError::Signing(error.to_string()))?;
-    let timestamp = match rfc3339.split_once('.') {
-        Some((whole, fraction_and_zone)) => format!(
-            "{whole}.{:0<3}Z",
-            &fraction_and_zone[..fraction_and_zone.len().saturating_sub(1)]
-                .chars()
-                .take(3)
-                .collect::<String>()
-        ),
-        None => format!("{} .000Z", rfc3339.trim_end_matches('Z')).replace(" ", ""),
-    };
+    let now = now.to_offset(time::UtcOffset::UTC);
+    let timestamp = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        now.year(),
+        now.month() as u8,
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second(),
+        now.millisecond(),
+    );
     let payload = format!(
         "{}{}{}{}",
         timestamp,

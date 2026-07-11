@@ -1,9 +1,9 @@
 # TrueFix Getting Started
 
-This guide covers the three current workspace entry points: the FIX engine, the Futu OpenD client,
-and the Interactive Brokers TWS/Gateway client. The broker clients are independent crates. They do
-not start OpenD or TWS/Gateway for you, and they do not bypass broker account, market-data, or trading
-permissions.
+This guide covers the current workspace entry points: the FIX engine, the Futu OpenD client,
+the Interactive Brokers TWS/Gateway client, and the OKX and Binance exchange CLIs. The broker
+and exchange clients are independent crates. They do not start OpenD or TWS/Gateway for you, and
+they do not bypass broker account, market-data, or trading permissions.
 
 ## 1. Prerequisites
 
@@ -13,11 +13,11 @@ Install or prepare:
 - a running Futu OpenD or IB TWS/Gateway instance;
 - the required account permissions for quotes, historical data, and trading.
 
-Check the workspace and build both broker clients:
+Check the workspace and build the client crates:
 
 ```bash
 cargo check --workspace
-cargo build -p truefix-futu-client -p truefix-twsapi-client
+cargo build -p truefix-futu-client -p truefix-twsapi-client -p truefix-okx-client
 ```
 
 Run all examples from the repository root.
@@ -254,7 +254,91 @@ TWS_MARKET_DATA_TYPE=3
 Do not terminate the process immediately after sending a request. TWS responses are asynchronous;
 the CLI reads events for `TWS_WAIT_SECS` and then cancels continuous requests where appropriate.
 
-## 4. Direct Rust API usage
+## 4. Binance exchange CLI
+
+The Binance CLI covers the official connector's Spot, Margin Trading, Options, and Convert REST
+modules. It also supports Spot WebSocket API calls and raw Spot, Margin, and Options stream names.
+
+Start the interactive prompt:
+
+    cargo run -p truefix --example binance_cli
+
+The CLI reads the API key and Ed25519 PEM path only when a signed request is made. Its defaults
+point to the local account directory; override them when needed:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| BINANCE_API_KEY_FILE | .../truefix-account/binance/readme | File containing the API key |
+| BINANCE_PRIVATE_KEY_PATH | .../truefix-account/binance/Ed25519/test-prv-key.pem | Ed25519 private-key PEM |
+
+Use catalog to see the module groups. Public requests must include --public; signed requests
+are the default. Every REST write requires --confirm-write.
+
+The same commands can run without entering the prompt. Put the command after Cargo's -- separator:
+
+    cargo run -p truefix --example binance_cli -- get spot /api/v3/exchangeInfo '{"symbol":"BTCUSDT"}' --public
+
+Common REST examples:
+
+    get spot /api/v3/exchangeInfo {"symbol":"BTCUSDT"} --public
+    get spot /api/v3/account
+    get margin /sapi/v1/margin/account
+    get options /eapi/v1/exchangeInfo --public
+    get convert /sapi/v1/convert/exchangeInfo
+
+WebSocket examples:
+
+    stream spot btcusdt@trade
+    stream margin btcusdt@bookTicker
+    stream options btcusdt@trade
+    ws time --public
+    ws account.status
+
+Press Ctrl-C to disconnect an active stream. In the interactive prompt, JSON with whitespace may
+be quoted with single quotes. Check endpoint-specific parameters and permissions in Binance
+documentation before sending a request.
+
+## 5. OKX exchange CLI
+
+The OKX CLI exposes the complete 264-operation audited REST surface. It accepts an audited
+domain/operation pair, rather than arbitrary URLs, and derives authentication and replay policy
+from the operation manifest.
+
+Start it from the repository root:
+
+    cargo run -p truefix-okx-client --example okx_cli
+
+Use catalog [domain] to list accepted operations. Get and post validate the verb against the
+audited method. The default environment is Demo. Every POST requires a JSON body and
+--confirm-write.
+
+The CLI also accepts one-shot commands after Cargo's -- separator:
+
+    cargo run -p truefix-okx-client --example okx_cli -- get market_data get_ticker '{"instId":"BTC-USDT"}'
+
+Common REST examples:
+
+    get market_data get_ticker {"instId":"BTC-USDT"}
+    get public_data get_instruments {"instType":"SPOT"}
+    get account get_account_balance
+    post trade place_order {} {"instId":"BTC-USDT","tdMode":"cash","side":"buy","ordType":"limit","sz":"0.001","px":"1"} --confirm-write
+
+Public operations need no credentials. To enable private operations, set OKX_PASSPHRASE; API key
+and secret are read from the configured credential file unless overridden:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| OKX_CREDENTIAL_FILE | .../truefix-account/okx/okx | Credential file with API key and secret |
+| OKX_API_KEY | unset | Overrides the file API key |
+| OKX_SECRET | unset | Overrides the file secret |
+| OKX_PASSPHRASE | unset | Enables private authentication |
+| OKX_ENV | demo | Set to live only for production |
+| OKX_CONFIRM_LIVE | unset | Must be 1 when OKX_ENV=live |
+
+Use Demo first. Live mode requires both OKX_ENV=live and OKX_CONFIRM_LIVE=1, in addition to
+valid credentials.
+
+## 6. Direct Rust API usage
 
 Use the clients as workspace dependencies:
 
@@ -262,6 +346,7 @@ Use the clients as workspace dependencies:
 [dependencies]
 truefix-futu-client = { path = "../truefix/crates/truefix-futu-client" }
 truefix-twsapi-client = { path = "../truefix/crates/truefix-twsapi-client" }
+truefix-okx-client = { path = "../truefix/crates/truefix-okx-client" }
 ```
 
 For Futu, call `FutuClient::connect`, then use `client.quote()` and `client.trade()`. Consume
@@ -270,7 +355,7 @@ asynchronous push events through `client.subscribe_push()`.
 For TWS, call `TwsApiClient::connect(ClientConfig)`, send requests through concrete `req_*` methods
 or `send_request`, and consume callbacks through `read_event` as `Event` values.
 
-## 5. Verification and troubleshooting
+## 7. Verification and troubleshooting
 
 Recommended checks before submitting changes:
 
@@ -279,7 +364,11 @@ cargo fmt --all -- --check
 cargo check --workspace
 cargo test -p truefix-futu-client --test mock_opend -- --test-threads=1
 cargo test -p truefix-twsapi-client
+cargo test -p truefix-okx-client
+cargo test -p truefix --example binance_cli
 cargo clippy -p truefix-futu-client -p truefix-twsapi-client --all-targets -- -D warnings
+cargo clippy -p truefix-okx-client -- -D warnings
+cargo clippy -p truefix --example binance_cli -- -D warnings
 ```
 
 Common failures:
@@ -294,6 +383,17 @@ Common failures:
 4. No quote updates: verify market-data permissions, market hours, symbol format, and market value.
 5. Order failure: query accounts first and verify the trading environment, account permissions,
    unlock state, and trading market.
+6. Binance missing API key or private key: public REST and WebSocket calls need --public. For
+   signed calls, set BINANCE_API_KEY_FILE and BINANCE_PRIVATE_KEY_PATH to readable files. Do not
+   place key material in shell history or this repository.
+7. Binance write rejected before sending: add --confirm-write only after checking the endpoint,
+   request JSON, account permissions, and selected module. This guard is intentional.
+8. OKX operation is unknown: run catalog or catalog <domain> and use the exact audited
+   domain/operation pair. The CLI deliberately rejects arbitrary REST paths.
+9. OKX private request has missing credentials: set OKX_PASSPHRASE and either provide
+   OKX_API_KEY and OKX_SECRET or configure OKX_CREDENTIAL_FILE.
+10. OKX live mode is rejected: the default is Demo. Set both OKX_ENV=live and
+    OKX_CONFIRM_LIVE=1 only after reviewing the command and credentials.
 
 The root README describes the FIX engine and workspace architecture. This document describes the
 current broker-client workflows.

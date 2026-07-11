@@ -84,10 +84,6 @@ impl FundingService<'_> {
     ) -> OkxResult<Vec<serde_json::Value>> {
         self.get("/api/v5/asset/transfer-state", q).await
     }
-    /// Executes the `lightning` OKX V5 operation with its classified auth and replay policy.
-    pub async fn lightning(&self, b: &serde_json::Value) -> OkxResult<Vec<serde_json::Value>> {
-        self.write("/api/v5/asset/withdrawal-lightning", b).await
-    }
     /// Executes the `convert_dust` OKX V5 operation with its classified auth and replay policy.
     pub async fn convert_dust(&self, b: &serde_json::Value) -> OkxResult<Vec<serde_json::Value>> {
         self.write("/api/v5/asset/convert-dust-assets", b).await

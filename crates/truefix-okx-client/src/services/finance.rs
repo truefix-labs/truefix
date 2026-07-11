@@ -20,6 +20,22 @@ impl FinanceService<'_> {
             )?)
             .await
     }
+    async fn public_get(
+        &self,
+        p: &str,
+        q: BTreeMap<String, String>,
+    ) -> OkxResult<Vec<serde_json::Value>> {
+        self.0
+            .execute(CanonicalRequest::new(
+                reqwest::Method::GET,
+                p,
+                q,
+                None::<&serde_json::Value>,
+                RetrySafety::ReadOnly,
+                false,
+            )?)
+            .await
+    }
     async fn write(&self, p: &str, b: &serde_json::Value) -> OkxResult<Vec<serde_json::Value>> {
         self.0
             .execute(CanonicalRequest::new(
@@ -37,7 +53,7 @@ impl FinanceService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/finance/savings/lending-rate-summary", q)
+        self.public_get("/api/v5/finance/savings/lending-rate-summary", q)
             .await
     }
     /// Executes the `savings_purchase` OKX V5 operation with its classified auth and replay policy.
@@ -292,7 +308,7 @@ impl FinanceService<'_> {
         &self,
         q: BTreeMap<String, String>,
     ) -> OkxResult<Vec<serde_json::Value>> {
-        self.get("/api/v5/finance/savings/lending-rate-history", q)
+        self.public_get("/api/v5/finance/savings/lending-rate-history", q)
             .await
     }
     /// Executes the `dual_currency_pairs` OKX V5 operation with its classified auth and replay policy.
