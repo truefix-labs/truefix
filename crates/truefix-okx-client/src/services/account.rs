@@ -41,11 +41,19 @@ impl AccountService<'_> {
     }
     /// Executes the `balances` OKX V5 operation with its classified auth and replay policy.
     pub async fn balances(&self) -> OkxResult<Vec<Balance>> {
+        self.balances_with_currency(None).await
+    }
+    /// Executes the `balances` OKX V5 operation with an optional currency filter.
+    pub async fn balances_with_currency(&self, ccy: Option<&str>) -> OkxResult<Vec<Balance>> {
+        let mut query = BTreeMap::new();
+        if let Some(ccy) = ccy.filter(|ccy| !ccy.is_empty()) {
+            query.insert("ccy".to_owned(), ccy.to_owned());
+        }
         self.0
             .execute(CanonicalRequest::new(
                 reqwest::Method::GET,
                 "/api/v5/account/balance",
-                BTreeMap::new(),
+                query,
                 None::<&serde_json::Value>,
                 RetrySafety::ReadOnly,
                 true,
@@ -54,11 +62,30 @@ impl AccountService<'_> {
     }
     /// Executes the `positions` OKX V5 operation with its classified auth and replay policy.
     pub async fn positions(&self) -> OkxResult<Vec<Position>> {
+        self.positions_with_filters(None, None, None).await
+    }
+    /// Executes the `positions` OKX V5 operation with optional OKX filters.
+    pub async fn positions_with_filters(
+        &self,
+        inst_type: Option<&str>,
+        inst_id: Option<&str>,
+        pos_id: Option<&str>,
+    ) -> OkxResult<Vec<Position>> {
+        let mut query = BTreeMap::new();
+        if let Some(inst_type) = inst_type.filter(|value| !value.is_empty()) {
+            query.insert("instType".to_owned(), inst_type.to_owned());
+        }
+        if let Some(inst_id) = inst_id.filter(|value| !value.is_empty()) {
+            query.insert("instId".to_owned(), inst_id.to_owned());
+        }
+        if let Some(pos_id) = pos_id.filter(|value| !value.is_empty()) {
+            query.insert("posId".to_owned(), pos_id.to_owned());
+        }
         self.0
             .execute(CanonicalRequest::new(
                 reqwest::Method::GET,
                 "/api/v5/account/positions",
-                BTreeMap::new(),
+                query,
                 None::<&serde_json::Value>,
                 RetrySafety::ReadOnly,
                 true,
@@ -330,7 +357,12 @@ impl AccountService<'_> {
             .await
     }
     /// Executes the `activate_option` OKX V5 operation with its classified auth and replay policy.
-    pub async fn activate_option(
+    pub async fn activate_option(&self) -> OkxResult<Vec<serde_json::Value>> {
+        self.write_json("/api/v5/account/activate-option", &serde_json::json!({}))
+            .await
+    }
+    /// Executes the `activate_option` OKX V5 operation with an explicit JSON body.
+    pub async fn activate_option_request(
         &self,
         request: &serde_json::Value,
     ) -> OkxResult<Vec<serde_json::Value>> {

@@ -55,6 +55,52 @@ async fn public_requests_are_unsigned_and_preserve_encoded_query() {
 }
 
 #[tokio::test]
+async fn account_helpers_preserve_optional_filters_and_empty_body_semantics() {
+    let (base, captured) = support::http::start(
+        r#"{"code":"0","msg":"","data":[{"ccy":"BTC","availBal":"1","eq":"1","frozenBal":"0"}]}"#,
+    )
+    .await;
+    let credentials = Credentials::new("key", "secret", "passphrase").unwrap();
+    let client = OkxClient::new(custom_config(base, Some(credentials))).unwrap();
+
+    assert_eq!(
+        client
+            .account()
+            .balances_with_currency(Some("BTC"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let request = captured.await.unwrap();
+    assert_eq!(request.method, "GET");
+    assert_eq!(request.target, "/api/v5/account/balance?ccy=BTC");
+
+    let (base, captured) = support::http::start(r#"{"code":"0","msg":"","data":[]}"#).await;
+    let credentials = Credentials::new("key", "secret", "passphrase").unwrap();
+    let client = OkxClient::new(custom_config(base, Some(credentials))).unwrap();
+    let _ = client
+        .account()
+        .positions_with_filters(Some("SWAP"), Some("BTC-USDT-SWAP"), Some("123"))
+        .await
+        .unwrap();
+    let request = captured.await.unwrap();
+    assert_eq!(
+        request.target,
+        "/api/v5/account/positions?instId=BTC-USDT-SWAP&instType=SWAP&posId=123"
+    );
+
+    let (base, captured) = support::http::start(r#"{"code":"0","msg":"","data":[]}"#).await;
+    let credentials = Credentials::new("key", "secret", "passphrase").unwrap();
+    let client = OkxClient::new(custom_config(base, Some(credentials))).unwrap();
+    let _ = client.account().activate_option().await.unwrap();
+    let request = captured.await.unwrap();
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.target, "/api/v5/account/activate-option");
+    assert_eq!(request.body, b"{}");
+}
+
+#[tokio::test]
 async fn demo_writes_are_signed_once_and_send_exact_body() {
     let (base, captured) = support::http::start(
         r#"{"code":"0","msg":"","data":[{"ordId":"42","sCode":"0","sMsg":""}]}"#,
@@ -111,6 +157,31 @@ async fn demo_writes_are_signed_once_and_send_exact_body() {
     assert_eq!(
         request.body,
         br#"{"instId":"BTC-USDT","tdMode":"cash","side":"buy","ordType":"market","sz":"1"}"#
+    );
+}
+
+#[tokio::test]
+async fn advanced_order_fields_use_the_okx_wire_names() {
+    let (base, captured) = support::http::start(
+        r#"{"code":"0","msg":"","data":[{"ordId":"42","sCode":"0","sMsg":""}]}"#,
+    )
+    .await;
+    let credentials = Credentials::new("key", "secret", "passphrase").unwrap();
+    let client = OkxClient::new(custom_config(base, Some(credentials))).unwrap();
+    let mut order = PlaceOrder::new(
+        "BTC-USDT",
+        "cash",
+        "buy",
+        "market",
+        "1".parse::<DecimalValue>().unwrap(),
+    );
+    order.elp_taker_access = Some(true);
+    let _ = client.trade().place_order(&order).await.unwrap();
+    let request = captured.await.unwrap();
+    assert!(
+        std::str::from_utf8(&request.body)
+            .unwrap()
+            .contains("\"isElpTakerAccess\":true")
     );
 }
 

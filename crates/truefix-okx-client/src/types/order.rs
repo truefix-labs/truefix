@@ -53,7 +53,7 @@ pub struct PlaceOrder {
     pub trade_quote_currency: Option<String>,
     #[serde(rename = "pxAmendType", skip_serializing_if = "Option::is_none")]
     pub price_amend_type: Option<String>,
-    #[serde(rename = "isElpTaker", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "isElpTakerAccess", skip_serializing_if = "Option::is_none")]
     pub elp_taker_access: Option<bool>,
     #[serde(rename = "instIdCode", skip_serializing_if = "Option::is_none")]
     pub instrument_id_code: Option<String>,
@@ -224,3 +224,24 @@ pub struct OrderAck {
 }
 /// Batch result preserving successful and failed item acknowledgements.
 pub type BatchResult = Vec<OrderAck>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn place_order_serializes_elp_taker_access_with_the_okx_field_name() {
+        let mut order = PlaceOrder::new(
+            "BTC-USDT",
+            "cash",
+            "buy",
+            "market",
+            "1".parse::<DecimalValue>().unwrap(),
+        );
+        order.elp_taker_access = Some(true);
+
+        let rendered = serde_json::to_value(order).unwrap();
+        assert_eq!(rendered["isElpTakerAccess"], true);
+        assert!(!rendered.as_object().unwrap().contains_key("isElpTaker"));
+    }
+}

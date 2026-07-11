@@ -173,7 +173,8 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "binance-sdk"
 version = "60.0.0"
-source = "git+https://github.com/binance/binance-connector-rust?rev=8cfe7d023236280e9356f84a8c4a12eff558d4aa#8cfe7d023236280e9356f84a8c4a12eff558d4aa"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "228c20d4551624875cf56826876e04ab962e06cbd477aa366ba6b5849cb6518b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1572,7 +1573,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -2676,7 +2677,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.41",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2715,7 +2716,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -4039,7 +4040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

@@ -65,10 +65,32 @@ impl PrivateSession {
             args,
         })
     }
+    pub fn subscribe_raw(
+        &mut self,
+        args: Vec<serde_json::Value>,
+    ) -> OkxResult<WsCommand<Vec<serde_json::Value>>> {
+        self.active()?;
+        Ok(WsCommand {
+            op: "subscribe".to_owned(),
+            id: Some(self.0.next_request_id()),
+            args,
+        })
+    }
     pub fn unsubscribe(
         &mut self,
         args: Vec<SubscriptionArg>,
     ) -> OkxResult<WsCommand<Vec<SubscriptionArg>>> {
+        self.active()?;
+        Ok(WsCommand {
+            op: "unsubscribe".to_owned(),
+            id: Some(self.0.next_request_id()),
+            args,
+        })
+    }
+    pub fn unsubscribe_raw(
+        &mut self,
+        args: Vec<serde_json::Value>,
+    ) -> OkxResult<WsCommand<Vec<serde_json::Value>>> {
         self.active()?;
         Ok(WsCommand {
             op: "unsubscribe".to_owned(),
