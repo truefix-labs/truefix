@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Thin Futu OpenD protocol client for TrueFix."
-publish = false
+publish = true
 
 [dependencies]
 prost.workspace = true

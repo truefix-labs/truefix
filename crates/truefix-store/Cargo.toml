@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "FIX message stores (memory/file/cached/SQL/noop)."
-publish = false
+publish = true
 
 [dependencies]
 thiserror.workspace = true

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "TrueFix facade: Application trait, MessageCracker, re-exports."
-publish = false
+publish = true
 
 [dependencies]
 truefix-core.workspace = true

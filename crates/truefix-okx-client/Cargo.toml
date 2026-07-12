@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Native, typed OKX V5 REST and WebSocket client for TrueFix."
-publish = false
+publish = true
 
 [dependencies]
 base64.workspace = true

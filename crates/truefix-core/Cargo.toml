@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "FIX message model, field types, and SOH codec (BodyLength/CheckSum)."
-publish = false
+publish = true
 
 [dependencies]
 thiserror.workspace = true

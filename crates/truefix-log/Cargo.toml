@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "FIX logging (screen/file/tracing/composite)."
-publish = false
+publish = true
 
 [dependencies]
 async-trait.workspace = true

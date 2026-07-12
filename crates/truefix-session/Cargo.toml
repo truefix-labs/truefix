@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "FIX session layer: state machine, sequencing, resend, scheduling."
-publish = false
+publish = true
 
 [dependencies]
 truefix-core.workspace = true

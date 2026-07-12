@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "FIX transport: initiator/acceptor, TLS, multi/dynamic sessions."
-publish = false
+publish = true
 
 [dependencies]
 truefix-core.workspace = true

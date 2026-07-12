@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "FAST and SBE binary protocol codecs for TrueFix."
-publish = false
+publish = true
 
 [dependencies]
 truefix-core.workspace = true

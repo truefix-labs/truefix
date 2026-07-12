@@ -165,8 +165,8 @@ TWS/Gateway. They are independent from the FIX engine and expose broker protocol
   requests, supported protobuf request paths, event decoding, quote/account/order/history APIs, and
   an interactive CLI.
 
-The clients are currently workspace crates for local integration and testing (`publish = false`).
-See [`docs/getting-started.md`](docs/getting-started.md) for prerequisites, complete commands,
+All workspace crates are published as versioned packages. See
+[`docs/getting-started.md`](docs/getting-started.md) for prerequisites, complete commands,
 environment variables, and common broker-side failure modes.
 
 ### Custom `MessageStore`/`Log` backends

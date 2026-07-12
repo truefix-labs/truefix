@@ -63,17 +63,17 @@ memchr = "2"
 prost = "0.14"
 prost-build = "0.14"
 bytes = "1"
-truefix-core = { path = "crates/truefix-core" }
-truefix-dict = { path = "crates/truefix-dict" }
-truefix-session = { path = "crates/truefix-session" }
-truefix-transport = { path = "crates/truefix-transport" }
-truefix-config = { path = "crates/truefix-config" }
-truefix-store = { path = "crates/truefix-store" }
-truefix-log = { path = "crates/truefix-log" }
-truefix-binary = { path = "crates/truefix-binary" }
-truefix-twsapi-client = { path = "crates/truefix-twsapi-client" }
-truefix-futu-client = { path = "crates/truefix-futu-client" }
-truefix-okx-client = { path = "crates/truefix-okx-client" }
+truefix-core = { path = "crates/truefix-core", version = "0.1.0" }
+truefix-dict = { path = "crates/truefix-dict", version = "0.1.0" }
+truefix-session = { path = "crates/truefix-session", version = "0.1.0" }
+truefix-transport = { path = "crates/truefix-transport", version = "0.1.0" }
+truefix-config = { path = "crates/truefix-config", version = "0.1.0" }
+truefix-store = { path = "crates/truefix-store", version = "0.1.0" }
+truefix-log = { path = "crates/truefix-log", version = "0.1.0" }
+truefix-binary = { path = "crates/truefix-binary", version = "0.1.0" }
+truefix-twsapi-client = { path = "crates/truefix-twsapi-client", version = "0.1.0" }
+truefix-futu-client = { path = "crates/truefix-futu-client", version = "0.1.0" }
+truefix-okx-client = { path = "crates/truefix-okx-client", version = "0.1.0" }
 
 [profile.release]
 # Production builds: keep debug info off, optimize. Benchmarks live in benches/.
