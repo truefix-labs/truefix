@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "Native, typed OKX V5 REST and WebSocket client for TrueFix."
 publish = true
 

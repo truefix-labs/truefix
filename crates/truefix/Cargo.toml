@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "TrueFix facade: Application trait, MessageCracker, re-exports."
 publish = true
 

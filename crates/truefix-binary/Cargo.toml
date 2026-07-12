@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "FAST and SBE binary protocol codecs for TrueFix."
 publish = true
 

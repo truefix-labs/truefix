@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "FIX message stores (memory/file/cached/SQL/noop)."
 publish = true
 

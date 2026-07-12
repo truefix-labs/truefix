@@ -1,4 +1,7 @@
-# TrueFix OKX Client
+# truefix-okx-client
+
+Native typed Rust client for OKX V5 REST and WebSocket APIs. It supports explicit live/demo intent,
+signed requests, typed services, and non-replaying writes.
 
 Maintain the operation manifest whenever upstream V5 changes: add the source identity, Rust
 entrypoint, auth/replay class and fixture evidence together. Compare domain counts against the

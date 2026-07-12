@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "FIX data dictionary: build-time codegen + runtime validation (dual-track)."
 publish = true
 
