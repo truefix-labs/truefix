@@ -4,11 +4,11 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/zhangjiayin/truefix"
+repository = "https://github.com/truefix-labs/truefix"
 authors = ["Zhang Jiayin"]
 
 # Lint policy (Constitution Principle I). `unsafe_code = forbid` is global; the
@@ -63,17 +63,17 @@ memchr = "2"
 prost = "0.14"
 prost-build = "0.14"
 bytes = "1"
-truefix-core = { path = "crates/truefix-core", version = "0.1.1" }
-truefix-dict = { path = "crates/truefix-dict", version = "0.1.1" }
-truefix-session = { path = "crates/truefix-session", version = "0.1.1" }
-truefix-transport = { path = "crates/truefix-transport", version = "0.1.1" }
-truefix-config = { path = "crates/truefix-config", version = "0.1.1" }
-truefix-store = { path = "crates/truefix-store", version = "0.1.1" }
-truefix-log = { path = "crates/truefix-log", version = "0.1.1" }
-truefix-binary = { path = "crates/truefix-binary", version = "0.1.1" }
-truefix-twsapi-client = { path = "crates/truefix-twsapi-client", version = "0.1.1" }
-truefix-futu-client = { path = "crates/truefix-futu-client", version = "0.1.1" }
-truefix-okx-client = { path = "crates/truefix-okx-client", version = "0.1.1" }
+truefix-core = { path = "crates/truefix-core", version = "0.1.2" }
+truefix-dict = { path = "crates/truefix-dict", version = "0.1.2" }
+truefix-session = { path = "crates/truefix-session", version = "0.1.2" }
+truefix-transport = { path = "crates/truefix-transport", version = "0.1.2" }
+truefix-config = { path = "crates/truefix-config", version = "0.1.2" }
+truefix-store = { path = "crates/truefix-store", version = "0.1.2" }
+truefix-log = { path = "crates/truefix-log", version = "0.1.2" }
+truefix-binary = { path = "crates/truefix-binary", version = "0.1.2" }
+truefix-twsapi-client = { path = "crates/truefix-twsapi-client", version = "0.1.2" }
+truefix-futu-client = { path = "crates/truefix-futu-client", version = "0.1.2" }
+truefix-okx-client = { path = "crates/truefix-okx-client", version = "0.1.2" }
 
 [profile.release]
 # Production builds: keep debug info off, optimize. Benchmarks live in benches/.
