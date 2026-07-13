@@ -39,7 +39,9 @@ pub struct BookLevel(
 /// Market order book snapshot.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct OrderBook {
-    #[serde(rename = "instId")]
+    /// The REST books endpoint omits `instId`; the market service restores the
+    /// requested identity when the provider does not include it in the payload.
+    #[serde(rename = "instId", default)]
     pub instrument_id: String,
     pub asks: Vec<BookLevel>,
     pub bids: Vec<BookLevel>,
@@ -94,7 +96,7 @@ pub struct FundingRate {
 
 #[cfg(test)]
 mod tests {
-    use super::Candle;
+    use super::{Candle, OrderBook};
 
     #[test]
     fn candle_deserializes_the_complete_okx_wire_tuple() {
@@ -108,5 +110,14 @@ mod tests {
         assert_eq!(candle.6.to_string(), "405003");
         assert_eq!(candle.7.to_string(), "405003");
         assert_eq!(candle.8, "1");
+    }
+
+    #[test]
+    fn order_book_accepts_the_rest_payload_without_an_instrument_id() {
+        let book: OrderBook = serde_json::from_str(
+            r#"{"asks":[["2","1","0","1"]],"bids":[["1","1","0","1"]],"ts":"1"}"#,
+        )
+        .unwrap();
+        assert!(book.instrument_id.is_empty());
     }
 }

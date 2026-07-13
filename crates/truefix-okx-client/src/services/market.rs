@@ -58,7 +58,8 @@ impl MarketService<'_> {
         if let Some(size) = size {
             query.insert("sz".to_owned(), size.to_string());
         }
-        self.0
+        let mut books: Vec<OrderBook> = self
+            .0
             .execute(CanonicalRequest::new(
                 reqwest::Method::GET,
                 "/api/v5/market/books",
@@ -67,7 +68,13 @@ impl MarketService<'_> {
                 RetrySafety::ReadOnly,
                 false,
             )?)
-            .await
+            .await?;
+        for book in &mut books {
+            if book.instrument_id.is_empty() {
+                book.instrument_id = instrument_id.to_owned();
+            }
+        }
+        Ok(books)
     }
     /// Lists candles with opaque server cursor filters.
     pub async fn candles(&self, query: BTreeMap<String, String>) -> OkxResult<Vec<Candle>> {
