@@ -102,6 +102,9 @@ where
     request.encode_fields_for_server_version(&mut fields, server_version)?;
     comm::make_msg(
         request.message().id(),
+        // Since protocol version 151, the official SDK frames *all* outgoing
+        // request ids as raw integers. `prefer_protobuf` chooses only the
+        // request body encoding; a field-encoded body still keeps this frame.
         server_version >= MIN_SERVER_VER_PROTOBUF,
         &fields.into_string(),
     )

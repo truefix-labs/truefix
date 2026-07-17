@@ -54,6 +54,9 @@ pub struct ClientConfig {
     pub connect_options: Option<String>,
     /// Optional capabilities sent by `start_api` when supported by the server.
     pub optional_capabilities: Option<String>,
+    /// Whether to use the IB protobuf extension after `startApi`. Some local
+    /// Gateway deployments negotiate a modern version but reject `jextend`.
+    pub prefer_protobuf: bool,
 }
 
 impl ClientConfig {
@@ -70,6 +73,7 @@ impl ClientConfig {
             client_id,
             connect_options: None,
             optional_capabilities: None,
+            prefer_protobuf: true,
         }
     }
 }
@@ -210,8 +214,11 @@ impl TwsApiClient {
     where
         R: EncodableRequest,
     {
-        let frame =
-            encode_request_frame_with_protobuf(&request, self.server_version, self.api_ready)?;
+        let frame = encode_request_frame_with_protobuf(
+            &request,
+            self.server_version,
+            self.api_ready && self.config.prefer_protobuf,
+        )?;
         self.stream.write_all(&frame).await?;
         Ok(())
     }
