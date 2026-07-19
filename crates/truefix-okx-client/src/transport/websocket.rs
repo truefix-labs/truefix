@@ -34,10 +34,7 @@ impl WebSocketTransport {
             return Self::connect(endpoint).await;
         };
         let endpoint_url = url::Url::parse(endpoint).map_err(|error| {
-            WebSocketError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                error,
-            ))
+            WebSocketError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
         })?;
         let endpoint_host = endpoint_url.host_str().ok_or_else(|| {
             WebSocketError::Io(std::io::Error::new(
@@ -52,10 +49,7 @@ impl WebSocketTransport {
             ))
         })?;
         let proxy_url = url::Url::parse(proxy).map_err(|error| {
-            WebSocketError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                error,
-            ))
+            WebSocketError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
         })?;
         if proxy_url.scheme() != "http" {
             return Err(WebSocketError::Io(std::io::Error::new(
