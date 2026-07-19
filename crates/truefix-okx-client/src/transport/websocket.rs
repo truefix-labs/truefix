@@ -1,7 +1,11 @@
 //! Minimal redacted WebSocket transport used by the session layer.
 
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, client_async_tls_with_config, connect_async,
+    tungstenite::{Error as WebSocketError, Message},
+};
 
 use crate::{
     error::{OkxError, OkxResult},
@@ -18,6 +22,101 @@ impl WebSocketTransport {
     /// Connects to an explicitly selected OKX endpoint.
     pub async fn connect(endpoint: &str) -> OkxResult<Self> {
         let (socket, _) = connect_async(endpoint).await?;
+        Ok(Self { socket })
+    }
+
+    /// Connects through an HTTP `CONNECT` proxy when one is configured.
+    ///
+    /// Keeping proxy negotiation in the transport ensures every OKX WebSocket
+    /// consumer uses the same connectivity policy as the REST client.
+    pub async fn connect_with_proxy(endpoint: &str, proxy: Option<&str>) -> OkxResult<Self> {
+        let Some(proxy) = proxy.filter(|value| !value.trim().is_empty()) else {
+            return Self::connect(endpoint).await;
+        };
+        let endpoint_url = url::Url::parse(endpoint).map_err(|error| {
+            WebSocketError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                error,
+            ))
+        })?;
+        let endpoint_host = endpoint_url.host_str().ok_or_else(|| {
+            WebSocketError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "WebSocket endpoint has no host",
+            ))
+        })?;
+        let endpoint_port = endpoint_url.port_or_known_default().ok_or_else(|| {
+            WebSocketError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "WebSocket endpoint has no port",
+            ))
+        })?;
+        let proxy_url = url::Url::parse(proxy).map_err(|error| {
+            WebSocketError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                error,
+            ))
+        })?;
+        if proxy_url.scheme() != "http" {
+            return Err(WebSocketError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "OKX WebSocket proxy must use the http scheme",
+            ))
+            .into());
+        }
+        let proxy_host = proxy_url.host_str().ok_or_else(|| {
+            WebSocketError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "proxy URL has no host",
+            ))
+        })?;
+        let proxy_port = proxy_url.port_or_known_default().ok_or_else(|| {
+            WebSocketError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "proxy URL has no port",
+            ))
+        })?;
+        let mut stream = tokio::net::TcpStream::connect((proxy_host, proxy_port))
+            .await
+            .map_err(WebSocketError::Io)?;
+        let authority = format!("{endpoint_host}:{endpoint_port}");
+        stream
+            .write_all(
+                format!(
+                    "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .map_err(WebSocketError::Io)?;
+        let mut response = Vec::with_capacity(512);
+        let mut byte = [0u8; 1];
+        while response.len() < 16 * 1024 {
+            stream
+                .read_exact(&mut byte)
+                .await
+                .map_err(WebSocketError::Io)?;
+            response.push(byte[0]);
+            if response.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let status = std::str::from_utf8(&response)
+            .ok()
+            .and_then(|value| value.lines().next())
+            .unwrap_or_default();
+        if !status.contains(" 200 ") {
+            return Err(WebSocketError::Io(std::io::Error::other(format!(
+                "proxy CONNECT failed: {status}"
+            )))
+            .into());
+        }
+        // The client can be linked into applications that enable more than
+        // one rustls backend through unrelated dependencies. In that case
+        // rustls cannot infer a process default and panics at the first TLS
+        // handshake unless the transport selects one explicitly.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let (socket, _) = client_async_tls_with_config(endpoint, stream, None, None).await?;
         Ok(Self { socket })
     }
 
