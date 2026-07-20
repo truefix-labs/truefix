@@ -1,12 +1,24 @@
 # truefix-binary
 
-FAST and SBE binary-protocol codecs for TrueFix, built on the shared FIX message model. It includes
-schema/template parsing models and helpers for converting decoded binary messages into FIX messages.
+FAST and SBE binary-protocol codecs over `truefix_core::Message`.
 
 Add it when an integration needs a binary codec:
 
 ```toml
-truefix-binary = "0.1"
+truefix-binary = "0.1.4"
 ```
 
-See the [TrueFix repository](https://github.com/truefix-labs/truefix) for supported formats and examples.
+## Current scope
+
+- `BinaryCodec` provides template-ID based encode/decode.
+- `fast` implements FAST templates, presence maps, operators, sequences, decimals, and state.
+- `sbe` implements SBE schema parsing and fixed/variable-length message encoding.
+- `ir` converts between binary schema values and the shared FIX message model.
+
+This crate is a codec layer, not a multicast/session protocol implementation.
+
+## Verify
+
+```sh
+cargo test -p truefix-binary
+```

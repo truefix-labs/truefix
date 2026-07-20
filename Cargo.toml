@@ -4,7 +4,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0 OR MIT"
@@ -63,18 +63,18 @@ memchr = "2"
 prost = "0.14"
 prost-build = "0.14"
 bytes = "1"
-truefix-core = { path = "crates/truefix-core", version = "0.1.3" }
-truefix-dict = { path = "crates/truefix-dict", version = "0.1.3" }
-truefix-session = { path = "crates/truefix-session", version = "0.1.3" }
-truefix-transport = { path = "crates/truefix-transport", version = "0.1.3" }
-truefix-config = { path = "crates/truefix-config", version = "0.1.3" }
-truefix-store = { path = "crates/truefix-store", version = "0.1.3" }
-truefix-log = { path = "crates/truefix-log", version = "0.1.3" }
-truefix-binary = { path = "crates/truefix-binary", version = "0.1.3" }
-truefix-twsapi-client = { path = "crates/truefix-twsapi-client", version = "0.1.3" }
-truefix-futu-client = { path = "crates/truefix-futu-client", version = "0.1.3" }
-truefix-okx-client = { path = "crates/truefix-okx-client", version = "0.1.3" }
-truefix-ig-client = { path = "crates/truefix-ig-client", version = "0.1.3" }
+truefix-core = { path = "crates/truefix-core", version = "0.1.4" }
+truefix-dict = { path = "crates/truefix-dict", version = "0.1.4" }
+truefix-session = { path = "crates/truefix-session", version = "0.1.4" }
+truefix-transport = { path = "crates/truefix-transport", version = "0.1.4" }
+truefix-config = { path = "crates/truefix-config", version = "0.1.4" }
+truefix-store = { path = "crates/truefix-store", version = "0.1.4" }
+truefix-log = { path = "crates/truefix-log", version = "0.1.4" }
+truefix-binary = { path = "crates/truefix-binary", version = "0.1.4" }
+truefix-twsapi-client = { path = "crates/truefix-twsapi-client", version = "0.1.4" }
+truefix-futu-client = { path = "crates/truefix-futu-client", version = "0.1.4" }
+truefix-okx-client = { path = "crates/truefix-okx-client", version = "0.1.4" }
+truefix-ig-client = { path = "crates/truefix-ig-client", version = "0.1.4" }
 
 [profile.release]
 # Production builds: keep debug info off, optimize. Benchmarks live in benches/.

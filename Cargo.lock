@@ -4482,7 +4482,7 @@ dependencies = [
 
 [[package]]
 name = "truefix"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4513,7 +4513,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-at"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "time",
@@ -4526,7 +4526,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-binary"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "metrics",
  "thiserror 2.0.18",
@@ -4537,7 +4537,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-config"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "thiserror 2.0.18",
  "time",
@@ -4550,7 +4550,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "memchr",
  "rust_decimal",
@@ -4560,7 +4560,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-dict"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "quick-xml",
  "rust_decimal",
@@ -4571,7 +4571,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-futu-client"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aes",
  "bytes",
@@ -4589,7 +4589,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-ig-client"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "reqwest 0.13.4",
  "serde",
@@ -4601,7 +4601,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-log"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "metrics",
@@ -4620,7 +4620,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-okx-client"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -4642,7 +4642,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-session"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "time",
@@ -4653,7 +4653,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-store"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -4670,7 +4670,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-transport"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "metrics",
@@ -4698,7 +4698,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-twsapi-client"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "prost",
  "prost-build",

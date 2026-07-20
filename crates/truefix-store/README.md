@@ -1,7 +1,21 @@
 # truefix-store
 
-Message-store implementations for TrueFix, including memory, file, cached-file, noop, and optional
-SQL, MSSQL, Redb, and MongoDB backends. Feature flags keep optional database drivers out of builds
-that do not need them.
+Pluggable FIX sequence/message persistence.
 
-See the [TrueFix repository](https://github.com/truefix-labs/truefix) for feature flags and configuration details.
+## Backends and features
+
+| Backend | Cargo feature |
+| --- | --- |
+| memory, file, cached file, noop | default |
+| SQLite/PostgreSQL/MySQL through `sqlx` | `sql` |
+| Microsoft SQL Server through `tiberius` | `mssql` |
+| embedded Redb | `redb` |
+| MongoDB | `mongodb` |
+
+All backends implement `MessageStore`; `StoreConfig::Custom` accepts an application-owned
+implementation. External database tests require their respective services and configuration.
+
+```sh
+cargo test -p truefix-store
+cargo test -p truefix-store --features redb
+```

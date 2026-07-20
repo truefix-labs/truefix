@@ -6,14 +6,15 @@ endpoints (order entry, drop copy, market data), signs each Logon with Binance's
 Ed25519 `RawData` scheme, and gives you an interactive REPL to place/cancel/amend orders, submit
 OCO/OTO/OTOCO order lists, subscribe to market data, and query instrument rules.
 
-This is not a toy demo — every FIX message Binance's API defines is implemented (see
-`messages.rs`), and it's a good reference for wiring `truefix` up to a real venue: `.cfg`-driven
+The supported message set is implemented in `messages.rs`; consult the example's `help` output and
+source rather than assuming full coverage of every current Binance API operation. It is a reference
+for wiring `truefix` up to a real venue: `.cfg`-driven
 multi-session `Engine`-adjacent construction (via the lower-level `truefix::transport` API, since
 each session needs a per-session Ed25519 identity that `Engine::start` alone doesn't model), a
 custom `Application` that signs outbound Logons and pretty-prints inbound traffic, a real FIX data
 dictionary (`dict/binance-{oe,md}.fixdict`) for structured repeating-group decoding, and a choice
 of async log backends (`RedbLog` or `FileLog`, the latter exercising this repo's own
-`specs/012-audit-007-remediation/` non-blocking-writes/rotation work).
+non-blocking file-write and rotation support).
 
 ## 1. Get Binance testnet credentials
 

@@ -1,17 +1,17 @@
-# Dictionary source pipeline (stub — Stage S0)
+# Dictionary source pipeline
 
 This directory holds the **normalized TrueFix dictionary** inputs and the transform that produces them.
 Per Constitution Principle III and spec FR-A2, dictionaries are **derived from the FIX Trading
 Community's official machine-readable specifications (FIX Orchestra / Repository)** and normalized into
 TrueFix's own format. QuickFIX/J `FIXxx.xml` files are **never** copied.
 
-## Layout (to be populated in Stages S4/S7)
+## Current layout
 
 ```
 dict-src/
-├── orchestra/      # vendored FIX Orchestra/Repository inputs (official, license-checked)
-├── normalized/     # generated TrueFix normalized dictionaries (one per version)
-└── generate.rs     # transform: orchestra -> normalized (invoked from build.rs)
+├── fix-repository/ # provenance for classic FIX Repository-derived inputs
+├── orchestra/      # FIX Orchestra input used by the conversion tests/tooling
+└── normalized/     # checked-in `.fixdict` dictionaries consumed by runtime and codegen
 ```
 
 ## Dual-track usage (Principle IV)
@@ -20,10 +20,12 @@ The single `normalized/` output is consumed by:
 - `build.rs` codegen → strongly-typed per-version messages (compile-time).
 - the runtime `DataDictionary` validator (run-time).
 
-A build assertion (T047) verifies both originate from the same normalized version/hash so they cannot
-diverge.
+A build assertion verifies that runtime and generated views originate from the same normalized
+content hash.
 
-## Status
+## Current contents
 
-S0 scaffold only. Population of `orchestra/` + the `generate` transform is tracked by tasks T048, T050,
-T074, T075.
+The repository currently contains normalized dictionaries for FIX 4.0–4.4, FIXT 1.1, FIX 5.0,
+FIX 5.0 SP1/SP2, and FIX Latest, plus a FIX Latest Orchestra XML input. This directory is source
+data, not a standalone crate; run `cargo test -p truefix-dict --features dict-tooling` to validate
+parsing, conversion, hashes, and code generation.

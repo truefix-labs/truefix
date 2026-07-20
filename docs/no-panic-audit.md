@@ -1,5 +1,9 @@
 # No-Panic Audit (critical paths)
 
+> Scope note (2026-07-20): this is the FIX-engine critical-path policy, not a proof that tests,
+> examples, build scripts, or every broker client contain no panic sites. Rerun clippy for the
+> revision being released.
+
 Constitution Principle I and SC-005 require that the codec, session state machine, I/O, and timer
 paths contain no reachable `panic!`/`unwrap`/`expect`/`unreachable!`/panicking index, and that all
 recoverable errors are typed. This documents how that is enforced and reviewed (T097).
@@ -17,7 +21,8 @@ Every library crate's `lib.rs` carries, for non-test builds:
 ))]
 ```
 
-and the workspace forbids `unsafe_code`. CI runs `cargo clippy --workspace --all-targets -D warnings`,
+and the workspace forbids `unsafe_code`. The validation command is
+`cargo clippy --workspace --all-targets -- -D warnings`,
 so any `unwrap`/`expect`/`panic`/slice-index introduced on a library path fails the build. Tests and
 examples are exempt (they may `unwrap`).
 
@@ -43,5 +48,6 @@ examples are exempt (they may `unwrap`).
 
 ## Result
 
-No reachable panics on the critical paths under the enforced lints; the guarantee is mechanically
-checked in CI rather than relying on review alone.
+The listed FIX critical paths are intended to remain panic-free under the enforced lints. This
+document records the policy and review scope; a green clippy run on the target revision is required
+before asserting that the mechanical gate passes.

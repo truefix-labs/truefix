@@ -1,3 +1,9 @@
+# TrueFix image-generation prompt
+
+> Asset provenance note: this is the prompt used to explore repository artwork, not product
+> documentation. References to AI agents, unified gateways, and distributed trading infrastructure
+> express visual direction and roadmap ideas; they do not assert implemented workspace features.
+
 @创建图片 Design a modern, iconic GitHub repository logo for an open-source project named "TrueFix".
 
 TrueFix is a next-generation AI-native trading infrastructure written in Rust. It evolves beyond a traditional FIX engine into a unified platform for high-performance financial messaging, binary protocol processing, multi-broker connectivity, and AI-driven trading automation.

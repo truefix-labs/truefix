@@ -1,5 +1,10 @@
 # Acceptance Record
 
+> **Historical evidence record.** This file accumulates feature-by-feature results and therefore
+> contains test counts, dependency versions, and “current” statements from different dates. Keep
+> them for traceability; use the [documentation index](README.md) for current scope and rerun a
+> named command before making a release claim.
+
 Maps the [001 quickstart](../specs/001-fix-engine-parity/quickstart.md) (V1–V9) and
 [002 quickstart](../specs/002-qfj-parity-completion/quickstart.md) (V1–V10) validation scenarios to
 the automated tests that verify them. All run under `cargo test --workspace` unless noted.
@@ -8,7 +13,7 @@ the automated tests that verify them. All run under `cargo test --workspace` unl
 
 | Quickstart | What it proves | Verified by |
 |------------|----------------|-------------|
-| Build & gate | fmt / clippy `-D warnings` / build clean | CI `check` job; local `cargo fmt --check && cargo clippy --workspace --all-targets -D warnings` |
+| Build & gate | fmt / clippy `-D warnings` / build clean | CI `check` job; local `cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings` |
 | V1 Codec round-trip & framing (SC-002) | byte-exact BodyLength/CheckSum; no panic on garbled | `truefix-core` `roundtrip.rs`, `reference_vectors.rs`, `garbled.rs`, `groups.rs`, `field_types.rs`, `versions.rs` |
 | V2 Live session logon→heartbeat→logout (US1) | two-process handshake on FIX 4.2 & 4.4 | `truefix-transport` `integration_logon.rs` |
 | V3 Sequence recovery & resend (US3) | ResendRequest/SequenceReset/PossDup/789 | `truefix-session` `recovery.rs`, `state_machine.rs` |
@@ -54,7 +59,7 @@ the automated tests that verify them. All run under `cargo test --workspace` unl
   container, see `.github/workflows/ci.yml` and the "004" section's US6 entry).
 - `dict-tooling` feature tests: **green** (`cargo test -p truefix-dict --features dict-tooling`; the
   Orchestra XML → normalized-`.fixdict` conversion tool, off by default — CI's `dict-tooling` job).
-- `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`: **clean** (default,
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`: **clean** (default,
   `--features sql`/`mssql`/`redb`/`mongodb`/`dict-tooling`).
 - AT conformance suite: **green** (`cargo test -p truefix-at --test conformance`; 405/405 scenario
   runs across all 9 targeted versions, plus 3 independently-gated special-category suites and a
@@ -413,7 +418,7 @@ citations (struck through) and `specs/005-engine-gap-remediation/tasks.md` for f
   deliberate, disclosed regression-floor bump in `truefix-at` `coverage.rs`
   (`server_suite_scenario_run_count_does_not_regress`), the opposite of 004's "stays unmodified" gate,
   per this feature's own Constitution Principle II framing.
-- **Gate status**: `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -D warnings`
+- **Gate status**: `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -- -D warnings`
   clean across default, `--features sql`/`mssql`/`redb`/`mongodb`/`dict-tooling`; `cargo test --workspace
   --all-features` green (92/92 test binaries passing, 0 failures); `cargo test -p truefix-at --test
   conformance` confirms 373/373 scenario runs; `cargo test -p truefix-at --test coverage` confirms the

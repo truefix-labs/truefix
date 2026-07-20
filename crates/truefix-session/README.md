@@ -1,8 +1,16 @@
 # truefix-session
 
-The TrueFix session layer: sequencing, resend handling, scheduling, and session-state transitions.
-It is responsible for protocol session semantics and is composed with storage, logging, and
-transport crates by the facade.
+Sans-I/O FIX session state machine.
+
+## Current scope
+
+It owns logon/logout, sequence numbers, resend and gap-fill decisions, heartbeat/test-request
+timers, schedules/resets, validation decisions, and application callbacks. Inputs are `Event`s and
+outputs are `Action`s; socket I/O and persistence are supplied by other crates.
 
 Most applications should depend on the [`truefix`](https://crates.io/crates/truefix) facade crate.
-See the [TrueFix repository](https://github.com/truefix-labs/truefix) for engine examples.
+See [Getting Started](../../docs/getting-started.md) for engine examples.
+
+```sh
+cargo test -p truefix-session
+```

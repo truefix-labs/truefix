@@ -1,15 +1,18 @@
 # TrueFix
 
-> A production-grade FIX protocol engine in Rust, at feature parity with QuickFIX/J — first-class
-> acceptor/sell-side support, a dual-track data dictionary, and FIX conformance (acceptance tests) as the
-> release gate.
+Current documentation: [docs/README.md](docs/README.md). Historical parity/audit counts elsewhere in
+the repository are dated evidence and should be revalidated before release claims.
+
+> A Rust FIX protocol engine with initiator and acceptor support, a dual-track data dictionary,
+> persistent stores/logs, and black-box conformance tests.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
 ![Status](https://img.shields.io/badge/status-implemented-brightgreen.svg)
 ![Rust](https://img.shields.io/badge/rust-edition%202024-informational.svg)
 
-**Status**: QuickFIX/J parity is implemented, followed by four independent post-parity audit
-remediation passes, across nine specs:
+**Status**: The capabilities recorded by the repository's QuickFIX/J/QuickFIX-Go comparison work
+are implemented and followed by multiple remediation audits. This is a repository-baseline claim,
+not certification by those upstream projects. Historical evidence is organized across these specs:
 [`specs/001-fix-engine-parity/`](specs/001-fix-engine-parity/) (foundation: codec, session state
 machine, recovery/resend, data dictionary, storage/logging, multi/dynamic sessions, all FIX
 versions + codegen, TLS/auth/monitoring, the AT suite),
@@ -156,14 +159,18 @@ runnable programs.
 
 ## Broker client SDKs
 
-The workspace also contains protocol-native Rust clients for Futu OpenD and Interactive Brokers
-TWS/Gateway. They are independent from the FIX engine and expose broker protocol types directly:
+The workspace also contains independent protocol-native broker/exchange clients. They are not yet
+unified behind a shared provider or instrument abstraction:
 
 - [`truefix-futu-client`](crates/truefix-futu-client/) — OpenD framing, protobuf RPCs, quote/trade
   APIs, push events, reconnect handling, RSA/AES packet support, and an interactive CLI.
 - [`truefix-twsapi-client`](crates/truefix-twsapi-client/) — TWS/Gateway handshake, field-encoded
   requests, supported protobuf request paths, event decoding, quote/account/order/history APIs, and
   an interactive CLI.
+- [`truefix-okx-client`](crates/truefix-okx-client/) — OKX V5 REST and public/private/business
+  WebSocket sessions, with Demo/live intent and non-replaying writes.
+- [`truefix-ig-client`](crates/truefix-ig-client/) — IG REST with v2 session or v3 OAuth
+  authentication; streaming is not implemented in this crate.
 
 All workspace crates are published as versioned packages. See
 [`docs/getting-started.md`](docs/getting-started.md) for prerequisites, complete commands,

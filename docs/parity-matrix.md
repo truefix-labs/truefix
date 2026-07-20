@@ -1,5 +1,10 @@
 # Parity Traceability Matrix
 
+> **Historical traceability record.** Sections were appended across multiple remediation features;
+> early rows can be superseded by later code. Use
+> [`truefix_config::APPENDIX_A_KEYS`](../crates/truefix-config/src/keys.rs) and current tests as the
+> source of truth. See the [documentation index](README.md) for current workspace scope.
+
 Maps the spec parity baselines to where they are realized and verified (T096; parity.md
 CHK033/CHK036). This is the human-readable companion to the machine-checked registries
 (`truefix_config::APPENDIX_A_KEYS`, the AT scenario list).

@@ -1,10 +1,20 @@
 # truefix-at
 
-Acceptance and conformance tests for the TrueFix FIX engine. It validates wire framing, session
-behavior, dictionaries, configuration, and transport behavior across the supported FIX versions.
+Maintainer-facing black-box acceptance suite for the TrueFix FIX engine. It starts a real
+`truefix-transport` acceptor, drives scripted client steps, and reports each scenario/version run.
+Applications normally do not depend on this crate.
 
-This is a maintainer-facing crate, not a normal application dependency. Run the suite from a source
-checkout with `cargo test -p truefix-at --test conformance`.
+## Public surface
 
-- [Repository and release notes](https://github.com/truefix-labs/truefix)
-- [Engine documentation](https://github.com/truefix-labs/truefix/blob/main/docs/getting-started.md)
+The crate exports `Scenario`, `Step`, `ExpectMsg`, `ScenarioResult`, `run_scenario`, `run_report`,
+and `start_acceptor`. Scenarios cover framing, session behavior, dictionaries, configuration, and
+transport behavior across the versions declared by each scenario.
+
+## Verify
+
+```sh
+cargo test -p truefix-at
+cargo test -p truefix-at --test conformance
+```
+
+See the [workspace guide](../../docs/getting-started.md) and [acceptance history](../../docs/acceptance-record.md).

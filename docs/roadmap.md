@@ -1,5 +1,10 @@
 # TrueFix 后续发展路线
 
+> **路线提案（非当前能力清单）**：本文自早期阶段持续追加，下面的“当前”、目录草图和阶段状态
+> 可能保留当时语境。以 [文档索引](README.md) 的当前项目表和实际 workspace crate 为准。
+> 截至 2026-07-20，FAST/SBE、Futu、IB TWS、OKX、IG 已有独立 crate；统一 gateway、Tauri
+> 客户端、新闻 provider、AI agent 和插件系统尚未在 workspace 中实现。
+
 > 本文档描述 TrueFix 在完成 QuickFIX/J 功能对等（spec `001-fix-engine-parity`）之后的后续发展方向。
 > 这些方向将 TrueFix 从一个 FIX 协议引擎扩展为一个**多协议、多券商、AI 驱动的交易基础设施**。
 

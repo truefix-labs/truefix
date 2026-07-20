@@ -338,7 +338,28 @@ and secret are read from the configured credential file unless overridden:
 Use Demo first. Live mode requires both OKX_ENV=live and OKX_CONFIRM_LIVE=1, in addition to
 valid credentials.
 
-## 6. Direct Rust API usage
+## 6. IG REST client
+
+`truefix-ig-client` is a library rather than a workspace CLI. Demo is the default environment. The
+client supports v2 CST/XST sessions and optional v3 OAuth; it does not implement IG streaming.
+
+```rust,no_run
+use truefix_ig_client::{ClientConfig, Credentials, IgClient};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let credentials = Credentials::new("identifier", "password", "api-key")?;
+let client = IgClient::new(ClientConfig::demo(Some(credentials)))?;
+client.login().await?;
+let accounts = client.accounts().await?;
+println!("accounts: {}", accounts.accounts.len());
+client.logout().await?;
+# Ok(()) }
+```
+
+Live construction requires `LiveTradingConfirmation::acknowledge_risk()`. See the
+[crate README](../crates/truefix-ig-client/README.md) for the current REST operation table.
+
+## 7. Direct Rust API usage
 
 Use the clients as workspace dependencies:
 
@@ -347,6 +368,7 @@ Use the clients as workspace dependencies:
 truefix-futu-client = { path = "../truefix/crates/truefix-futu-client" }
 truefix-twsapi-client = { path = "../truefix/crates/truefix-twsapi-client" }
 truefix-okx-client = { path = "../truefix/crates/truefix-okx-client" }
+truefix-ig-client = { path = "../truefix/crates/truefix-ig-client" }
 ```
 
 For Futu, call `FutuClient::connect`, then use `client.quote()` and `client.trade()`. Consume
@@ -355,7 +377,7 @@ asynchronous push events through `client.subscribe_push()`.
 For TWS, call `TwsApiClient::connect(ClientConfig)`, send requests through concrete `req_*` methods
 or `send_request`, and consume callbacks through `read_event` as `Event` values.
 
-## 7. Verification and troubleshooting
+## 8. Verification and troubleshooting
 
 Recommended checks before submitting changes:
 
@@ -365,9 +387,11 @@ cargo check --workspace
 cargo test -p truefix-futu-client --test mock_opend -- --test-threads=1
 cargo test -p truefix-twsapi-client
 cargo test -p truefix-okx-client
+cargo test -p truefix-ig-client
 cargo test -p truefix --example binance_cli
 cargo clippy -p truefix-futu-client -p truefix-twsapi-client --all-targets -- -D warnings
 cargo clippy -p truefix-okx-client -- -D warnings
+cargo clippy -p truefix-ig-client --all-targets -- -D warnings
 cargo clippy -p truefix --example binance_cli -- -D warnings
 ```
 

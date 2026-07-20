@@ -1,8 +1,19 @@
 # truefix-twsapi-client
 
-A native Rust client for Interactive Brokers TWS and Gateway, covering the wire handshake,
-field-encoded requests, market data, accounts, orders, and history APIs.
+A native asynchronous Rust client for Interactive Brokers TWS and IB Gateway.
 
-Add it with `truefix-twsapi-client = "0.1"`. It requires a reachable TWS or IB Gateway instance.
+Add it with `truefix-twsapi-client = "0.1.4"`. It requires a reachable TWS or IB Gateway instance.
 
-See the [TrueFix repository](https://github.com/truefix-labs/truefix) for setup and examples.
+## Current scope
+
+The crate implements the start-API handshake, server-version feature gates, length-prefixed field
+encoding/decoding, request IDs and event pumping. Public request types cover market data, accounts,
+orders, executions, contracts, scanners, news, fundamentals, and historical data. Actual access is
+controlled by the connected TWS/Gateway version, account permissions, and market-data entitlements.
+
+```sh
+cargo run -p truefix-twsapi-client --example twsapi
+cargo test -p truefix-twsapi-client
+```
+
+See [Getting Started](../../docs/getting-started.md#3-ib-twsgateway).
