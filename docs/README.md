@@ -5,8 +5,12 @@ facts are derived from the workspace manifests and public code as of 2026-07-20.
 
 ## Current documentation
 
-- [Workspace README](../README.md): project overview, architecture, examples, and build policy.
+- [Workspace README](../README.md): project overview, install, quick start, and project positioning.
 - [Getting Started](getting-started.md): runnable Futu, IB TWS, Binance, OKX, and IG workflows.
+- [Architecture](architecture.md): engine layers, dictionaries, and extension points.
+- [Conformance](conformance.md): black-box FIX release gates and validation commands.
+- [QuickFIX/J parity](quickfixj-parity.md): compatibility scope and historical evidence.
+- [Security audits](security-audit.md): safety policy and audit trail.
 - Each crate's `README.md`: crate-specific public surface, optional features, and validation command.
 
 ## Project status
