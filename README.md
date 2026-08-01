@@ -7,6 +7,7 @@
 **Production-grade FIX engine for Rust.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
+[![crates.io](https://img.shields.io/crates/v/truefix.svg)](https://crates.io/crates/truefix)
 ![Rust](https://img.shields.io/badge/rust-1.96%2B-informational.svg)
 ![FIX](https://img.shields.io/badge/FIX-4.0%E2%80%935.0SP2%20%7C%20FIXT%201.1%20%7C%20Latest-brightgreen.svg)
 
@@ -19,7 +20,7 @@
 - ✓ 483/483 black-box FIX conformance scenario runs passing
 
 ```sh
-cargo add truefix
+cargo add truefix@0.1.5
 ```
 
 ```rust
@@ -123,6 +124,12 @@ The workspace also contains independent Rust clients for
 [Futu](crates/truefix-futu-client), [Interactive Brokers TWS](crates/truefix-twsapi-client),
 [OKX](crates/truefix-okx-client), and [IG](crates/truefix-ig-client). They are standalone SDKs, not a
 single unified gateway.
+
+## Latest release
+
+TrueFix 0.1.5 corrects Interactive Brokers TWS contract-details request framing so requests match
+the gateway protocol. It also removes deprecated repository tooling. All published workspace crates
+share the `0.1.5` version.
 
 ## Documentation
 
