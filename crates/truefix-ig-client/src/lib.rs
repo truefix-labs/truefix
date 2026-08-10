@@ -1,4 +1,4 @@
-//! Native, typed client for the IG REST trading API.
+//! Native, typed client for the IG REST and Lightstreamer trading APIs.
 //!
 //! The client defaults to IG's demo environment. Selecting production requires an explicit
 //! acknowledgement because position and order operations can affect live funds.
@@ -15,6 +15,7 @@
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod streaming;
 pub mod types;
 
 pub use client::IgClient;
@@ -22,3 +23,4 @@ pub use config::{
     AuthenticationVersion, ClientConfig, Credentials, Environment, LiveTradingConfirmation,
 };
 pub use error::{IgError, IgResult};
+pub use streaming::IgStreamingClient;

@@ -4,6 +4,11 @@ Maintainer-facing black-box acceptance suite for the TrueFix FIX engine. It star
 `truefix-transport` acceptor, drives scripted client steps, and reports each scenario/version run.
 Applications normally do not depend on this crate.
 
+## Independent use
+
+Yes, this crate can be used independently to embed TrueFix black-box scenarios in a maintainer or
+downstream compatibility test suite. It is not needed by production FIX applications.
+
 ## Public surface
 
 The crate exports `Scenario`, `Step`, `ExpectMsg`, `ScenarioResult`, `run_scenario`, `run_report`,

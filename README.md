@@ -20,7 +20,7 @@
 - ✓ 483/483 black-box FIX conformance scenario runs passing
 
 ```sh
-cargo add truefix@0.1.5
+cargo add truefix@0.1.6
 ```
 
 ```rust
@@ -120,16 +120,34 @@ See [Getting started](docs/getting-started.md) and the runnable
 - Metrics-facade integration and structured tracing
 - FAST and SBE codec crates alongside the tag-value FIX engine
 
-The workspace also contains independent Rust clients for
-[Futu](crates/truefix-futu-client), [Interactive Brokers TWS](crates/truefix-twsapi-client),
-[OKX](crates/truefix-okx-client), and [IG](crates/truefix-ig-client). They are standalone SDKs, not a
-single unified gateway.
+## Workspace crates
+
+Every published crate can be depended on independently. Use `truefix` for a complete FIX engine;
+choose a lower-level crate when you only need one layer. Broker clients are standalone SDKs and do
+not require the FIX engine.
+
+| Crate | Independently usable | Purpose and supported scope |
+| --- | --- | --- |
+| [`truefix`](crates/truefix) | Yes — recommended FIX entry point | Facade, application callbacks, `.cfg`-driven engine startup, and re-exports of FIX layers |
+| [`truefix-core`](crates/truefix-core) | Yes | Runtime-neutral FIX message model, SOH codec, framing, typed fields, groups, and dispatch |
+| [`truefix-dict`](crates/truefix-dict) | Yes | Runtime dictionaries, validation, QuickFIX XML/FIX Orchestra conversion, and typed code generation |
+| [`truefix-session`](crates/truefix-session) | Yes, with caller-supplied I/O | Sans-I/O session state machine: logon, sequencing, resend, heartbeat, schedules, and callbacks |
+| [`truefix-transport`](crates/truefix-transport) | Yes | Tokio initiator/acceptor runtime, TCP/TLS, proxies, multi-session routing, backpressure, and shutdown |
+| [`truefix-config`](crates/truefix-config) | Yes | QuickFIX-compatible `.cfg` parsing, inheritance, validation, schedules, TLS, proxy, store, and log settings |
+| [`truefix-store`](crates/truefix-store) | Yes | Memory, file, cached-file, noop, SQL, MSSQL, redb, MongoDB, and custom message stores |
+| [`truefix-log`](crates/truefix-log) | Yes | Screen, file, tracing, composite, SQL, MSSQL, redb, MongoDB, and custom FIX logs |
+| [`truefix-binary`](crates/truefix-binary) | Yes | FAST and SBE codecs over the shared message model; not a multicast/session transport |
+| [`truefix-at`](crates/truefix-at) | Yes, for maintainers/tests | Black-box FIX conformance harness; application runtime dependency is normally unnecessary |
+| [`truefix-futu-client`](crates/truefix-futu-client) | Yes | Futu OpenD protobuf client, request correlation, reconnect, quote/trade requests, and pushes |
+| [`truefix-twsapi-client`](crates/truefix-twsapi-client) | Yes | Interactive Brokers TWS/IB Gateway wire client for market data, accounts, orders, contracts, and events |
+| [`truefix-okx-client`](crates/truefix-okx-client) | Yes | OKX V5 typed REST plus public/private/business WebSocket APIs and 264-operation inventory |
+| [`truefix-ig-client`](crates/truefix-ig-client) | Yes | IG REST and Lightstreamer client, v2/v3 authentication, positions, working orders, and live updates |
 
 ## Latest release
 
-TrueFix 0.1.5 corrects Interactive Brokers TWS contract-details request framing so requests match
-the gateway protocol. It also removes deprecated repository tooling. All published workspace crates
-share the `0.1.5` version.
+TrueFix 0.1.6 adds native IG Lightstreamer support, v3-to-CST/XST token exchange, and the complete
+working-order REST lifecycle. It also refreshes the documentation for every independently usable
+workspace crate. All published workspace crates share the `0.1.6` version.
 
 ## Documentation
 

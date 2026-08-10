@@ -2,7 +2,13 @@
 
 A native asynchronous Rust client for Interactive Brokers TWS and IB Gateway.
 
-Add it with `truefix-twsapi-client = "0.1.4"`. It requires a reachable TWS or IB Gateway instance.
+## Independent use
+
+Yes. This is a standalone broker SDK and does not depend on the TrueFix FIX engine. A running TWS
+or IB Gateway instance is required, and available operations depend on server version and account
+entitlements.
+
+Add it with `truefix-twsapi-client = "0.1.6"`. It requires a reachable TWS or IB Gateway instance.
 
 ## Current scope
 

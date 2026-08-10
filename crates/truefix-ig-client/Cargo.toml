@@ -6,16 +6,20 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-description = "Native, typed IG REST trading client for TrueFix."
+description = "Native, typed IG REST and Lightstreamer trading client for TrueFix."
 publish = true
 
 [dependencies]
+lightstreamer-rs = "1.0.0"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
 
 [lints]
 workspace = true

@@ -2,6 +2,11 @@
 
 Pluggable FIX message/event logging.
 
+## Independent use
+
+Yes. Any application can use the `Log` abstraction and selected backend directly. A FIX engine is
+not required, though the event model is designed for FIX session and message logging.
+
 ## Backends and features
 
 | Backend | Cargo feature |

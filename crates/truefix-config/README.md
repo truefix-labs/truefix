@@ -2,6 +2,11 @@
 
 QuickFIX-style `[DEFAULT]`/`[SESSION]` configuration parsing and resolution for TrueFix.
 
+## Independent use
+
+Yes. It can parse and validate session configuration without starting networking. Applications that
+want a complete configured engine should normally use the `truefix` facade instead.
+
 ## Current scope
 
 - default inheritance, per-session overrides, comments, and `${name}` interpolation;

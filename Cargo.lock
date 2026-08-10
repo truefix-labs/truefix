@@ -1375,7 +1375,7 @@ dependencies = [
  "idna",
  "ipnet",
  "jni",
- "rand 0.10.1",
+ "rand 0.10.2",
  "thiserror 2.0.18",
  "tinyvec",
  "tokio",
@@ -1395,7 +1395,7 @@ dependencies = [
  "jni",
  "once_cell",
  "prefix-trie",
- "rand 0.10.1",
+ "rand 0.10.2",
  "ring",
  "thiserror 2.0.18",
  "tinyvec",
@@ -1420,7 +1420,7 @@ dependencies = [
  "ndk-context",
  "once_cell",
  "parking_lot",
- "rand 0.10.1",
+ "rand 0.10.2",
  "resolv-conf",
  "smallvec",
  "system-configuration",
@@ -1573,7 +1573,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -1884,6 +1884,22 @@ dependencies = [
  "cc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "lightstreamer-rs"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a6c0df0900ddb719f9f5d167e38887366ab52630f4335f2450e047771ef26e"
+dependencies = [
+ "futures-util",
+ "httparse",
+ "native-tls",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
 ]
 
 [[package]]
@@ -2677,7 +2693,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.41",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2694,7 +2710,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rand_pcg",
  "ring",
  "rustc-hash",
@@ -2716,7 +2732,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -2771,9 +2787,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -3848,7 +3864,7 @@ dependencies = [
  "generic-array",
  "log",
  "percent-encoding",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rsa 0.10.0-rc.18",
  "serde",
  "sha1 0.11.0",
@@ -3881,7 +3897,7 @@ dependencies = [
  "log",
  "md-5 0.11.0",
  "memchr",
- "rand 0.10.1",
+ "rand 0.10.2",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4205,9 +4221,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.52.3"
+version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
+checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
 dependencies = [
  "bytes",
  "libc",
@@ -4312,6 +4328,20 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tungstenite 0.29.0",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
+dependencies = [
+ "futures-util",
+ "log",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tungstenite 0.30.0",
 ]
 
 [[package]]
@@ -4482,7 +4512,7 @@ dependencies = [
 
 [[package]]
 name = "truefix"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4513,7 +4543,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-at"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "time",
@@ -4526,7 +4556,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-binary"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "metrics",
  "thiserror 2.0.18",
@@ -4537,7 +4567,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-config"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "thiserror 2.0.18",
  "time",
@@ -4550,7 +4580,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "memchr",
  "rust_decimal",
@@ -4560,7 +4590,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-dict"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "quick-xml",
  "rust_decimal",
@@ -4571,7 +4601,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-futu-client"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes",
  "bytes",
@@ -4589,8 +4619,10 @@ dependencies = [
 
 [[package]]
 name = "truefix-ig-client"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
+ "futures-util",
+ "lightstreamer-rs",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -4601,7 +4633,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-log"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "metrics",
@@ -4620,7 +4652,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-okx-client"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -4642,7 +4674,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-session"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "time",
@@ -4653,7 +4685,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-store"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -4670,7 +4702,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-transport"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "metrics",
@@ -4698,7 +4730,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-twsapi-client"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "prost",
  "prost-build",
@@ -4749,6 +4781,23 @@ dependencies = [
  "rustls 0.23.41",
  "rustls-pki-types",
  "sha1 0.10.6",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "native-tls",
+ "rand 0.10.2",
+ "sha1 0.11.0",
  "thiserror 2.0.18",
 ]
 

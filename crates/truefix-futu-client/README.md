@@ -2,7 +2,12 @@
 
 A native asynchronous Rust client for Futu OpenD.
 
-Add it with `truefix-futu-client = "0.1.4"`. Running it requires a reachable Futu OpenD instance;
+## Independent use
+
+Yes. This is a standalone broker SDK and does not depend on the TrueFix FIX engine. It requires a
+reachable OpenD process plus the user's market/trading permissions.
+
+Add it with `truefix-futu-client = "0.1.6"`. Running it requires a reachable Futu OpenD instance;
 credentials and connection settings must be provided by the application.
 
 ## Current scope

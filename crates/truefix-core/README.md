@@ -2,6 +2,11 @@
 
 Runtime-agnostic FIX field/message model and tag-value codec.
 
+## Independent use
+
+Yes. This is the smallest dependency for applications that only need FIX messages, fields, framing,
+SOH encoding/decoding, repeating groups, or message dispatch. It has no Tokio/runtime requirement.
+
 ## Current scope
 
 - `Field`, `FieldMap`, `Group`, and `Message`;

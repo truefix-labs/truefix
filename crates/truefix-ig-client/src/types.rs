@@ -16,8 +16,18 @@ pub enum OrderType {
     Market,
     #[serde(rename = "LIMIT")]
     Limit,
+    #[serde(rename = "STOP")]
+    Stop,
     #[serde(rename = "QUOTE")]
     Quote,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TimeInForce {
+    #[serde(rename = "GOOD_TILL_CANCELLED")]
+    GoodTillCancelled,
+    #[serde(rename = "GOOD_TILL_DATE")]
+    GoodTillDate,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,11 +67,33 @@ pub(crate) struct V3LoginResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct OAuthToken {
+    #[serde(alias = "accessToken")]
     pub access_token: String,
+    #[serde(alias = "refreshToken")]
     pub refresh_token: String,
+    #[serde(
+        alias = "expiresIn",
+        deserialize_with = "deserialize_u64_string_or_number"
+    )]
     pub expires_in: u64,
+}
+
+fn deserialize_u64_string_or_number<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value {
+        Number(u64),
+        String(String),
+    }
+
+    match Value::deserialize(deserializer)? {
+        Value::Number(value) => Ok(value),
+        Value::String(value) => value.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +156,8 @@ pub struct PositionMarket {
 pub struct MarketDetails {
     pub instrument: Instrument,
     pub snapshot: MarketSnapshot,
+    #[serde(default)]
+    pub dealing_rules: Option<DealingRules>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,6 +167,30 @@ pub struct Instrument {
     pub epic: String,
     pub instrument_type: Option<String>,
     pub expiry: Option<String>,
+    #[serde(default)]
+    pub currencies: Vec<InstrumentCurrency>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstrumentCurrency {
+    pub code: String,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DealingRules {
+    #[serde(default)]
+    pub min_deal_size: Option<RuleValue>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RuleValue {
+    pub value: f64,
+    #[serde(default)]
+    pub unit: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +213,10 @@ pub struct MarketsResponse {
 pub struct MarketData {
     pub epic: String,
     pub instrument_name: String,
+    #[serde(default)]
+    pub instrument_type: Option<String>,
+    #[serde(default)]
+    pub expiry: Option<String>,
     pub bid: Option<f64>,
     pub offer: Option<f64>,
 }
@@ -198,7 +260,11 @@ pub struct HistoricalPrice {
     pub snapshot_time: Option<String>,
     pub snapshot_time_utc: Option<String>,
     pub open_price: PricePoint,
+    pub high_price: PricePoint,
+    pub low_price: PricePoint,
     pub close_price: PricePoint,
+    #[serde(default)]
+    pub last_traded_volume: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -231,4 +297,156 @@ pub struct CreatePositionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DealReferenceResponse {
     pub deal_reference: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchAccountResponse {
+    pub dealing_enabled: bool,
+    #[serde(default)]
+    pub has_active_demo_accounts: bool,
+    #[serde(default)]
+    pub has_active_live_accounts: bool,
+    #[serde(default)]
+    pub trailing_stops_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingOrdersResponse {
+    #[serde(default)]
+    pub working_orders: Vec<WorkingOrder>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingOrder {
+    pub working_order_data: WorkingOrderData,
+    pub market_data: MarketData,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingOrderData {
+    pub deal_id: String,
+    #[serde(default)]
+    pub deal_reference: Option<String>,
+    pub direction: Direction,
+    pub epic: String,
+    pub order_size: f64,
+    pub order_level: f64,
+    #[serde(rename = "orderType")]
+    pub order_type: OrderType,
+    pub time_in_force: TimeInForce,
+    #[serde(default)]
+    pub good_till_date: Option<String>,
+    #[serde(default)]
+    pub guaranteed_stop: bool,
+    #[serde(default)]
+    pub stop_level: Option<f64>,
+    #[serde(default)]
+    pub stop_distance: Option<f64>,
+    #[serde(default)]
+    pub limit_level: Option<f64>,
+    #[serde(default)]
+    pub limit_distance: Option<f64>,
+    #[serde(default)]
+    pub currency_code: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorkingOrderRequest {
+    pub epic: String,
+    pub direction: Direction,
+    pub size: f64,
+    pub level: f64,
+    #[serde(rename = "type")]
+    pub order_type: OrderType,
+    pub time_in_force: TimeInForce,
+    pub guaranteed_stop: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_level: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_distance: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_level: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_distance: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub good_till_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deal_reference: Option<String>,
+    pub currency_code: String,
+    pub expiry: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateWorkingOrderRequest {
+    pub level: f64,
+    #[serde(rename = "type")]
+    pub order_type: OrderType,
+    pub time_in_force: TimeInForce,
+    pub guaranteed_stop: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub good_till_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_level: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_distance: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_level: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_distance: Option<f64>,
+}
+
+/// Authoritative acknowledgement returned by `GET /confirms/{dealReference}`.
+/// Optional fields keep the client forward-compatible with IG's product- and
+/// rejection-specific response shapes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DealConfirmation {
+    pub deal_reference: String,
+    #[serde(default)]
+    pub deal_id: Option<String>,
+    pub deal_status: DealStatus,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub level: Option<f64>,
+    #[serde(default)]
+    pub size: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum DealStatus {
+    Accepted,
+    Rejected,
+    #[serde(other)]
+    Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deal_confirmation_accepts_product_specific_optional_fields() {
+        let confirmation: DealConfirmation = serde_json::from_value(serde_json::json!({
+            "dealReference": "reference-1",
+            "dealId": "deal-1",
+            "dealStatus": "ACCEPTED",
+            "status": "OPEN",
+            "level": 123.45,
+            "size": 2,
+            "epic": "CS.D.AAPL.CFD.IP"
+        }))
+        .unwrap();
+        assert_eq!(confirmation.deal_status, DealStatus::Accepted);
+        assert_eq!(confirmation.deal_id.as_deref(), Some("deal-1"));
+    }
 }

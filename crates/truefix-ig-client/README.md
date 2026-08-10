@@ -1,16 +1,22 @@
 # truefix-ig-client
 
-`truefix-ig-client` 是 TrueFix 的原生、类型化 IG REST Trading API 客户端。它支持 IG
-Demo 与 Live 环境、v2 CST/XST session 认证以及可选的 v3 OAuth 认证。
+`truefix-ig-client` 是 TrueFix 的原生、类型化 IG Trading API 客户端。它支持 IG Demo
+与 Live 环境、REST、Lightstreamer、v2 CST/XST session 认证以及可选的 v3 OAuth 认证。
 
 Demo 是默认环境。Live 环境必须显式确认风险；凭证由调用方的 secret provider 注入，crate
 不会从环境变量或 `.env` 文件读取凭证。
+
+## 独立使用
+
+可以。本 crate 是独立的 IG SDK，不依赖 TrueFix FIX engine。它支持 Demo/Live REST、v2/v3
+认证、账户/市场/历史价格/持仓、working-order 全生命周期，以及 Lightstreamer 市场、账户和
+交易事件；实际能力仍受 IG 账户类型、地区和行情权限约束。
 
 ## 安装
 
 ```toml
 [dependencies]
-truefix-ig-client = "0.1.4"
+truefix-ig-client = "0.1.6"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -61,8 +67,9 @@ let accounts = client.accounts().await?;
 | v2（默认） | `Version: 2` | `CST`、`X-SECURITY-TOKEN` | 简单的 session 认证 |
 | v3（可选） | `Version: 3`、账户 ID | Bearer token、`IG-ACCOUNT-ID` | 需要 OAuth token 生命周期管理 |
 
-IG 的 streaming 服务仍需要 CST/XST；本 crate 当前仅提供 REST 客户端。`login()` 返回的
-`lightstreamer_endpoint` 供应用自行创建 streaming 连接，不能硬编码。
+IG 的 streaming 服务需要 CST/XST。v2 session 会直接复用登录 token；v3 OAuth session
+会按官方流程调用 `GET /session?fetchSessionTokens=true` 自动换取 streaming token。
+Lightstreamer endpoint 始终使用登录响应值，不硬编码。
 
 ## 已支持的 REST 操作
 
@@ -77,6 +84,32 @@ IG 的 streaming 服务仍需要 CST/XST；本 crate 当前仅提供 REST 客户
 | `search_markets` | `GET /markets?searchTerm=…` | 1 |
 | `historical_prices` | `GET /prices/{epic}` | 3 |
 | `create_position` | `POST /positions/otc` | 2 |
+| `deal_confirmation` | `GET /confirms/{dealReference}` | 1 |
+| `working_orders` | `GET /workingorders` | 2 |
+| `create_working_order` | `POST /workingorders/otc` | 2 |
+| `update_working_order` | `PUT /workingorders/otc/{dealId}` | 2 |
+| `delete_working_order` | `DELETE /workingorders/otc/{dealId}` | 2 |
+
+## Lightstreamer
+
+`connect_streaming()` 返回 `IgStreamingClient`，可订阅市场、账户和交易事件。交易订阅使用
+`TRADE:{accountId}` 的 DISTINCT 模式，并包含 `CONFIRMS`、`OPU` 与 `WOU`，其中 `WOU`
+覆盖 working-order 状态变化。
+
+```rust,no_run
+use futures_util::StreamExt;
+# use truefix_ig_client::{ClientConfig, Credentials, IgClient};
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# let credentials = Credentials::new("identifier", "password", "api-key")?;
+# let client = IgClient::new(ClientConfig::demo(Some(credentials)))?;
+# client.login().await?;
+let streaming = client.connect_streaming().await?;
+let mut trades = streaming.subscribe_trades().await?;
+while let Some(event) = trades.next().await {
+    println!("{event:?}");
+}
+# Ok(()) }
+```
 
 路径与 query 参数会被编码；例如 epic 中的 `/` 不会被误认为 URL path 分隔符。
 

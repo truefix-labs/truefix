@@ -2,6 +2,11 @@
 
 Sans-I/O FIX session state machine.
 
+## Independent use
+
+Yes. Embed it when you want to supply your own sockets, timers, persistence, or event loop. Use the
+`truefix` facade or `truefix-transport` when you want a ready-to-run Tokio engine.
+
 ## Current scope
 
 It owns logon/logout, sequence numbers, resend and gap-fill decisions, heartbeat/test-request

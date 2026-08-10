@@ -2,10 +2,15 @@
 
 FAST and SBE binary-protocol codecs over `truefix_core::Message`.
 
+## Independent use
+
+Yes. Depend on this crate directly when you need FAST/SBE schema parsing and encode/decode without
+the full FIX engine. It does not provide multicast recovery, exchange sessions, or network I/O.
+
 Add it when an integration needs a binary codec:
 
 ```toml
-truefix-binary = "0.1.4"
+truefix-binary = "0.1.6"
 ```
 
 ## Current scope

@@ -27,4 +27,8 @@ pub enum IgError {
     },
     #[error("response decoding failed: {0}")]
     Decode(#[from] serde_json::Error),
+    #[error("Lightstreamer error: {0}")]
+    Streaming(#[from] lightstreamer_rs::Error),
+    #[error("invalid Lightstreamer configuration: {0}")]
+    StreamingConfiguration(#[from] lightstreamer_rs::ConfigError),
 }

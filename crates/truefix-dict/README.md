@@ -2,6 +2,11 @@
 
 FIX data-dictionary parsing, validation, conversion, and typed Rust code generation.
 
+## Independent use
+
+Yes. Use it directly for runtime validation or dictionary/code-generation tooling without running a
+FIX session. The optional `dict-tooling` feature enables conversion commands and parsers.
+
 ## Current scope
 
 - runtime `DataDictionary` validation for fields, messages, components, and repeating groups;

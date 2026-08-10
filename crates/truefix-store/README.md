@@ -2,6 +2,11 @@
 
 Pluggable FIX sequence/message persistence.
 
+## Independent use
+
+Yes. Backends implement `MessageStore` and can be constructed outside the engine. The crate stores
+FIX sequence state and wire messages; it is not a general-purpose application database layer.
+
 ## Backends and features
 
 | Backend | Cargo feature |

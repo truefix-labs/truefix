@@ -2,6 +2,11 @@
 
 Tokio-based FIX initiator and acceptor runtime.
 
+## Independent use
+
+Yes. Use it directly to assemble initiators/acceptors with custom application, store, log, and
+dictionary services. The `truefix` facade is simpler for `.cfg`-driven applications.
+
 ## Current scope
 
 - TCP and rustls TLS, reconnecting and scheduled initiators;
