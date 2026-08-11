@@ -23,9 +23,13 @@ pub struct PlaceOrder {
     pub side: String,
     #[serde(rename = "ordType")]
     pub order_type: String,
-    #[serde(rename = "sz")]
+    #[serde(rename = "sz", with = "rust_decimal::serde::str")]
     pub size: DecimalValue,
-    #[serde(rename = "px", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "px",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub price: Option<DecimalValue>,
     #[serde(rename = "clOrdId", skip_serializing_if = "Option::is_none")]
     pub client_order_id: Option<ClientOrderId>,
@@ -43,9 +47,17 @@ pub struct PlaceOrder {
     pub self_trade_prevention_mode: Option<String>,
     #[serde(rename = "attachAlgoOrds", skip_serializing_if = "Option::is_none")]
     pub attached_algo_orders: Option<serde_json::Value>,
-    #[serde(rename = "pxUsd", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "pxUsd",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub price_usd: Option<DecimalValue>,
-    #[serde(rename = "pxVol", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "pxVol",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub price_volatility: Option<DecimalValue>,
     #[serde(rename = "banAmend", skip_serializing_if = "Option::is_none")]
     pub ban_amend: Option<bool>,
@@ -107,19 +119,43 @@ pub struct OrderReference {
 pub struct AmendOrder {
     #[serde(flatten)]
     pub order: OrderReference,
-    #[serde(rename = "newSz", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newSz",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_size: Option<DecimalValue>,
-    #[serde(rename = "newPx", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newPx",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_price: Option<DecimalValue>,
     #[serde(rename = "reqId", skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
-    #[serde(rename = "newTpTriggerPx", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newTpTriggerPx",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_take_profit_trigger_price: Option<DecimalValue>,
-    #[serde(rename = "newTpOrdPx", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newTpOrdPx",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_take_profit_order_price: Option<DecimalValue>,
-    #[serde(rename = "newSlTriggerPx", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newSlTriggerPx",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_stop_loss_trigger_price: Option<DecimalValue>,
-    #[serde(rename = "newSlOrdPx", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newSlOrdPx",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_stop_loss_order_price: Option<DecimalValue>,
     #[serde(rename = "newTpTriggerPxType", skip_serializing_if = "Option::is_none")]
     pub new_take_profit_trigger_price_type: Option<String>,
@@ -127,15 +163,31 @@ pub struct AmendOrder {
     pub new_stop_loss_trigger_price_type: Option<String>,
     #[serde(rename = "attachAlgoOrds", skip_serializing_if = "Option::is_none")]
     pub attached_algo_orders: Option<serde_json::Value>,
-    #[serde(rename = "newTriggerPx", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newTriggerPx",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_trigger_price: Option<DecimalValue>,
-    #[serde(rename = "newOrdPx", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newOrdPx",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_order_price: Option<DecimalValue>,
     #[serde(rename = "pxAmendType", skip_serializing_if = "Option::is_none")]
     pub price_amend_type: Option<String>,
-    #[serde(rename = "newTpTriggerRatio", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newTpTriggerRatio",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_take_profit_trigger_ratio: Option<DecimalValue>,
-    #[serde(rename = "newSlTriggerRatio", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newSlTriggerRatio",
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
     pub new_stop_loss_trigger_ratio: Option<DecimalValue>,
     #[serde(rename = "cxlOnFail", skip_serializing_if = "Option::is_none")]
     pub cancel_on_fail: Option<bool>,
@@ -274,6 +326,65 @@ mod tests {
         let rendered = serde_json::to_value(order).unwrap();
         assert_eq!(rendered["isElpTakerAccess"], true);
         assert!(!rendered.as_object().unwrap().contains_key("isElpTaker"));
+    }
+
+    #[test]
+    fn order_decimal_fields_remain_json_strings_with_serde_float_enabled() {
+        let mut order = PlaceOrder::new(
+            "BTC-USDT",
+            "cash",
+            "buy",
+            "limit",
+            "0.00000001".parse::<DecimalValue>().unwrap(),
+        );
+        order.price = Some("123456789.12345678".parse().unwrap());
+        order.price_usd = Some("42.125".parse().unwrap());
+        order.price_volatility = Some("0.625".parse().unwrap());
+
+        let rendered = serde_json::to_value(order).unwrap();
+        assert_eq!(rendered["sz"], "0.00000001");
+        assert_eq!(rendered["px"], "123456789.12345678");
+        assert_eq!(rendered["pxUsd"], "42.125");
+        assert_eq!(rendered["pxVol"], "0.625");
+
+        let amendment = AmendOrder {
+            order: OrderReference {
+                instrument_id: "BTC-USDT".to_owned(),
+                order_id: Some("42".to_owned()),
+                client_order_id: None,
+            },
+            new_size: Some("0.00000002".parse().unwrap()),
+            new_price: Some("123456789.12345679".parse().unwrap()),
+            request_id: None,
+            new_take_profit_trigger_price: Some("2.1".parse().unwrap()),
+            new_take_profit_order_price: Some("2.2".parse().unwrap()),
+            new_stop_loss_trigger_price: Some("1.1".parse().unwrap()),
+            new_stop_loss_order_price: Some("1.2".parse().unwrap()),
+            new_take_profit_trigger_price_type: None,
+            new_stop_loss_trigger_price_type: None,
+            attached_algo_orders: None,
+            new_trigger_price: Some("3.1".parse().unwrap()),
+            new_order_price: Some("3.2".parse().unwrap()),
+            price_amend_type: None,
+            new_take_profit_trigger_ratio: Some("0.25".parse().unwrap()),
+            new_stop_loss_trigger_ratio: Some("0.5".parse().unwrap()),
+            cancel_on_fail: None,
+        };
+        let rendered = serde_json::to_value(amendment).unwrap();
+        for (field, expected) in [
+            ("newSz", "0.00000002"),
+            ("newPx", "123456789.12345679"),
+            ("newTpTriggerPx", "2.1"),
+            ("newTpOrdPx", "2.2"),
+            ("newSlTriggerPx", "1.1"),
+            ("newSlOrdPx", "1.2"),
+            ("newTriggerPx", "3.1"),
+            ("newOrdPx", "3.2"),
+            ("newTpTriggerRatio", "0.25"),
+            ("newSlTriggerRatio", "0.5"),
+        ] {
+            assert_eq!(rendered[field], expected, "{field}");
+        }
     }
 
     #[test]

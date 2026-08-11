@@ -73,7 +73,7 @@ truefix-log = { path = "crates/truefix-log", version = "0.1.6" }
 truefix-binary = { path = "crates/truefix-binary", version = "0.1.6" }
 truefix-twsapi-client = { path = "crates/truefix-twsapi-client", version = "0.1.6" }
 truefix-futu-client = { path = "crates/truefix-futu-client", version = "0.1.6" }
-truefix-okx-client = { path = "crates/truefix-okx-client", version = "0.1.6" }
+truefix-okx-client = { path = "crates/truefix-okx-client", version = "0.1.7" }
 truefix-ig-client = { path = "crates/truefix-ig-client", version = "0.1.6" }
 
 [profile.release]

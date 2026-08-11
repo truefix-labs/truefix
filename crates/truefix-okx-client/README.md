@@ -7,7 +7,7 @@ Native asynchronous Rust client for OKX V5 REST and WebSocket APIs.
 Yes. This is a standalone exchange SDK and does not depend on the TrueFix FIX engine. Public APIs
 work without credentials; private account/trading APIs require OKX credentials and permissions.
 
-Add it with `truefix-okx-client = "0.1.6"`. Provide API credentials through your application's secret
+Add it with `truefix-okx-client = "0.1.7"`. Provide API credentials through your application's secret
 provider; the client never needs credentials embedded in source code.
 
 ## Current scope

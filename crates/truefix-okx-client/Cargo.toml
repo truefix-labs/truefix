@@ -1,6 +1,6 @@
 [package]
 name = "truefix-okx-client"
-version.workspace = true
+version = "0.1.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ futures-util.workspace = true
 hmac.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
-rust_decimal.workspace = true
+rust_decimal = { workspace = true, features = ["serde-with-str"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded.workspace = true
@@ -26,6 +26,11 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+# Reproduce downstream feature unification so order wire tests fail if a
+# Decimal field ever falls back to rust_decimal's numeric serializer.
+rust_decimal = { workspace = true, features = ["serde-float"] }
 
 [lints]
 workspace = true
