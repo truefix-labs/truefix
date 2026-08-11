@@ -8,7 +8,7 @@ Yes. This is a standalone broker SDK and does not depend on the TrueFix FIX engi
 or IB Gateway instance is required, and available operations depend on server version and account
 entitlements.
 
-Add it with `truefix-twsapi-client = "0.1.6"`. It requires a reachable TWS or IB Gateway instance.
+Add it with `truefix-twsapi-client = "0.1.7"`. It requires a reachable TWS or IB Gateway instance.
 
 ## Current scope
 

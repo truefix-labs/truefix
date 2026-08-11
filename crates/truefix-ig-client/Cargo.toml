@@ -1,6 +1,6 @@
 [package]
 name = "truefix-ig-client"
-version.workspace = true
+version = "0.1.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

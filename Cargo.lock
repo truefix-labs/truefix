@@ -4601,7 +4601,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-futu-client"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aes",
  "bytes",
@@ -4619,7 +4619,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-ig-client"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "futures-util",
  "lightstreamer-rs",
@@ -4730,7 +4730,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-twsapi-client"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "prost",
  "prost-build",

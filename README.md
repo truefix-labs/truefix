@@ -147,9 +147,10 @@ not require the FIX engine.
 
 TrueFix 0.1.6 adds native IG Lightstreamer support, v3-to-CST/XST token exchange, and the complete
 working-order REST lifecycle. It also refreshes the documentation for every independently usable
-workspace crate. `truefix-okx-client` 0.1.7 is a focused wire-format hotfix which keeps every
-order Decimal encoded as the string required by OKX even when downstream Cargo feature unification
-enables `rust_decimal/serde-float`; the remaining published workspace crates stay on `0.1.6`.
+workspace crate. The independently usable broker clients are released together at `0.1.7`;
+`truefix-okx-client` additionally contains a wire-format hotfix which keeps every order Decimal
+encoded as the string required by OKX even when downstream Cargo feature unification enables
+`rust_decimal/serde-float`. The FIX engine crates remain on `0.1.6`.
 
 ## Documentation
 

@@ -16,7 +16,7 @@ Demo 是默认环境。Live 环境必须显式确认风险；凭证由调用方�
 
 ```toml
 [dependencies]
-truefix-ig-client = "0.1.6"
+truefix-ig-client = "0.1.7"
 tokio = { version = "1", features = ["full"] }
 ```
 
