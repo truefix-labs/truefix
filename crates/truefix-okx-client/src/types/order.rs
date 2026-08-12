@@ -211,7 +211,10 @@ pub struct Order {
 /// Execution/fill record.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Fill {
-    #[serde(rename = "fillId")]
+    /// OKX Demo can return an otherwise valid fill-history row without
+    /// `fillId`. Preserve the row so the adapter can derive a deterministic
+    /// evidence identity from the remaining native fields.
+    #[serde(default, rename = "fillId")]
     pub fill_id: String,
     #[serde(rename = "ordId")]
     pub order_id: String,

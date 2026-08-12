@@ -33,6 +33,26 @@ fn common_projections_preserve_order_and_execution_extension_fields() {
 }
 
 #[test]
+fn demo_fill_without_fill_id_remains_decodable() {
+    let fill: Fill = serde_json::from_value(serde_json::json!({
+        "ordId": "100",
+        "tradeId": "trade-200",
+        "instId": "BTC-USDT",
+        "fillPx": "65000.25",
+        "fillSz": "0.10",
+        "ts": "1700000000000"
+    }))
+    .expect("a valid OKX Demo fill must not be dropped solely because fillId is absent");
+    assert!(fill.fill_id.is_empty());
+    assert_eq!(
+        fill.native_fields
+            .get("tradeId")
+            .and_then(serde_json::Value::as_str),
+        Some("trade-200")
+    );
+}
+
+#[test]
 fn account_position_and_market_projections_preserve_native_data() {
     let balance: Balance = serde_json::from_value(serde_json::json!({
         "ccy": "USDT", "availBal": "12.34", "eq": "15.00", "frozenBal": "2.66",
