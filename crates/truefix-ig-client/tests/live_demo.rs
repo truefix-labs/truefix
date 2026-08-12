@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use lightstreamer_rs::SubscriptionEvent;
 use truefix_ig_client::{ClientConfig, Credentials, IgClient};
 
 fn credentials_from_environment() -> Credentials {
@@ -85,6 +86,59 @@ async fn demo_login_rest_and_lightstreamer() {
         .expect("account subscription ended");
 
     drop(account_updates);
+    streaming.disconnect().await.expect("stream disconnect");
+    client.logout().await.expect("logout");
+}
+
+#[tokio::test]
+#[ignore = "requires IG demo credentials, an entitled EPIC, and network access"]
+async fn demo_v3_market_and_optional_ladder_streams() {
+    let account_id = std::env::var("IG_ACCOUNT_ID").expect("IG_ACCOUNT_ID is required");
+    let epic = std::env::var("IG_EPIC").expect("IG_EPIC is required");
+    let config = ClientConfig::demo(Some(credentials_from_environment()))
+        .with_v3_authentication(account_id)
+        .expect("valid v3 config");
+    let client = IgClient::new(config).expect("valid config");
+    client.login().await.expect("v3 demo login");
+    let streaming = client
+        .connect_streaming()
+        .await
+        .expect("Lightstreamer connection");
+
+    let mut quotes = streaming
+        .subscribe_markets([&epic])
+        .await
+        .expect("MARKET subscription");
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while let Some(event) = quotes.next().await {
+            if matches!(event, SubscriptionEvent::Update(_)) {
+                return;
+            }
+        }
+        panic!("MARKET subscription ended before a quote");
+    })
+    .await
+    .expect("MARKET quote timeout");
+
+    if std::env::var("IG_REQUIRE_LADDER").as_deref() == Ok("true") {
+        let mut ladder = streaming
+            .subscribe_market_ladders([&epic])
+            .await
+            .expect("PRICE ladder subscription");
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while let Some(event) = ladder.next().await {
+                if matches!(event, SubscriptionEvent::Update(_)) {
+                    return;
+                }
+            }
+            panic!("PRICE subscription ended before a ladder update");
+        })
+        .await
+        .expect("PRICE ladder timeout");
+        drop(ladder);
+    }
+
+    drop(quotes);
     streaming.disconnect().await.expect("stream disconnect");
     client.logout().await.expect("logout");
 }

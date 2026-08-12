@@ -16,7 +16,7 @@ Demo 是默认环境。Live 环境必须显式确认风险；凭证由调用方�
 
 ```toml
 [dependencies]
-truefix-ig-client = "0.1.7"
+truefix-ig-client = "0.1.10"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -82,6 +82,8 @@ Lightstreamer endpoint 始终使用登录响应值，不硬编码。
 | `positions` | `GET /positions` | 2 |
 | `market` | `GET /markets/{epic}` | 3 |
 | `search_markets` | `GET /markets?searchTerm=…` | 1 |
+| `instrument_categories` | `GET /categories` | 1 |
+| `category_instruments` | `GET /categories/{categoryId}/instruments?pageSize=…&pageNumber=…` | 1 |
 | `historical_prices` | `GET /prices/{epic}` | 3 |
 | `create_position` | `POST /positions/otc` | 2 |
 | `deal_confirmation` | `GET /confirms/{dealReference}` | 1 |
@@ -139,7 +141,7 @@ let prices = client
 
 ```rust,no_run
 use truefix_ig_client::{
-    types::{CreatePositionRequest, Direction, OrderType},
+    types::{CreatePositionRequest, Direction, OrderType, PositionTimeInForce},
     ClientConfig, Credentials, IgClient,
 };
 
@@ -156,6 +158,7 @@ let acknowledgement = client
         force_open: false,
         guaranteed_stop: false,
         order_type: OrderType::Market,
+        time_in_force: PositionTimeInForce::FillOrKill,
         size: 1.0,
         level: None,
         limit_level: None,

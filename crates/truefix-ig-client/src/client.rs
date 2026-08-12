@@ -9,10 +9,11 @@ use crate::{
     error::{IgError, IgResult},
     streaming::IgStreamingClient,
     types::{
-        AccountsResponse, CreatePositionRequest, CreateWorkingOrderRequest, DealConfirmation,
-        DealReferenceResponse, HistoricalPricesQuery, HistoricalPricesResponse, LoginResponse,
-        MarketDetails, MarketsResponse, OAuthToken, PositionsResponse, SwitchAccountResponse,
-        UpdateWorkingOrderRequest, V3LoginResponse, WorkingOrdersResponse,
+        AccountsResponse, ActivityHistoryResponse, CategoryInstrumentsResponse,
+        CreatePositionRequest, CreateWorkingOrderRequest, DealConfirmation, DealReferenceResponse,
+        HistoricalPricesQuery, HistoricalPricesResponse, InstrumentCategoriesResponse,
+        LoginResponse, MarketDetails, MarketsResponse, OAuthToken, PositionsResponse,
+        SwitchAccountResponse, UpdateWorkingOrderRequest, V3LoginResponse, WorkingOrdersResponse,
     },
 };
 
@@ -174,6 +175,11 @@ impl IgClient {
         self.get("accounts", 1).await
     }
 
+    /// Returns authoritative details for the currently active session/account.
+    pub async fn session_details(&self) -> IgResult<LoginResponse> {
+        self.get("session", 1).await
+    }
+
     /// Switches the active V2 account without changing the user's default.
     ///
     /// IG rotates the X-SECURITY-TOKEN when the active account changes. The
@@ -238,6 +244,78 @@ impl IgClient {
         let mut url = self.url("markets")?;
         url.query_pairs_mut().append_pair("searchTerm", query);
         self.send_json(self.request_url(Method::GET, url, 1, true)?)
+            .await
+    }
+
+    /// Returns every instrument category visible to the authenticated account.
+    pub async fn instrument_categories(&self) -> IgResult<InstrumentCategoriesResponse> {
+        self.get("categories", 1).await
+    }
+
+    /// Returns one zero-based page of instruments in an account-visible category.
+    pub async fn category_instruments(
+        &self,
+        category_id: &str,
+        page_number: u32,
+        page_size: u16,
+    ) -> IgResult<CategoryInstrumentsResponse> {
+        let category_id = category_id.trim();
+        if category_id.is_empty() {
+            return Err(IgError::InvalidConfiguration(
+                "IG instrument category ID must not be empty".into(),
+            ));
+        }
+        self.refresh_oauth_if_needed().await?;
+        let mut url = self.url(&format!(
+            "categories/{}/instruments",
+            encode_path_segment(category_id)
+        ))?;
+        url.query_pairs_mut()
+            .append_pair("pageSize", &page_size.clamp(1, 1_000).to_string())
+            .append_pair("pageNumber", &page_number.to_string());
+        self.send_json(self.request_url(Method::GET, url, 1, true)?)
+            .await
+    }
+
+    /// Returns up to 500 detailed account activities for one explicit UTC window.
+    ///
+    /// The response retains IG's next-page link so callers can explicitly decide
+    /// whether older execution evidence is relevant to their reconciliation window.
+    pub async fn account_activity(
+        &self,
+        from: &str,
+        to: &str,
+        page_size: u16,
+    ) -> IgResult<ActivityHistoryResponse> {
+        self.refresh_oauth_if_needed().await?;
+        let mut url = self.url("history/activity")?;
+        url.query_pairs_mut()
+            .append_pair("from", from)
+            .append_pair("to", to)
+            .append_pair("detailed", "true")
+            .append_pair("pageSize", &page_size.clamp(10, 500).to_string());
+        self.send_json(self.request_url(Method::GET, url, 3, true)?)
+            .await
+    }
+
+    /// Follows one IG-provided activity paging link without allowing the
+    /// response to redirect credentials to another endpoint or host.
+    pub async fn account_activity_next(&self, next: &str) -> IgResult<ActivityHistoryResponse> {
+        self.refresh_oauth_if_needed().await?;
+        let next = next.trim();
+        let (path, query) = next.split_once('?').unwrap_or((next, ""));
+        let path = path.trim_start_matches('/');
+        let path = path.strip_prefix("gateway/deal/").unwrap_or(path);
+        if path != "history/activity" {
+            return Err(IgError::InvalidConfiguration(
+                "IG activity next-page link has an unexpected path".into(),
+            ));
+        }
+        let mut url = self.url(path)?;
+        if !query.is_empty() {
+            url.set_query(Some(query));
+        }
+        self.send_json(self.request_url(Method::GET, url, 3, true)?)
             .await
     }
 

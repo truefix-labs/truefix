@@ -7,21 +7,48 @@ use lightstreamer_rs::{
 
 use crate::error::IgResult;
 
-const MARKET_FIELDS: [&str; 11] = [
+// Keep the top-of-book subscription to IG's documented portable field set.
+// Optional fields differ by account and instrument and IG rejects the entire
+// subscription when even one requested field is unavailable.
+const MARKET_FIELDS: [&str; 5] = [
     "BID",
     "OFFER",
-    "HIGH",
-    "LOW",
-    "MID_OPEN",
-    "CHANGE",
-    "CHANGE_PCT",
     "UPDATE_TIME",
     "MARKET_STATE",
     "MARKET_DELAY",
-    "LTV",
+];
+const MARKET_LADDER_FIELDS: [&str; 20] = [
+    "BIDPRICE1",
+    "BIDPRICE2",
+    "BIDPRICE3",
+    "BIDPRICE4",
+    "BIDPRICE5",
+    "ASKPRICE1",
+    "ASKPRICE2",
+    "ASKPRICE3",
+    "ASKPRICE4",
+    "ASKPRICE5",
+    "BIDSIZE1",
+    "BIDSIZE2",
+    "BIDSIZE3",
+    "BIDSIZE4",
+    "BIDSIZE5",
+    "ASKSIZE1",
+    "ASKSIZE2",
+    "ASKSIZE3",
+    "ASKSIZE4",
+    "ASKSIZE5",
 ];
 const ACCOUNT_FIELDS: [&str; 5] = ["PNL", "DEPOSIT", "USED_MARGIN", "AVAILABLE_CASH", "FUNDS"];
 const TRADE_FIELDS: [&str; 3] = ["CONFIRMS", "OPU", "WOU"];
+
+fn market_item(epic: &str) -> String {
+    format!("MARKET:{epic}")
+}
+
+fn market_ladder_item(account_id: &str, epic: &str) -> String {
+    format!("PRICE:{account_id}:{epic}")
+}
 
 /// An authenticated IG Lightstreamer session.
 ///
@@ -62,11 +89,31 @@ impl IgStreamingClient {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let items = epics
-            .into_iter()
-            .map(|epic| format!("MARKET:{}", epic.as_ref()));
+        let items = epics.into_iter().map(|epic| market_item(epic.as_ref()));
         self.subscribe(SubscriptionMode::Merge, items, MARKET_FIELDS, Snapshot::On)
             .await
+    }
+
+    /// Subscribes to IG's optional native five-level price ladder.
+    ///
+    /// Ladder availability is account- and instrument-dependent. Keeping this
+    /// subscription separate prevents an unsupported ladder field set from
+    /// rejecting the ordinary top-of-book market subscription.
+    pub async fn subscribe_market_ladders<I, S>(&self, epics: I) -> IgResult<Updates>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let items = epics
+            .into_iter()
+            .map(|epic| market_ladder_item(&self.account_id, epic.as_ref()));
+        self.subscribe(
+            SubscriptionMode::Merge,
+            items,
+            MARKET_LADDER_FIELDS,
+            Snapshot::On,
+        )
+        .await
     }
 
     /// Subscribes to account balance and margin updates.
@@ -117,5 +164,19 @@ impl IgStreamingClient {
         )
         .with_snapshot(snapshot);
         Ok(self.client.subscribe(subscription).await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{market_item, market_ladder_item};
+
+    #[test]
+    fn market_and_ladder_use_distinct_official_item_names() {
+        assert_eq!(market_item("IX.D.DAX.IFD.IP"), "MARKET:IX.D.DAX.IFD.IP");
+        assert_eq!(
+            market_ladder_item("ABC123", "IX.D.DAX.IFD.IP"),
+            "PRICE:ABC123:IX.D.DAX.IFD.IP"
+        );
     }
 }

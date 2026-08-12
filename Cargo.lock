@@ -4619,7 +4619,7 @@ dependencies = [
 
 [[package]]
 name = "truefix-ig-client"
-version = "0.1.7"
+version = "0.1.10"
 dependencies = [
  "futures-util",
  "lightstreamer-rs",

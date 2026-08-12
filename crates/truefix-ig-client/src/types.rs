@@ -31,6 +31,14 @@ pub enum TimeInForce {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PositionTimeInForce {
+    #[serde(rename = "FILL_OR_KILL")]
+    FillOrKill,
+    #[serde(rename = "EXECUTE_AND_ELIMINATE")]
+    ExecuteAndEliminate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MarketStatus {
     #[serde(rename = "TRADEABLE")]
     Tradeable,
@@ -169,6 +177,12 @@ pub struct Instrument {
     pub expiry: Option<String>,
     #[serde(default)]
     pub currencies: Vec<InstrumentCurrency>,
+    #[serde(default)]
+    pub lot_size: Option<f64>,
+    #[serde(default)]
+    pub stops_limits_allowed: Option<bool>,
+    #[serde(default)]
+    pub streaming_prices_available: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,6 +198,12 @@ pub struct InstrumentCurrency {
 pub struct DealingRules {
     #[serde(default)]
     pub min_deal_size: Option<RuleValue>,
+    #[serde(default)]
+    pub min_normal_stop_or_limit_distance: Option<RuleValue>,
+    #[serde(default)]
+    pub max_stop_or_limit_distance: Option<RuleValue>,
+    #[serde(default)]
+    pub market_order_preference: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,11 +221,133 @@ pub struct MarketSnapshot {
     pub offer: Option<f64>,
     pub high: Option<f64>,
     pub low: Option<f64>,
+    #[serde(default)]
+    pub decimal_places_factor: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MarketsResponse {
     pub markets: Vec<MarketData>,
+}
+
+/// One account-visible IG instrument category returned by `GET /categories`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstrumentCategory {
+    pub code: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Account-visible instrument categories for the authenticated account.
+#[derive(Debug, Deserialize)]
+pub struct InstrumentCategoriesResponse {
+    #[serde(default)]
+    pub categories: Vec<InstrumentCategory>,
+}
+
+/// One page returned by `GET /categories/{categoryId}/instruments`.
+#[derive(Debug)]
+pub struct CategoryInstrumentsResponse {
+    pub instruments: Vec<MarketData>,
+}
+
+impl<'de> Deserialize<'de> for CategoryInstrumentsResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Instruments {
+                #[serde(default)]
+                instruments: Vec<MarketData>,
+            },
+            Markets {
+                #[serde(default)]
+                markets: Vec<MarketData>,
+            },
+            Direct(Vec<MarketData>),
+        }
+
+        Ok(Self {
+            instruments: match Wire::deserialize(deserializer)? {
+                Wire::Instruments { instruments } => instruments,
+                Wire::Markets { markets } => markets,
+                Wire::Direct(instruments) => instruments,
+            },
+        })
+    }
+}
+
+/// Detailed account activity used to recover authoritative fills and deal state.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityHistoryResponse {
+    #[serde(default)]
+    pub activities: Vec<ActivityHistoryItem>,
+    #[serde(default)]
+    pub metadata: Option<ActivityHistoryMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActivityHistoryMetadata {
+    #[serde(default)]
+    pub paging: Option<ActivityHistoryPaging>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActivityHistoryPaging {
+    #[serde(default)]
+    pub next: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityHistoryItem {
+    pub date: String,
+    pub deal_id: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub details: Option<ActivityHistoryDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityHistoryDetails {
+    #[serde(default)]
+    pub epic: Option<String>,
+    #[serde(default)]
+    pub actions: Vec<ActivityHistoryAction>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityHistoryAction {
+    #[serde(default)]
+    pub action_type: Option<String>,
+    #[serde(default)]
+    pub affected_deal_id: Option<String>,
+    #[serde(default)]
+    pub deal_reference: Option<String>,
+    #[serde(default)]
+    pub direction: Option<Direction>,
+    #[serde(default)]
+    pub level: Option<f64>,
+    #[serde(default)]
+    pub size: Option<f64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub market_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +361,8 @@ pub struct MarketData {
     pub expiry: Option<String>,
     pub bid: Option<f64>,
     pub offer: Option<f64>,
+    #[serde(default)]
+    pub market_status: Option<MarketStatus>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -284,6 +428,7 @@ pub struct CreatePositionRequest {
     pub force_open: bool,
     pub guaranteed_stop: bool,
     pub order_type: OrderType,
+    pub time_in_force: PositionTimeInForce,
     pub size: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<f64>,
@@ -352,6 +497,8 @@ pub struct WorkingOrderData {
     pub limit_distance: Option<f64>,
     #[serde(default)]
     pub currency_code: Option<String>,
+    #[serde(default)]
+    pub created_date: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -448,5 +595,91 @@ mod tests {
         .unwrap();
         assert_eq!(confirmation.deal_status, DealStatus::Accepted);
         assert_eq!(confirmation.deal_id.as_deref(), Some("deal-1"));
+    }
+
+    #[test]
+    fn category_catalogue_accepts_account_visible_instrument_pages() {
+        let categories: InstrumentCategoriesResponse = serde_json::from_value(serde_json::json!({
+            "categories": [{"code": "INDICES", "name": "Indices"}]
+        }))
+        .unwrap();
+        assert_eq!(categories.categories[0].code, "INDICES");
+
+        let page: CategoryInstrumentsResponse = serde_json::from_value(serde_json::json!({
+            "instruments": [{
+                "epic": "IX.D.FTSE.CFD.IP",
+                "instrumentName": "FTSE 100",
+                "instrumentType": "INDICES",
+                "expiry": "-",
+                "marketStatus": "TRADEABLE"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(page.instruments[0].epic, "IX.D.FTSE.CFD.IP");
+        assert_eq!(
+            page.instruments[0].market_status,
+            Some(MarketStatus::Tradeable)
+        );
+        let direct: CategoryInstrumentsResponse = serde_json::from_value(serde_json::json!([{
+            "epic": "CS.D.EURUSD.CFD.IP",
+            "instrumentName": "EUR/USD",
+            "instrumentType": "CURRENCIES",
+            "expiry": "DFB"
+        }]))
+        .unwrap();
+        assert_eq!(direct.instruments[0].epic, "CS.D.EURUSD.CFD.IP");
+    }
+
+    #[test]
+    fn detailed_activity_accepts_fill_evidence() {
+        let response: ActivityHistoryResponse = serde_json::from_value(serde_json::json!({
+            "activities": [{
+                "date": "2026-08-12T06:00:00",
+                "dealId": "deal-1",
+                "status": "ACCEPTED",
+                "details": {
+                    "epic": "CS.D.EURUSD.CFD.IP",
+                    "actions": [{
+                        "actionType": "POSITION_OPENED",
+                        "affectedDealId": "deal-1",
+                        "direction": "BUY",
+                        "level": 1.1,
+                        "size": 2.0
+                    }]
+                }
+            }],
+            "metadata": {"paging": {"next": null, "size": 1}}
+        }))
+        .unwrap();
+        assert_eq!(response.activities[0].deal_id, "deal-1");
+        assert_eq!(
+            response.activities[0]
+                .details
+                .as_ref()
+                .unwrap()
+                .actions
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn otc_market_order_serializes_required_time_in_force() {
+        let request = CreatePositionRequest {
+            currency_code: "USD".into(),
+            direction: Direction::Buy,
+            epic: "IX.D.DAX.IFD.IP".into(),
+            expiry: "DFB".into(),
+            force_open: true,
+            guaranteed_stop: false,
+            order_type: OrderType::Market,
+            time_in_force: PositionTimeInForce::FillOrKill,
+            size: 1.0,
+            level: None,
+            limit_level: None,
+            stop_level: None,
+        };
+        let encoded = serde_json::to_value(request).unwrap();
+        assert_eq!(encoded["timeInForce"], "FILL_OR_KILL");
     }
 }
