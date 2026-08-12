@@ -13,7 +13,7 @@ and are not re-exported by this facade.
 ## Installation
 
 ```toml
-truefix = "0.1.6"
+truefix = "0.1.10"
 ```
 
 Use `Engine::start` for built-in services or `Engine::start_with_overrides` for per-session custom

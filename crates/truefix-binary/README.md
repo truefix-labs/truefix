@@ -10,7 +10,7 @@ the full FIX engine. It does not provide multicast recovery, exchange sessions, 
 Add it when an integration needs a binary codec:
 
 ```toml
-truefix-binary = "0.1.6"
+truefix-binary = "0.1.10"
 ```
 
 ## Current scope

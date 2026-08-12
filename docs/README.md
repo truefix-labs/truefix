@@ -1,7 +1,7 @@
 # TrueFix documentation
 
 This index separates current user documentation from historical design and audit records. Current
-facts are derived from the workspace manifests and public code as of 2026-07-20.
+facts are derived from the workspace manifests and public code as of 2026-08-12.
 
 ## Current documentation
 
@@ -15,7 +15,7 @@ facts are derived from the workspace manifests and public code as of 2026-07-20.
 
 ## Project status
 
-All workspace crates currently share version `0.1.4`, Rust edition 2024, and MSRV 1.96.
+All workspace crates currently share version `0.1.10`, Rust edition 2024, and MSRV 1.96.
 
 | Area | Crate(s) | Current implementation |
 | --- | --- | --- |
